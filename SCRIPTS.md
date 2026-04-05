@@ -12,9 +12,13 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 
 ## Operator — Idle Flow
 
+### `SCRIPT_OPERATOR_OPENER`
+**Pre-rendered** — spoken once per session, at the first menu prompt after handset lift only
+> "Operator."
+
 ### `SCRIPT_GREETING`
-**Pre-rendered**
-> "Operator. How may I direct your call?"
+**Pre-rendered** — spoken after `SCRIPT_OPERATOR_OPENER` on first prompt; repeated alone on subsequent prompts
+> "How may I direct your call?"
 
 ### `SCRIPT_EXTENSION_HINT`
 **Pre-rendered**
@@ -29,8 +33,8 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 ## Operator — Playing Flow
 
 ### `SCRIPT_PLAYING_GREETING`
-**Runtime** (contains media name)
-> "Operator. Your call with [media name] is currently in progress."
+**Runtime** (contains media name) — spoken after `SCRIPT_OPERATOR_OPENER` on first prompt; repeated alone on subsequent prompts
+> "Your call with [media name] is currently in progress."
 
 ### `SCRIPT_PLAYING_MENU_DEFAULT`
 **Pre-rendered** (playing, not on hold, not last track)

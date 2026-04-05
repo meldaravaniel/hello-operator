@@ -32,9 +32,6 @@ mapped to media) and a menu navigation device.
 
 ## Software Architecture
 
-### Language & Runtime
-Python 3 on Raspberry Pi OS.
-
 ### Dependency Philosophy
 All hardware-dependent and external-service modules sit behind abstract
 interfaces (Python ABCs). No module above the interface layer imports a concrete
@@ -82,18 +79,19 @@ dependency directly. This means:
 ## Interfaces
 
 ### `AudioInterface`
-Abstracts all sound output. Concrete: `SounddeviceAudio`. Mock: `MockAudio`.
+Abstracts all sound output.
 
 | Method | Description |
 |---|---|
 | `play_tone(frequencies, duration_ms)` | Generate and play a sine wave mix |
 | `play_file(path)` | Play a pre-rendered audio file |
+| `play_dtmf(digit: int)` | Play the standard DTMF tone for a digit (0–9) |
 | `play_off_hook_tone()` | Play off-hook warning tone continuously until `stop()` |
 | `stop()` | Stop any current playback immediately |
 | `is_playing() -> bool` | True if audio is currently playing |
 
 ### `TTSInterface`
-Abstracts text-to-speech. Concrete: `PiperTTS`. Mock: `MockTTS`.
+Abstracts text-to-speech.
 
 | Method | Description |
 |---|---|
@@ -102,12 +100,10 @@ Abstracts text-to-speech. Concrete: `PiperTTS`. Mock: `MockTTS`.
 | `speak_digits(digits)` | Speak each character as an individual digit word |
 | `prerender(prompts: dict)` | Pre-synthesize fixed strings to cached audio files |
 
-Fixed menu prompts are pre-rendered at startup. `speak_and_play` uses the cached
-file for known prompts; Piper is only invoked at runtime for dynamic strings
-(media names, phone numbers).
+Fixed menu prompts are pre-rendered at startup. `speak_and_play` uses cached files for known prompts; live synthesis is used only for dynamic strings (media names, phone numbers).
 
 ### `PlexClientInterface`
-Abstracts all Plex API calls. Concrete: `PlexClient`. Mock: `MockPlexClient`.
+Abstracts all Plex API calls.
 
 | Method | Description |
 |---|---|
@@ -116,11 +112,12 @@ Abstracts all Plex API calls. Concrete: `PlexClient`. Mock: `MockPlexClient`.
 | `get_genres()` | Return all genres |
 | `get_albums_for_artist(artist_key)` | Return albums for a given artist |
 | `play(plex_key)` | Start playback of a media item |
+| `shuffle_all()` | Shuffle and play the entire library |
 | `pause()` | Pause current playback |
 | `unpause()` | Resume paused playback |
 | `skip()` | Skip to next track |
 | `stop()` | Stop playback entirely |
-| `now_playing() -> MediaItem | None` | Return currently playing item, or None |
+| `now_playing() -> PlaybackState` | Return current playback state (see Core Data Types) |
 | `get_queue_position() -> tuple[int, int]` | Return (current_track, total_tracks) |
 
 ---
@@ -133,7 +130,27 @@ class MediaItem:
     plex_key: str
     name: str
     media_type: str  # "playlist" | "artist" | "album" | "genre"
+
+@dataclass
+class PlaybackState:
+    item: MediaItem | None  # None if nothing is playing
+    is_paused: bool         # True if playback is paused; always False when item is None
 ```
+
+### `ErrorQueueInterface`
+Abstracts the persistent error log.
+
+| Method | Description |
+|---|---|
+| `log(source: str, severity: str, message: str)` | Add or update an entry; deduplicated by `(source, message)`; increments count and updates `last_happened` on repeat |
+| `get_all() -> list[ErrorEntry]` | Return all entries, newest first |
+| `get_by_severity(severity: str) -> list[ErrorEntry]` | Return entries filtered by `"warning"` or `"error"` |
+
+`ErrorEntry` fields: `source`, `severity`, `message`, `count`, `last_happened`.
+
+**Storage:** Persisted to disk; survives restarts. Clearable only via manual intervention outside the system.
+
+**Injection:** `ErrorQueueInterface` is injected into any module that originates errors (`tts`, `plex_store`). Modules that only re-raise exceptions (e.g. `plex_client`) do not receive it — callers decide whether to log.
 
 ---
 
@@ -151,30 +168,22 @@ higher layers.
 - `DIGIT_DIALED(digit: int)`
 
 ### `audio`
-Concrete implementation of `AudioInterface` using `sounddevice` and `numpy`.
-Generates dial tone as a 350 Hz + 440 Hz sine wave mix. Plays pre-rendered audio
-files from disk. Supports immediate stop.
+Concrete implementation of `AudioInterface`. Generates dial tone, DTMF tones,
+and the off-hook warning tone programmatically. Plays pre-rendered audio files
+from disk. All playback supports immediate stop.
 
 ### `tts`
-Concrete implementation of `TTSInterface` wrapping the Piper binary. At startup,
-pre-renders all fixed menu prompt strings to WAV files in a local cache
-directory. Runtime synthesis is used only for dynamic content. `speak_digits`
+Concrete implementation of `TTSInterface`. At startup, `main.py` calls
+`prerender({script_name: text, ...})` with all pre-renderable scripts from
+`SCRIPTS.md`. Runtime synthesis is used only for dynamic content. `speak_digits`
 maps each character to its English word and synthesizes the full string.
 
 ### `phone_book`
-Manages a SQLite database mapping Plex media items to auto-generated 7-digit
-phone numbers. Numbers are assigned once and never reassigned. Supports lookup
-by Plex key or by phone number. Numbers are formatted and spoken digit-by-digit.
-
-**Schema:**
-```sql
-CREATE TABLE phone_book (
-    plex_key    TEXT PRIMARY KEY,
-    media_type  TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    phone_number TEXT NOT NULL UNIQUE
-);
-```
+Manages a persistent database mapping Plex media items to auto-generated 7-digit
+phone numbers. Numbers are assigned lazily — on first encounter of a `plex_key`
+(either at `plex_store` population time or at first selection) — and never
+reassigned. Supports lookup by Plex key or by phone number. Numbers are formatted
+and spoken digit-by-digit.
 
 ### `plex_store`
 A persistent, session-independent local cache that sits between the menu and
@@ -182,8 +191,7 @@ A persistent, session-independent local cache that sits between the menu and
 it always goes through `plex_store`. Plex is treated as the source of truth,
 but is assumed to change infrequently.
 
-**Persistence:** SQLite (separate from `phone_book`). Survives restarts and
-persists across sessions.
+**Persistence:** Survives restarts and persists across sessions.
 
 **Stored data:**
 - Full list of playlists, artists, genres (as `MediaItem` lists)
@@ -205,22 +213,14 @@ re-fetches all categories from Plex and updates local store (successful calls
 only). This is the only way to proactively sync local state with Plex outside
 of the normal lazy-update path.
 
-**Schema:**
-```sql
-CREATE TABLE plex_cache (
-    cache_key   TEXT PRIMARY KEY,  -- e.g. "playlists", "albums:artist_key"
-    data        TEXT NOT NULL,     -- JSON-serialized list of MediaItems
-    updated_at  TEXT NOT NULL      -- ISO8601 timestamp of last successful sync
-);
-```
-
 ### `plex_client`
-Concrete implementation of `PlexClientInterface` using the Plex HTTP API and a
-configured server URL + auth token. Called only by `plex_store` for browse
-data, and directly by the menu for playback commands (`play`, `pause`,
-`unpause`, `skip`, `stop`, `now_playing`, `get_queue_position`). Integration
-tests against the real server are marked and skipped during normal unit test
-runs.
+Concrete implementation of `PlexClientInterface`. Called only by `plex_store`
+for browse data, and directly by the menu for playback commands (`play`,
+`shuffle_all`, `pause`, `unpause`, `skip`, `stop`, `now_playing`,
+`get_queue_position`). `now_playing()` returns a `PlaybackState` containing the
+current `MediaItem` (or `None`) and whether playback is paused. Raises exceptions
+on API failures; callers decide whether to log. Integration tests against the
+real server are marked and skipped during normal unit test runs.
 
 ### `menu`
 The heart of the application. A state machine that receives digit events and
@@ -237,22 +237,47 @@ audio hardware, or HTTP — only the interfaces.
 - `DIRECT_DIAL` — accumulating digits for a direct phone number
 - `ASSISTANT` — diagnostic status readout
 
-**Reserved digits (all states):**
+**Reserved digits (all states except `DIRECT_DIAL`):**
 | Digit | Action |
 |---|---|
 | `0` | Return to top-level menu for current system state |
 | `9` | Go back one menu level (or stay at top) |
 
-**Invalid digit handling:** Any digit that has no corresponding option in the
-current menu state → TTS says "I'm sorry, that number is not in service." and
-re-reads the current menu options.
+**Digit disambiguation:** When a digit is received, the system waits up to
+`DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` for a second digit before acting. If no
+second digit arrives, the single digit is treated as a navigation/menu input
+(`0` and `9` are reserved as above; `1`–`8` select menu options). If a second
+digit arrives within the timeout, the system enters `DIRECT_DIAL` mode and all
+subsequent digits — including `0` and `9` — are treated as literal phone number
+digits. This applies in all states, including `IDLE_DIAL_TONE`.
 
-**Local state vs. Plex queries:**
-- **Local state** tracks: paused/unpaused, current session activity — things
-  the system itself caused and are deterministic
-- **Plex query** determines: whether something is currently playing (`now_playing()`)
-  and queue position (`get_queue_position()`) — nondeterministic, can change
-  without system input (e.g. playlist ends naturally)
+**DTMF feedback:** When the system enters `DIRECT_DIAL` mode, a DTMF tone is
+played for each digit as it is received (including the first two that triggered
+the mode switch).
+
+**Inactivity timeout:** If no digit is received for `INACTIVITY_TIMEOUT` while
+the handset is lifted and the system is in any menu state, the off-hook warning
+tone plays continuously until the user hangs up.
+
+**"Operator." opener:** The `SCRIPT_OPERATOR_OPENER` ("Operator.") is spoken
+only once per session — at the first menu prompt after the handset is lifted.
+Subsequent menu prompts (including after stopping music) skip the opener.
+
+**State after stopping music:** When the user ends a call (stops Plex playback)
+from the playing menu, the system transitions directly to `IDLE_MENU` without
+replaying the dial tone or `SCRIPT_OPERATOR_OPENER`.
+
+**Invalid digit handling:** Any digit that has no corresponding option in the
+current menu state → TTS plays `SCRIPT_NOT_IN_SERVICE` and re-reads the current
+menu options.
+
+**Plex state:** The menu never tracks paused/playing state locally. All playback
+state (playing, paused, what's playing) is derived from `now_playing()` →
+`PlaybackState` at menu-speak time. This ensures the menu always reflects actual
+Plex state regardless of changes made by other clients.
+
+**T9 matching is case-insensitive.** "beatles" and "Beatles" both match digit `1`
+(ABC).
 
 ### `session`
 Owns the application lifecycle for a single handset interaction. Listens for
@@ -275,8 +300,10 @@ top level.
 Hang-up (HANDSET_ON_CRADLE) stops all local audio immediately — even mid-TTS
 — and cleans up session state. Plex playback is not affected.
 
-Direct dial accumulates up to 7 digits. Lookup fires at exactly 7; subsequent
-digits are ignored. Hang-up before 7 digits silently abandons the partial number.
+Direct dial is entered when a second digit is received within
+`DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` of the first. All digits including `0` and
+`9` are treated as literal. Lookup fires at exactly 7 digits; subsequent digits
+are ignored. Hang-up before 7 digits silently abandons the partial number.
 
 ---
 
@@ -288,15 +315,16 @@ digits are ignored. Hang-up before 7 digits silently abandons the partial number
 Lift handset
   → Dial tone plays (350 Hz + 440 Hz)
   → [5 second timeout, no input]
-  → "Operator, how may I direct your call?"
+  → SCRIPT_OPERATOR_OPENER: "Operator." (spoken once per session)
+  → SCRIPT_GREETING: "How may I direct your call?"
   → [brief pause]
-  → "If you know your party's extension, please dial their number."
-  → Wait for digit input
+  → SCRIPT_EXTENSION_HINT: "If you know your party's extension, please dial it now..."
+  → Wait for digit input (disambiguation timeout applies to first digit)
 
 Digit 1 → Browse playlists
 Digit 2 → Browse artists
 Digit 3 → Browse genres
-Digit 4 → Shuffle everything
+Digit 4 → Shuffle everything (calls shuffle_all())
 ```
 
 ### Handset lifted — music is playing
@@ -305,13 +333,14 @@ Digit 4 → Shuffle everything
 Lift handset
   → Dial tone plays (350 Hz + 440 Hz)
   → [2 second timeout, no input]
-  → Check now_playing() at speak time:
-      If None (music ended during dial tone): deliver idle prompt instead
-  → "Operator. Your call with [media name] is in progress."
-  → Options announced dynamically based on current state:
-      Digit 1 → "pause your call" (if playing) or "resume your call" (if paused)
+  → Check now_playing() → PlaybackState at speak time:
+      If item is None (music ended during dial tone): deliver idle prompt instead
+  → SCRIPT_OPERATOR_OPENER: "Operator." (spoken once per session)
+  → SCRIPT_PLAYING_GREETING: "Your call with [media name] is currently in progress."
+  → Options announced dynamically based on PlaybackState:
+      Digit 1 → "pause your call" (if not paused) or "resume your call" (if paused)
       Digit 2 → "skip" (only offered if not on last track)
-      Digit 3 → End call (stop music, go to idle state)
+      Digit 3 → End call (stop music, transition directly to IDLE_MENU)
       Digit 0 → Go to idle top-level menu
 ```
 
@@ -336,6 +365,8 @@ Article stripping: leading "The ", "A ", and "An " are ignored for T9 indexing
 and sorting. The full name is always used when speaking to the user.
   e.g. "The Beatles" is indexed as "Beatles" → found under dial 1 (ABC)
   e.g. "A Tribe Called Quest" → indexed as "Tribe" → found under dial 7 (STU)
+
+T9 matching is case-insensitive. "beatles" and "Beatles" both index under dial 1.
 
 Items with no playable content are excluded from all browse results entirely.
 
@@ -371,14 +402,20 @@ Selection confirmed →
 ### Direct dial
 
 ```
-Digit dialed during dial tone →
-  Dial tone stops
-  System accumulates up to 7 digits
-  After 7 digits: look up in phone book
-    Found → announce and play
-    Not found → "I'm sorry, that number is not in service."
-  8th digit and beyond → ignored
-  Hang up before 7 digits → silent cleanup, no lookup
+First digit dialed (in any state) →
+  System waits up to DIRECT_DIAL_DISAMBIGUATION_TIMEOUT for a second digit
+  If no second digit → treat as single navigation/menu input (0=top, 9=back, 1–8=option)
+  If second digit arrives within timeout →
+    Enter DIRECT_DIAL mode
+    Dial tone stops (if playing)
+    DTMF tone plays for each digit received (including the first two)
+    System accumulates up to 7 digits total
+    After 7 digits: look up in phone book
+      Found → announce and play
+      Not found → SCRIPT_NOT_IN_SERVICE
+    8th digit and beyond → ignored
+    Hang up before 7 digits → silent cleanup, no lookup
+    0 and 9 are treated as literal digits in DIRECT_DIAL mode
 ```
 
 ### Diagnostic assistant
@@ -470,9 +507,9 @@ Response:
 - If top level also has no content: treat as "no playable content" above
 
 **Error queue:**
-- Deduplicated — same error does not pile up
-- Read-only from phone interface
-- Clearable only via manual intervention outside the system
+- Entries: `source`, `severity` (`"warning"` | `"error"`), `message`, `count`, `last_happened`
+- Deduplicated by `(source, message)` — repeat occurrences increment `count` and update `last_happened`
+- Read-only from phone interface; clearable only via manual intervention outside the system
 
 ---
 
@@ -483,11 +520,15 @@ Response:
 | `DIAL_TONE_TIMEOUT_IDLE` | 5 s | Silence before idle operator prompt |
 | `DIAL_TONE_TIMEOUT_PLAYING` | 2 s | Silence before playing-state prompt |
 | `INTER_DIGIT_TIMEOUT` | 300 ms | Gap after last pulse → digit complete |
+| `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` | TBD | Wait after first digit before treating as single navigation input |
+| `INACTIVITY_TIMEOUT` | 30 s | Inactivity in any menu state → off-hook warning tone |
 | `DIAL_TONE_FREQUENCIES` | [350, 440] Hz | Standard PSTN dial tone |
 | `MAX_MENU_OPTIONS` | 8 | Max items listed before narrowing required |
 | `PHONE_NUMBER_LENGTH` | 7 | Digits in an assigned phone number |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 | Messages read aloud per page in assistant |
-| `ASSISTANT_NUMBER` | configured at setup | Reserved 7-digit diagnostic number; excluded from phone book assignment |
+| `ASSISTANT_NUMBER` | set in constants file | Reserved 7-digit diagnostic number; excluded from phone book assignment |
+| `HOOK_DEBOUNCE` | TBD | Hook switch debounce window; requires hardware tuning |
+| `PULSE_DEBOUNCE` | TBD | Pulse switch debounce window; requires hardware tuning |
 | `CACHE_RETRY_MAX` | TBD | Max repopulation attempts for missing TTS cache files |
 | `CACHE_RETRY_BACKOFF` | TBD | Base backoff interval between cache repopulation attempts |
 
@@ -495,29 +536,13 @@ Response:
 
 ## Testing Strategy
 
-All unit tests run without hardware, network, or audio output. The three
-interfaces (`AudioInterface`, `TTSInterface`, `PlexClientInterface`) are the
-seams where mocks are injected. GPIO is also abstracted so the handler can be
-driven by a mock pin reader in tests.
+All unit tests run without hardware, network, or audio output. The four
+interfaces (`AudioInterface`, `TTSInterface`, `PlexClientInterface`,
+`ErrorQueueInterface`) are the seams where mocks are injected. GPIO is also
+abstracted so the handler can be driven by a mock pin reader in tests.
 
-Integration tests (tagged, skipped by default) cover the real `PlexClient`
+Integration tests (tagged, skipped by default) cover the real Plex client
 against a live server.
 
-See `TEST_SPEC.md` for the full test suite.
-
----
-
-## Development Order
-
-Suggested implementation sequence, each layer building on the last:
-
-1. **Interfaces** — define ABCs and `MediaItem`; no logic, all tests pass trivially
-2. **`phone_book`** — pure Python + SQLite, no other dependencies
-3. **`gpio_handler`** — mock GPIO pin reader; fully unit-testable
-4. **`audio`** — `SounddeviceAudio` + `MockAudio`
-5. **`tts`** — `PiperTTS` + `MockTTS` + pre-render logic
-6. **`plex_client`** — `MockPlexClient` first; real client + integration tests after
-7. **`plex_store`** — uses `MockPlexClient`; tests persistence and update strategy
-8. **`menu`** — state machine; uses mocks for everything including `plex_store`
-9. **`session`** — wires GPIO events to menu; uses mocks
-10. **`main`** — wires concrete implementations together; smoke test on real hardware
+See `TEST_SPEC.md` for the full test suite. See `IMPL.md` for concrete class
+names, technology choices, database schemas, and development order.

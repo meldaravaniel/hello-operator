@@ -49,6 +49,9 @@ class AudioInterface(ABC):
     @abstractmethod
     def play_file(self, path: str) -> None: ...
     @abstractmethod
+    def play_dtmf(self, digit: int) -> None: ...
+    """Play the standard DTMF tone for digit 0–9."""
+    @abstractmethod
     def play_off_hook_tone(self) -> None: ...
     """Play the off-hook warning tone continuously until stop() is called."""
     @abstractmethod
@@ -112,6 +115,11 @@ class MediaItem:
     name: str
     media_type: MediaType
 
+@dataclass
+class PlaybackState:
+    item: MediaItem | None  # None if nothing is playing
+    is_paused: bool         # True if paused; always False when item is None
+
 class PlexClientInterface(ABC):
     @abstractmethod
     def get_playlists(self) -> list[MediaItem]: ...
@@ -124,6 +132,8 @@ class PlexClientInterface(ABC):
     @abstractmethod
     def play(self, plex_key: str) -> None: ...
     @abstractmethod
+    def shuffle_all(self) -> None: ...
+    @abstractmethod
     def pause(self) -> None: ...
     @abstractmethod
     def unpause(self) -> None: ...
@@ -132,7 +142,7 @@ class PlexClientInterface(ABC):
     @abstractmethod
     def stop(self) -> None: ...
     @abstractmethod
-    def now_playing(self) -> MediaItem | None: ...
+    def now_playing(self) -> PlaybackState: ...
     @abstractmethod
     def get_queue_position(self) -> tuple[int, int]: ...  # (current, total)
 ```
@@ -140,6 +150,37 @@ class PlexClientInterface(ABC):
 **Implementations:**
 - `PlexClient(PlexClientInterface)` — real implementation using the Plex HTTP API
 - `MockPlexClient(PlexClientInterface)` — configurable returns; records all calls
+
+---
+
+### `ErrorQueueInterface`
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+@dataclass
+class ErrorEntry:
+    source: str
+    severity: str       # "warning" | "error"
+    message: str
+    count: int
+    last_happened: str  # ISO8601
+
+class ErrorQueueInterface(ABC):
+    @abstractmethod
+    def log(self, source: str, severity: str, message: str) -> None:
+        """Add or update entry; deduplicated by (source, message)."""
+        ...
+    @abstractmethod
+    def get_all(self) -> list[ErrorEntry]: ...
+    @abstractmethod
+    def get_by_severity(self, severity: str) -> list[ErrorEntry]: ...
+```
+
+**Implementations:**
+- `SqliteErrorQueue(ErrorQueueInterface)` — persisted to disk; owned by `main.py`
+- `MockErrorQueue(ErrorQueueInterface)` — records all calls; used in all unit tests
 
 ---
 
@@ -191,7 +232,14 @@ module tests use `MockAudio` instead.
 - `test_off_hook_tone_stops_on_stop_call`: `stop()` while off-hook tone playing
   → tone stops immediately
 
-#### 2.3 File playback
+#### 2.3 DTMF tones
+- `test_dtmf_digit_frequencies`: `play_dtmf(n)` → generated waveform contains
+  the correct row and column frequencies for that digit (FFT check; e.g. digit 1
+  → 697 Hz + 1209 Hz)
+- `test_dtmf_all_digits`: all digits 0–9 produce distinct frequency pairs
+- `test_dtmf_stops_after_short_duration`: DTMF tone is brief (not continuous)
+
+#### 2.4 File playback
 - `test_play_file_called_with_correct_path`: given a path, backend receives that
   path
 - `test_stop_interrupts_playback`: `stop()` while playing → `is_playing()`
@@ -251,13 +299,29 @@ Auto-generates and persists 7-digit phone numbers mapped to Plex media items.
 - `test_persistence`: write item, reload DB from disk → item still present
 - `test_no_reassignment`: assigning number to already-known Plex key → same
   number returned, no new entry created
+- `test_lazy_assignment_on_first_encounter`: number assigned on first call to
+  `assign_or_get(plex_key)`; same number returned on all subsequent calls
 - `test_assistant_number_excluded`: generated numbers never equal `ASSISTANT_NUMBER`
 - `test_db_unreadable_raises`: corrupt or missing DB file at init → raises a
   distinct error (not a generic connection error)
 
 ---
 
-### 5. `plex_store` — Local Plex Cache
+### 5. `error_queue` — Persistent Error Log
+
+Tests for the `SqliteErrorQueue` concrete implementation.
+
+- `test_log_new_entry`: `log(source, severity, message)` → entry stored with `count=1` and `last_happened` set
+- `test_log_deduplicates_by_source_and_message`: same `(source, message)` logged twice → single entry with `count=2` and updated `last_happened`
+- `test_log_different_source_creates_new_entry`: same message from different source → two separate entries
+- `test_get_all_returns_all_entries`: multiple entries → `get_all()` returns all, newest first
+- `test_get_by_severity_filters_correctly`: mix of warnings and errors → `get_by_severity("warning")` returns only warnings
+- `test_persistence_across_instantiation`: entries written, queue re-created from same DB → entries still present
+- `test_severity_values_enforced`: invalid severity value → raises error
+
+---
+
+### 7. `plex_store` — Local Plex Cache
 
 Persistent, session-independent store. All browse data flows through here.
 The menu never calls `plex_client` directly for browse data.
@@ -310,7 +374,7 @@ The menu never calls `plex_client` directly for browse data.
 
 ---
 
-### 6. `plex_client` — Plex API
+### 8. `plex_client` — Plex API
 
 All production calls go through `PlexClientInterface`. Unit tests use
 `MockPlexClient`; integration tests use the real `PlexClient`.
@@ -319,10 +383,12 @@ All production calls go through `PlexClientInterface`. Unit tests use
 - `test_mock_get_playlists_returns_list`: mock returns configured list
 - `test_mock_get_artists_returns_list`: mock returns configured list
 - `test_mock_play_records_call`: `play(key)` → mock records the key played
+- `test_mock_shuffle_all_records_call`: `shuffle_all()` → recorded
 - `test_mock_pause_records_call`: `pause()` → recorded
 - `test_mock_unpause_records_call`: `unpause()` → recorded
-- `test_mock_now_playing_returns_item`: returns configured current item
-- `test_mock_now_playing_returns_none_when_idle`: returns None when not playing
+- `test_mock_now_playing_returns_playing_state`: returns configured `PlaybackState` with item and `is_paused=False`
+- `test_mock_now_playing_returns_paused_state`: returns configured `PlaybackState` with item and `is_paused=True`
+- `test_mock_now_playing_returns_idle_state`: returns `PlaybackState(item=None, is_paused=False)` when nothing playing
 - `test_mock_get_queue_position_returns_tuple`: returns configured (current, total)
 
 #### 6.2 Real client (integration, skipped in unit test runs)
@@ -331,20 +397,29 @@ All production calls go through `PlexClientInterface`. Unit tests use
 
 ---
 
-### 7. `menu` — Menu State Machine
+### 9. `menu` — Menu State Machine
 
 The core logic. Receives digit events and system state; emits audio instructions
 and Plex commands.
 
-#### 7.1 Reserved digits
-- `test_digit_0_always_goes_to_top_level`: `0` dialed at any menu depth → state
-  resets to top-level idle menu
-- `test_digit_9_goes_back_one_level`: `9` dialed → state moves up one level
+#### 7.1 Reserved digits and disambiguation
+- `test_digit_0_single_goes_to_top_level`: `0` dialed alone (no second digit within `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT`) → state resets to top-level menu
+- `test_digit_9_single_goes_back_one_level`: `9` dialed alone → state moves up one level
 - `test_digit_9_at_top_level`: `9` at top level → no crash, stays at top level
+- `test_disambiguation_timeout_single_digit_is_navigation`: first digit received, no second digit within timeout → treated as navigation/menu input
+- `test_disambiguation_second_digit_enters_direct_dial`: second digit received within timeout → `DIRECT_DIAL` mode entered; `0` and `9` treated as literal digits
+- `test_disambiguation_0_and_9_literal_in_direct_dial`: after mode switch, `0` and `9` are accumulated as phone number digits, not navigation
+- `test_dtmf_plays_for_each_direct_dial_digit`: in `DIRECT_DIAL` mode → `audio.play_dtmf` called for each digit received (including first two that triggered mode switch)
 
 #### 7.2 Idle state top-level menu
 - `test_idle_menu_announces_options`: after dial tone timeout with no input →
-  TTS plays `SCRIPT_GREETING`
+  TTS plays `SCRIPT_OPERATOR_OPENER` then `SCRIPT_GREETING`
+- `test_operator_opener_spoken_once_per_session`: `SCRIPT_OPERATOR_OPENER` is
+  played on first prompt only; subsequent menu prompts in same session do not
+  replay it
+- `test_idle_menu_after_stop_skips_dial_tone`: after user stops music (digit 3
+  from playing menu) → state goes directly to `IDLE_MENU` without dial tone;
+  `SCRIPT_OPERATOR_OPENER` not replayed
 - `test_idle_menu_secondary_prompt`: after brief pause → TTS plays
   `SCRIPT_EXTENSION_HINT`
 - `test_idle_menu_plays_options`: available categories announced → TTS plays
@@ -355,8 +430,7 @@ and Plex commands.
   `SCRIPT_BROWSE_PROMPT_ARTIST`, enters artist browse state
 - `test_idle_menu_option_3_genre`: digit `3` → TTS plays
   `SCRIPT_BROWSE_PROMPT_GENRE`, enters genre browse state
-- `test_idle_menu_option_4_shuffle`: digit `4` → calls `plex_client.play` with
-  shuffle-all command
+- `test_idle_menu_option_4_shuffle`: digit `4` → calls `plex_client.shuffle_all()`
 - `test_idle_menu_omits_empty_category`: `plex_store.has_content` False for a
   category → not announced as an option, no Plex API call made
 - `test_idle_menu_uses_local_store_when_populated`: store already initialized →
@@ -389,28 +463,37 @@ and Plex commands.
   off-hook tone until user hangs up
 - `test_off_hook_tone_stops_on_hangup`: off-hook tone playing → user hangs up
   → tone stops immediately
+- `test_inactivity_timeout_triggers_off_hook_tone`: no digit received for
+  `INACTIVITY_TIMEOUT` while in any menu state → off-hook warning tone plays
+  continuously until user hangs up
+- `test_inactivity_timeout_reset_on_digit`: digit received before timeout →
+  inactivity timer resets
 
 #### 7.3 Playing state top-level menu
 - `test_playing_menu_announces_options`: handset lifted while playing →
-  TTS plays `SCRIPT_PLAYING_GREETING` (with media name)
-- `test_playing_menu_option_1_pause`: digit `1` when playing → calls
-  `plex_client.pause()`, local state set to paused
-- `test_playing_menu_option_1_unpause`: digit `1` when paused → calls
-  `plex_client.unpause()`, local state set to playing
-- `test_playing_menu_pause_label_when_playing`: TTS plays
-  `SCRIPT_PLAYING_MENU_DEFAULT` when local state is playing
-- `test_playing_menu_unpause_label_when_paused`: TTS plays
-  `SCRIPT_PLAYING_MENU_ON_HOLD` when local state is paused
+  TTS plays `SCRIPT_OPERATOR_OPENER` then `SCRIPT_PLAYING_GREETING` (with media name)
+- `test_playing_menu_option_1_pause`: digit `1` when `PlaybackState.is_paused=False`
+  → calls `plex_client.pause()`
+- `test_playing_menu_option_1_unpause`: digit `1` when `PlaybackState.is_paused=True`
+  → calls `plex_client.unpause()`
+- `test_playing_menu_pause_label_when_playing`: `PlaybackState.is_paused=False`
+  → TTS plays `SCRIPT_PLAYING_MENU_DEFAULT`
+- `test_playing_menu_unpause_label_when_paused`: `PlaybackState.is_paused=True`
+  → TTS plays `SCRIPT_PLAYING_MENU_ON_HOLD`
 - `test_playing_menu_option_2_skip`: digit `2` → calls `plex_client.skip()`
 - `test_playing_menu_skip_not_offered_on_last_track`: `get_queue_position()`
   returns (n, n) → TTS plays `SCRIPT_PLAYING_MENU_LAST_TRACK` or
   `SCRIPT_PLAYING_MENU_ON_HOLD_LAST_TRACK`; digit `2` treated as invalid
 - `test_playing_menu_option_3_end_call`: digit `3` → calls `plex_client.stop()`,
-  transitions to idle state
+  transitions directly to `IDLE_MENU` (no dial tone)
 - `test_playing_menu_option_0_go_to_idle_menu`: digit `0` → transitions to idle
   top-level menu
-- `test_playing_menu_now_playing_none_at_speak_time`: `now_playing()` returns
-  None when menu is about to speak → idle prompt delivered instead of playing prompt
+- `test_playing_menu_now_playing_idle_at_speak_time`: `now_playing()` returns
+  `PlaybackState(item=None, is_paused=False)` when menu is about to speak →
+  idle prompt delivered instead of playing prompt
+- `test_playing_menu_uses_playback_state_not_local_state`: mock `now_playing()`
+  returns paused state that contradicts what the system last commanded → menu
+  reflects Plex state, not local assumption
 
 #### 7.4 T9-style browsing (shared by playlist, artist, genre, album)
 - `test_browse_t9_digit_1_maps_to_ABC`: digit `1` → filters items starting with
@@ -429,6 +512,8 @@ and Plex commands.
   under digit `1` (ABC)
 - `test_browse_article_full_name_spoken`: stripped item selected → TTS speaks
   full original name, not stripped version
+- `test_browse_t9_case_insensitive`: item with lowercase name (e.g. "beatles")
+  matches the same digit as uppercase equivalent ("Beatles") → found under digit `1`
 - `test_browse_exactly_8_results_listed`: exactly 8 matching items → TTS plays
   `SCRIPT_BROWSE_LIST_INTRO` (with count), no further narrowing prompted
 - `test_browse_8_or_fewer_results_listed`: <8 matching items → TTS plays
@@ -530,7 +615,7 @@ and Plex commands.
 
 ---
 
-### 8. `session` — Session Lifecycle
+### 10. `session` — Session Lifecycle
 
 Ties hardware events to the menu state machine.
 
@@ -540,8 +625,12 @@ Ties hardware events to the menu state machine.
   dial tone stops, idle menu prompt begins
 - `test_dial_tone_timeout_playing`: no digit dialed within timeout (playing
   state) → shorter timeout, playing menu prompt begins
-- `test_direct_dial_during_dial_tone`: digit(s) dialed during dial tone →
-  dial tone stops, digits routed to direct-dial handler
+- `test_direct_dial_during_dial_tone`: two digits dialed within
+  `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` during dial tone → dial tone stops,
+  both digits routed to direct-dial handler, DTMF tones played
+- `test_single_digit_during_dial_tone_treated_as_navigation`: one digit dialed
+  during dial tone, no second digit within timeout → treated as menu input,
+  dial tone stops, appropriate menu state entered
 - `test_direct_dial_known_number`: 7-digit number matches phone book entry →
   plays that media
 - `test_direct_dial_unknown_number`: 7-digit number not in phone book → TTS plays
@@ -563,13 +652,15 @@ Ties hardware events to the menu state machine.
 
 ### Fixtures / shared mocks
 - `mock_gpio` — injectable GPIO pin reader; controllable in tests
-- `mock_audio` — records all `play_tone`, `play_file`, `stop` calls
+- `mock_audio` — records all `play_tone`, `play_file`, `play_dtmf`, `stop` calls
 - `mock_tts` — records all `speak` calls; returns canned audio paths
-- `mock_plex` — configurable list returns; records all playback commands
+- `mock_plex` — configurable `PlaybackState` returns; records all playback commands including `shuffle_all`
 - `mock_plex_store` — configurable `has_content` flags and list returns;
   records all calls; used by menu and session tests
+- `mock_error_queue` — records all `log` calls; returns configurable entry lists
 - `tmp_phone_book` — temporary DB file, cleaned up after each test
 - `tmp_plex_store` — temporary plex store DB file, cleaned up after each test
+- `tmp_error_queue` — temporary error queue DB file, cleaned up after each test
 
 ### What is NOT tested here
 - Physical GPIO wiring correctness
@@ -586,10 +677,14 @@ Ties hardware events to the menu state machine.
 | `DIAL_TONE_TIMEOUT_IDLE` | 5 seconds | Time before idle operator prompt |
 | `DIAL_TONE_TIMEOUT_PLAYING` | 2 seconds | Time before playing-state prompt |
 | `INTER_DIGIT_TIMEOUT` | 300 ms | Time after last pulse before digit is decoded |
+| `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` | TBD | Wait after first digit before treating as single navigation input |
+| `INACTIVITY_TIMEOUT` | 30 seconds | Inactivity in any menu state → off-hook warning tone |
 | `DIAL_TONE_FREQUENCIES` | 350 Hz + 440 Hz | Standard PSTN dial tone |
 | `MAX_MENU_OPTIONS` | 8 | Max items listed before narrowing required |
 | `PHONE_NUMBER_LENGTH` | 7 | Digits in an assigned phone number |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 | Messages read aloud per page in assistant |
-| `ASSISTANT_NUMBER` | configured at setup | Reserved 7-digit diagnostic number; excluded from phone book |
+| `ASSISTANT_NUMBER` | set in constants file | Reserved 7-digit diagnostic number; excluded from phone book |
+| `HOOK_DEBOUNCE` | TBD | Hook switch debounce window; requires hardware tuning |
+| `PULSE_DEBOUNCE` | TBD | Pulse switch debounce window; requires hardware tuning |
 | `CACHE_RETRY_MAX` | TBD | Max repopulation attempts for missing TTS cache files |
 | `CACHE_RETRY_BACKOFF` | TBD | Base backoff interval between repopulation attempts |
