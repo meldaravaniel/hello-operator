@@ -262,6 +262,16 @@ higher-level module tests use `MockTTS` instead.
   each digit spoken separately (e.g. "five five five one two three four")
 - `test_prerender_creates_files`: `prerender(prompts_dict)` → one audio file
   created per prompt, all non-empty
+- `test_prerender_stores_hash`: after prerender, a hash of each script's text is
+  stored alongside its audio file
+- `test_prerender_skips_unchanged_scripts`: `prerender` called twice with same
+  text → Piper invoked only on first call; second call skips synthesis
+- `test_prerender_rerenders_on_text_change`: `prerender` called with updated text
+  for a script → Piper re-invoked, new audio file written, hash updated
+- `test_prerender_rerenders_on_missing_file`: hash stored but WAV file deleted →
+  `prerender` re-synthesizes the missing file
+- `test_prerender_cache_persists_across_instantiation`: cache written, `PiperTTS`
+  re-created → cached files still present and usable without re-synthesis
 - `test_speak_and_play_uses_cache_for_prerendered`: after prerender, `speak_and_play`
   with a known prompt → uses cached file, Piper binary NOT invoked again
 - `test_cache_miss_falls_back_to_live`: cached file deleted after prerender →

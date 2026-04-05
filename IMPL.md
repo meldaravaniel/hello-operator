@@ -57,8 +57,11 @@ suggested development order.
 - Wraps the Piper binary; invoked as a subprocess
 - `prerender(prompts: dict)` expects `{script_name: text}` (e.g.
   `{"SCRIPT_GREETING": "How may I direct your call?"}`). Called by `main.py` at
-  startup with all pre-renderable scripts from `SCRIPTS.md`. Produces one cached
-  WAV file per script in a local cache directory.
+  startup with all pre-renderable scripts from `SCRIPTS.md`.
+- The cache directory is persistent across restarts. Each entry stores the WAV
+  file and a hash of the source text. At startup, `prerender` compares the hash
+  of each script against the stored hash; only scripts whose hash has changed or
+  whose WAV file is missing are re-synthesized. Unchanged scripts are skipped.
 - `speak_and_play` uses `AudioInterface.play_file` on the cached WAV for known
   prompts; invokes Piper live only for dynamic strings
 - `speak_digits` maps each character to its English word

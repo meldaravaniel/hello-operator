@@ -100,7 +100,7 @@ Abstracts text-to-speech.
 | `speak_digits(digits)` | Speak each character as an individual digit word |
 | `prerender(prompts: dict)` | Pre-synthesize fixed strings to cached audio files |
 
-Fixed menu prompts are pre-rendered at startup. `speak_and_play` uses cached files for known prompts; live synthesis is used only for dynamic strings (media names, phone numbers).
+Fixed menu prompts are pre-rendered to a persistent cache directory that survives restarts. At startup, each script's text is hashed and compared against the stored hash; only scripts whose hash has changed or whose audio file is missing are re-synthesized. `speak_and_play` uses cached files for known prompts; live synthesis is used only for dynamic strings (media names, phone numbers).
 
 ### `PlexClientInterface`
 Abstracts all Plex API calls.
