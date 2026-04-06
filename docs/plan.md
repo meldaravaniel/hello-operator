@@ -234,14 +234,19 @@ written but skipped.
 
 ---
 
-### Session 11: `main` + hardware smoke test
+### Session 11: `main`
 **Start prompt:**
 > "We're implementing `main.py` for the hello-operator project. Please read
 > DESIGN.md, IMPL.md § TTS Implementation (prerender call), and all existing
 > `src/` files to understand what needs to be wired together. `main.py` should:
 > instantiate all concrete implementations, call `tts.prerender()` with all
 > pre-renderable scripts from SCRIPTS.md, wire everything into `session`, and
-> start the event loop. No unit tests for main — this is validated by running
-> on hardware."
+> start the event loop."
 
-**Done when:** `python main.py` runs on the Raspberry Pi without errors.
+**Done when:** `main.py` is written and wires all concrete implementations together correctly.
+
+**End note:** This is the final automated session. The manager should report to the user that implementation is complete and the following manual steps remain to finish the project:
+1. Fill in real values for all TODO constants in `src/constants.py` (Plex server URL, Plex auth token, Piper binary path, and any hardware-specific GPIO pin numbers).
+2. Deploy the project to the Raspberry Pi.
+3. Run `python main.py` on the Raspberry Pi and verify it starts without errors.
+4. Lift the handset and confirm the operator greeting plays and the menu responds to dialing.
