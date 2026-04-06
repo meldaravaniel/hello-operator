@@ -712,10 +712,12 @@ class TestT9Browsing:
     def test_browse_narrow_until_8_or_fewer(self, mock_audio, mock_tts, mock_plex,
                                              mock_plex_store, mock_error_queue, tmp_path):
         """Multi-digit prefix filtering stops prompting when ≤8 remain."""
-        # 10 items starting with 'A', but narrowing by second letter reduces to ≤8
+        # 10 items starting with 'A' then 'M': all match digit 1 then digit 5
+        # After second digit, still 10 → next letter prompt
+        # After third digit (I=3 for GHI, matching 'Ambi*'), only 5 remain → list shown
         items = (
-            [MediaItem(f"/p/{i}", f"Ambi {i}", "playlist") for i in range(5)] +
-            [MediaItem(f"/p/{i+5}", f"Ambient {i}", "playlist") for i in range(5)]
+            [MediaItem(f"/p/{i}", f"Ambi {i}", "playlist") for i in range(5)] +  # A M B
+            [MediaItem(f"/p/{i+5}", f"Amno {i}", "playlist") for i in range(5)]   # A M N
         )
         menu = _make_browse_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
                                  mock_error_queue, tmp_path, items)
@@ -723,10 +725,13 @@ class TestT9Browsing:
         menu.on_digit(1, now=12.0)
         menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         mock_tts.calls.clear()
-        # Second digit: M → digit 5 (all match 'Am', still >8? Let's say 10 total)
-        # After narrowing to 'Am' + 'b', only 'Ambi' items remain (5 items ≤ 8)
-        menu.on_digit(1, now=13.0)  # 'B' maps to digit 1 (ABC)
+        # Second digit: M → digit 5 (all 10 still match → next letter prompt)
+        menu.on_digit(5, now=13.0)
         menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_tts.calls.clear()
+        # Third digit: B → digit 1 (ABC), matches 'Ambi*' (5 items ≤ 8 → list)
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         texts = tts_calls(mock_tts)
         # Should show list, not ask for next letter
         assert any(SCRIPT_BROWSE_LIST_INTRO in t for t in texts)

@@ -76,6 +76,98 @@ SCRIPT_NO_CONTENT = ("We're sorry. There are no parties available on this exchan
                       "Please replace your handset.")
 SCRIPT_TERMINAL_FALLBACK = ("We're sorry. Your call cannot be completed as dialed. "
                               "Please replace your handset and try again later.")
+SCRIPT_SERVICE_DEGRADATION = ("I beg your pardon — we're experiencing some difficulty "
+                               "on the line. One moment please.")
+SCRIPT_BROWSE_PROMPT_NEXT_LETTER = ("I have quite a few parties on that exchange. "
+                                     "Please dial the next letter of your party's name to "
+                                     "narrow the connection.")
+SCRIPT_BROWSE_LIST_INTRO_TEMPLATE = "I have {n} parties on the line."
+SCRIPT_BROWSE_AUTO_SELECT_TEMPLATE = ("One moment — I have exactly one match. "
+                                       "Connecting you to {name} now.")
+SCRIPT_ARTIST_SUBMENU_TEMPLATE = "To speak to {artist}, dial one."
+SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX = " For a particular album, dial two."
+SCRIPT_ARTIST_SINGLE_ALBUM_TEMPLATE = "To call {album}, dial one."
+SCRIPT_CONNECTING_TEMPLATE = ("Thank you for your patience. I'm connecting your call to "
+                               "{digits} — {name}. Please hold.")
+
+
+# ---------------------------------------------------------------------------
+# T9 utilities
+# ---------------------------------------------------------------------------
+
+# T9 digit → letter group
+_T9_GROUPS = {
+    1: set("ABCabc"),
+    2: set("DEFdef"),
+    3: set("GHIghi"),
+    4: set("JKLjkl"),
+    5: set("MNOmno"),
+    6: set("PQRpqr"),
+    7: set("STUstu"),
+    8: set("VWXYZvwxyz"),
+}
+
+# Digits that map to themselves
+_T9_DIGIT_CHARS = set("0123456789")
+
+_ARTICLES = ("the ", "a ", "an ")
+
+
+def _strip_article(name: str) -> str:
+    """Strip leading articles for T9 indexing (case-insensitive)."""
+    lower = name.lower()
+    for article in _ARTICLES:
+        if lower.startswith(article):
+            return name[len(article):]
+    return name
+
+
+def _t9_digit_for_name(name: str) -> int:
+    """Return the T9 digit (1–8) for the first indexable character of name."""
+    stripped = _strip_article(name)
+    if not stripped:
+        return 8
+    first = stripped[0]
+    if first in _T9_DIGIT_CHARS:
+        return int(first) if first != '0' else 8  # '0' falls under 8
+    for digit, chars in _T9_GROUPS.items():
+        if first in chars:
+            return digit
+    return 8  # special chars → 8
+
+
+def _filter_by_t9_prefix(items: List[MediaItem], prefix: List[int]) -> List[MediaItem]:
+    """Filter items whose T9-stripped name matches the given digit prefix."""
+    if not prefix:
+        return list(items)
+    result = []
+    for item in items:
+        stripped = _strip_article(item.name)
+        if not stripped:
+            continue
+        match = True
+        for i, digit in enumerate(prefix):
+            if i >= len(stripped):
+                match = False
+                break
+            ch = stripped[i]
+            expected = _t9_digit_for_char(ch)
+            if expected != digit:
+                match = False
+                break
+        if match:
+            result.append(item)
+    return result
+
+
+def _t9_digit_for_char(ch: str) -> int:
+    """Return T9 digit for a single character."""
+    if ch in _T9_DIGIT_CHARS:
+        return int(ch) if ch != '0' else 8
+    for digit, chars in _T9_GROUPS.items():
+        if ch in chars:
+            return digit
+    return 8
 
 
 class MenuState(Enum):
@@ -148,6 +240,12 @@ class Menu:
 
         # Playing menu: whether we just stopped music
         self._just_stopped_music: bool = False
+
+        # Browse state
+        self._browse_prefix: List[int] = []          # accumulated T9 digits
+        self._browse_items: List[MediaItem] = []     # current filtered items
+        self._browse_listed: List[MediaItem] = []    # currently listed (≤8) options
+        self._current_artist: Optional[MediaItem] = None  # selected artist
 
     # ------------------------------------------------------------------
     # Public API
@@ -379,6 +477,10 @@ class Menu:
             self._handle_browse_digit(digit, now, "artist")
         elif self._state == MenuState.BROWSE_GENRES:
             self._handle_browse_digit(digit, now, "genre")
+        elif self._state == MenuState.BROWSE_ALBUMS:
+            self._handle_browse_digit(digit, now, "album")
+        elif self._state == MenuState.ARTIST_SUBMENU:
+            self._handle_artist_submenu_digit(digit, now)
         else:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
 
@@ -422,17 +524,17 @@ class Menu:
         if name == 'shuffle':
             self._plex_client.shuffle_all()
         elif next_state == MenuState.BROWSE_PLAYLISTS:
-            self._nav_stack.append(MenuState.IDLE_MENU)
-            self._state = MenuState.BROWSE_PLAYLISTS
-            self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_PLAYLIST)
+            items = self._plex_store.get_playlists()
+            self._start_browse(items, MenuState.BROWSE_PLAYLISTS,
+                               SCRIPT_BROWSE_PROMPT_PLAYLIST, now)
         elif next_state == MenuState.BROWSE_ARTISTS:
-            self._nav_stack.append(MenuState.IDLE_MENU)
-            self._state = MenuState.BROWSE_ARTISTS
-            self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ARTIST)
+            items = self._plex_store.get_artists()
+            self._start_browse(items, MenuState.BROWSE_ARTISTS,
+                               SCRIPT_BROWSE_PROMPT_ARTIST, now)
         elif next_state == MenuState.BROWSE_GENRES:
-            self._nav_stack.append(MenuState.IDLE_MENU)
-            self._state = MenuState.BROWSE_GENRES
-            self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_GENRE)
+            items = self._plex_store.get_genres()
+            self._start_browse(items, MenuState.BROWSE_GENRES,
+                               SCRIPT_BROWSE_PROMPT_GENRE, now)
 
     def _handle_playing_menu_digit(self, digit: int, now: float) -> None:
         """Process digit in PLAYING_MENU state."""
@@ -461,8 +563,78 @@ class Menu:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
 
     def _handle_browse_digit(self, digit: int, now: float, media_type: str) -> None:
-        """T9 browse digit (§9.4 — not yet implemented in this session)."""
-        self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+        """T9 browse digit — narrows or selects from the browse list."""
+        if self._browse_listed:
+            # We're in "listed" mode — digit selects an item
+            idx = digit - 1
+            if idx < 0 or idx >= len(self._browse_listed):
+                self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+                self._re_deliver_current_state(now)
+                return
+            selected = self._browse_listed[idx]
+            self._select_item(selected, media_type, now)
+            return
+
+        # T9 narrowing mode
+        self._browse_prefix.append(digit)
+        filtered = _filter_by_t9_prefix(self._browse_items, self._browse_prefix)
+
+        if len(filtered) == 0:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+            # Return to previous prefix
+            self._browse_prefix.pop()
+            return
+
+        if len(filtered) == 1:
+            # Auto-select
+            item = filtered[0]
+            self._tts.speak_and_play(
+                SCRIPT_BROWSE_AUTO_SELECT_TEMPLATE.format(name=item.name)
+            )
+            self._select_item(item, media_type, now)
+            return
+
+        if len(filtered) <= MAX_MENU_OPTIONS:
+            # List them
+            self._browse_listed = filtered
+            parts = [SCRIPT_BROWSE_LIST_INTRO_TEMPLATE.format(n=len(filtered))]
+            for i, item in enumerate(filtered, start=1):
+                parts.append(f"For {item.name}, dial {i}.")
+            self._tts.speak_and_play(" ".join(parts))
+            return
+
+        # Too many — ask for next letter
+        self._browse_items = filtered  # narrow the pool
+        self._browse_listed = []
+        self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_NEXT_LETTER)
+
+    def _start_browse(self, items: List[MediaItem], state: MenuState,
+                      prompt: str, now: float) -> None:
+        """Enter a browse state with the given items."""
+        self._nav_stack.append(self._state)
+        self._state = state
+        self._browse_items = list(items)
+        self._browse_prefix = []
+        self._browse_listed = []
+        self._tts.speak_and_play(prompt)
+
+    def _select_item(self, item: MediaItem, media_type: str, now: float) -> None:
+        """Handle final selection of a browse item."""
+        if media_type == "artist":
+            self._current_artist = item
+            self._state = MenuState.ARTIST_SUBMENU
+            albums = self._plex_store.get_albums_for_artist(item.plex_key)
+            if albums:
+                text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=item.name)
+                text += SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX
+            else:
+                text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=item.name)
+            self._tts.speak_and_play(text)
+            self._browse_listed = []
+        else:
+            # Playlist, genre, album → play directly
+            self._plex_client.play(item.plex_key)
+            self._state = MenuState.PLAYING_MENU
 
     # ------------------------------------------------------------------
     # Direct dial
@@ -530,6 +702,25 @@ class Menu:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ARTIST)
         elif self._state == MenuState.BROWSE_GENRES:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_GENRE)
+        elif self._state == MenuState.BROWSE_ALBUMS:
+            self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ALBUM)
+
+    def _handle_artist_submenu_digit(self, digit: int, now: float) -> None:
+        """Handle digit in ARTIST_SUBMENU state."""
+        if self._current_artist is None:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+            return
+        albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
+        if digit == 1:
+            # Play / shuffle artist
+            self._plex_client.play(self._current_artist.plex_key)
+            self._state = MenuState.PLAYING_MENU
+        elif digit == 2 and albums:
+            # Browse albums for this artist
+            self._start_browse(albums, MenuState.BROWSE_ALBUMS,
+                               SCRIPT_BROWSE_PROMPT_ALBUM, now)
+        else:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
 
     def _go_off_hook(self) -> None:
         """Enter the off-hook warning state."""
