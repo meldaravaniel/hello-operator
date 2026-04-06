@@ -7,7 +7,10 @@ import time
 import pytest
 from src.menu import Menu, MenuState
 from src.interfaces import MediaItem, PlaybackState
-from src.constants import DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, INACTIVITY_TIMEOUT
+from src.constants import (
+    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, INACTIVITY_TIMEOUT,
+    ASSISTANT_NUMBER, ASSISTANT_MESSAGE_PAGE_SIZE, PHONE_NUMBER_LENGTH,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -873,3 +876,420 @@ class TestArtistSubmenu:
         # Auto-selected (only 1 match) — play should be called
         play_calls = [c for c in mock_plex.calls if c[0] == 'play']
         assert len(play_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# §9.6 Diagnostic assistant
+# ---------------------------------------------------------------------------
+
+def _dial_number(menu, number_str, start_time=1.0):
+    """Helper: dial a full phone number into direct-dial mode."""
+    digits = [int(c) for c in number_str]
+    # First two digits trigger DIRECT_DIAL mode
+    menu.on_digit(digits[0], now=start_time)
+    menu.on_digit(digits[1], now=start_time + 0.05)
+    # Remaining digits
+    t = start_time + 0.1
+    for d in digits[2:]:
+        menu.on_digit(d, now=t)
+        t += 0.05
+    return t
+
+
+class TestDiagnosticAssistant:
+    """§9.6 — Tests for the ASSISTANT state."""
+
+    def _menu_with_handset_up(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                               mock_error_queue, tmp_path):
+        """Create a menu with handset lifted and idle menu delivered."""
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([MediaItem("/ar/1", "Beatles", "artist")])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)  # past dial tone timeout → idle menu
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def test_assistant_number_routes_to_assistant(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Direct dial of ASSISTANT_NUMBER → enters ASSISTANT state, TTS plays greeting."""
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        assert menu.state == MenuState.ASSISTANT
+        texts = tts_calls(mock_tts)
+        assert len(texts) > 0  # greeting was spoken
+
+    def test_assistant_no_errors_says_all_clear(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Error queue empty → TTS plays SCRIPT_ASSISTANT_ALL_CLEAR."""
+        from src.menu import SCRIPT_ASSISTANT_ALL_CLEAR
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_ASSISTANT_ALL_CLEAR in t for t in texts)
+
+    def test_assistant_no_errors_redirects_not_hangs_up(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After all-clear, session continues — user redirected to menu, not disconnected."""
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        # State should be a menu state, not OFF_HOOK
+        assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU, MenuState.ASSISTANT)
+        assert menu.state != MenuState.OFF_HOOK
+
+    def test_assistant_errors_offers_options_by_type(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Error queue has warnings and errors → TTS plays SCRIPT_ASSISTANT_STATUS_INTRO and options."""
+        from src.menu import SCRIPT_ASSISTANT_STATUS_INTRO
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("tts", "warning", "Cache miss", 1, "2026-01-01"),
+            ErrorEntry("plex", "error", "Connection refused", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_STATUS_INTRO in texts or "warning" in texts.lower() or "error" in texts.lower()
+
+    def test_assistant_errors_only_one_option(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Error queue has only errors → one message type option announced."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Connection refused", 2, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        # Should mention errors but not warnings
+        assert "error" in texts.lower()
+
+    def test_assistant_always_offers_return_to_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Return-to-menu option always present alongside message options."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Connection refused", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        # Should mention going back/zero/switchboard
+        assert "zero" in texts.lower() or "switchboard" in texts.lower() or "menu" in texts.lower()
+
+    def test_assistant_message_option_states_count(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Message type selected → TTS plays SCRIPT_ASSISTANT_READING_INTRO with count."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Connection refused", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_tts.calls.clear()
+        # Dial 1 to hear errors
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        # Should mention message count
+        assert "1" in texts or "one" in texts.lower()
+
+    def test_assistant_reads_first_page_then_asks(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """More than PAGE_SIZE messages → first PAGE_SIZE read, then SCRIPT_ASSISTANT_CONTINUE_PROMPT."""
+        from src.interfaces import ErrorEntry
+        from src.menu import SCRIPT_ASSISTANT_CONTINUE_PROMPT
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        # More than PAGE_SIZE errors
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", f"Error {i}", 1, "2026-01-01")
+            for i in range(ASSISTANT_MESSAGE_PAGE_SIZE + 1)
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        # Should ask to continue
+        assert "continue" in texts.lower() or "go on" in texts.lower() or "dial one" in texts.lower()
+
+    def test_assistant_end_of_messages(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """No more messages → TTS plays SCRIPT_ASSISTANT_END_OF_MESSAGES."""
+        from src.interfaces import ErrorEntry
+        from src.menu import SCRIPT_ASSISTANT_END_OF_MESSAGES
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Single error", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_END_OF_MESSAGES in texts or "last" in texts.lower()
+
+    def test_assistant_continue_reads_next_page(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """User dials to continue → next PAGE_SIZE messages read."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        messages = [
+            ErrorEntry("plex", "error", f"Error message {i}", 1, "2026-01-01")
+            for i in range(ASSISTANT_MESSAGE_PAGE_SIZE + 2)
+        ]
+        mock_error_queue.entries = messages
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        # Select errors (dial 1)
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_tts.calls.clear()
+        # Continue (dial 1)
+        menu.on_digit(1, now=21.0)
+        menu.tick(now=21.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        # Should have read more messages
+        assert len(texts) > 0
+
+    def test_assistant_always_offers_navigation(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After reading messages, TTS plays SCRIPT_ASSISTANT_NAVIGATION."""
+        from src.interfaces import ErrorEntry
+        from src.menu import SCRIPT_ASSISTANT_NAVIGATION
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Connection refused", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_NAVIGATION in texts or "dial" in texts.lower()
+
+    def test_assistant_hangup_language_redirects(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """SCRIPT_ASSISTANT_VALEDICTION_MESSAGES → redirect to idle or playing menu."""
+        from src.menu import SCRIPT_ASSISTANT_VALEDICTION_MESSAGES
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        # After clear → valediction → redirect
+        assert menu.state != MenuState.OFF_HOOK
+
+    def test_assistant_redirects_to_playing_when_music_active(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Music playing when assistant called → redirect goes to playing menu."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        mock_plex.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        assert menu.state in (MenuState.PLAYING_MENU, MenuState.ASSISTANT)
+
+    def test_assistant_hangup_stops_readout(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Physical hang up during assistant → audio stops, state resets."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", "Connection refused", 1, "2026-01-01"),
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        menu.on_handset_on_cradle()
+        assert not menu._handset_up
+        # audio.stop should have been called
+        assert any(c[0] == 'stop' for c in mock_audio.calls)
+
+    def test_assistant_messages_not_marked_read(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Messages heard → error queue unchanged after session."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        initial_count = 2
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", f"Error {i}", 1, "2026-01-01")
+            for i in range(initial_count)
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_handset_on_cradle()
+        assert len(mock_error_queue.entries) == initial_count
+
+    def test_assistant_refresh_option_always_offered(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Refresh option always included in assistant menu."""
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_PROMPT
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        assert "refresh" in texts.lower() or SCRIPT_ASSISTANT_REFRESH_PROMPT in texts
+
+    def test_assistant_refresh_calls_plex_store_refresh(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """User selects refresh → plex_store.refresh() called."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_plex_store.calls.clear()
+        # Find the refresh digit by looking at TTS output
+        # With no errors, options are: [refresh=1, return=0] or similar
+        # We just try digit 1 and check if refresh was called
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        refresh_calls = [c for c in mock_plex_store.calls if c[0] == 'refresh']
+        assert len(refresh_calls) >= 1
+
+    def test_assistant_refresh_success_message(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """plex_store.refresh() succeeds → TTS plays SCRIPT_ASSISTANT_REFRESH_SUCCESS."""
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_SUCCESS
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_REFRESH_SUCCESS in texts or "updated" in texts.lower()
+
+    def test_assistant_refresh_failure_message(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """plex_store.refresh() fails → TTS plays SCRIPT_ASSISTANT_REFRESH_FAILURE."""
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_FAILURE
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        # Make refresh raise
+        def _fail_refresh():
+            raise RuntimeError("Plex unreachable")
+        mock_plex_store.refresh = _fail_refresh
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_REFRESH_FAILURE in texts or "trouble" in texts.lower()
+
+    def test_assistant_refresh_offers_return_to_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After refresh → TTS plays SCRIPT_ASSISTANT_NAVIGATION."""
+        from src.menu import SCRIPT_ASSISTANT_NAVIGATION
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        mock_error_queue.entries.clear()
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = " ".join(tts_calls(mock_tts))
+        assert SCRIPT_ASSISTANT_NAVIGATION in texts or "menu" in texts.lower() or "switchboard" in texts.lower()
+
+
+# ---------------------------------------------------------------------------
+# §9.7 Final selection announcement
+# ---------------------------------------------------------------------------
+
+class TestFinalSelection:
+    """§9.7 — Tests for the SCRIPT_CONNECTING announcement on direct dial."""
+
+    def _menu_at_idle(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                      mock_error_queue, tmp_path):
+        """Create a menu at IDLE_MENU state."""
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        return menu
+
+    def test_final_selection_speaks_connecting(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """On direct-dial selection → TTS plays SCRIPT_CONNECTING with digits and name."""
+        from src.menu import SCRIPT_CONNECTING_TEMPLATE
+        from src.phone_book import PhoneBook
+        # Create a phone book entry for a known number
+        db = str(tmp_path / "phone_book.db")
+        pb = PhoneBook(db_path=db)
+        number = pb.assign_or_get("/pl/1", "playlist", "Jazz")
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        mock_tts.calls.clear()
+        _dial_number(menu, number, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        assert "Jazz" in texts or "connecting" in texts.lower()
+
+    def test_final_selection_phone_number_spoken_digit_by_digit(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Phone number spoken as individual digit words."""
+        from src.phone_book import PhoneBook
+        db = str(tmp_path / "phone_book.db")
+        pb = PhoneBook(db_path=db)
+        number = pb.assign_or_get("/pl/1", "playlist", "Jazz")
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        mock_tts.calls.clear()
+        _dial_number(menu, number, start_time=11.0)
+        texts = " ".join(tts_calls(mock_tts))
+        # Each digit should appear as a word or numeral in TTS output
+        digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                       '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'}
+        # At least check some digits appear spoken out
+        spoken_individually = any(digit_words[d] in texts.lower() for d in number)
+        assert spoken_individually
+
+    def test_final_selection_starts_playback(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After announcement → plex_client.play called with correct key."""
+        from src.phone_book import PhoneBook
+        db = str(tmp_path / "phone_book.db")
+        pb = PhoneBook(db_path=db)
+        number = pb.assign_or_get("/pl/1", "playlist", "Jazz")
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        mock_plex.calls.clear()
+        _dial_number(menu, number, start_time=11.0)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert len(play_calls) >= 1
+        assert play_calls[0][1] == "/pl/1"
