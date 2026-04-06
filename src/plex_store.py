@@ -45,6 +45,71 @@ def _albums_key(artist_key: str) -> str:
     return f"albums:{artist_key}"
 
 
+class MockPlexStore:
+    """In-memory mock for unit tests. Configurable and records calls."""
+
+    def __init__(self) -> None:
+        self._playlists: List[MediaItem] = []
+        self._artists: List[MediaItem] = []
+        self._genres: List[MediaItem] = []
+        self._albums: Dict[str, List[MediaItem]] = {}
+        self.calls: list = []
+
+    # -- Configuration (test-only) ------------------------------------------
+    def set_playlists(self, items: List[MediaItem]) -> None:
+        self._playlists = list(items)
+
+    def set_artists(self, items: List[MediaItem]) -> None:
+        self._artists = list(items)
+
+    def set_genres(self, items: List[MediaItem]) -> None:
+        self._genres = list(items)
+
+    def set_albums_for_artist(self, artist_key: str, albums: List[MediaItem]) -> None:
+        self._albums[artist_key] = list(albums)
+
+    # -- PlexStore interface -------------------------------------------------
+    @property
+    def playlists_has_content(self) -> bool:
+        return bool(self._playlists)
+
+    @property
+    def artists_has_content(self) -> bool:
+        return bool(self._artists)
+
+    @property
+    def genres_has_content(self) -> bool:
+        return bool(self._genres)
+
+    def get_playlists(self) -> List[MediaItem]:
+        self.calls.append(('get_playlists',))
+        return list(self._playlists)
+
+    def get_artists(self) -> List[MediaItem]:
+        self.calls.append(('get_artists',))
+        return list(self._artists)
+
+    def get_genres(self) -> List[MediaItem]:
+        self.calls.append(('get_genres',))
+        return list(self._genres)
+
+    def get_albums_for_artist(self, artist_key: str) -> List[MediaItem]:
+        self.calls.append(('get_albums_for_artist', artist_key))
+        return list(self._albums.get(artist_key, []))
+
+    def remove_item(self, plex_key: str) -> None:
+        self.calls.append(('remove_item', plex_key))
+        self._playlists = [i for i in self._playlists if i.plex_key != plex_key]
+        self._artists = [i for i in self._artists if i.plex_key != plex_key]
+        self._genres = [i for i in self._genres if i.plex_key != plex_key]
+        for k in list(self._albums):
+            self._albums[k] = [i for i in self._albums[k] if i.plex_key != plex_key]
+
+    def refresh(self) -> Dict[str, str]:
+        self.calls.append(('refresh',))
+        return {'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'}
+
+
 class PlexStore:
     """Persistent local cache of Plex browse data."""
 

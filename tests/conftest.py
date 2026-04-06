@@ -27,3 +27,44 @@ def tmp_error_queue(tmp_path):
 def tmp_phone_book(tmp_path):
     """Temporary SQLite DB file for phone book tests."""
     return str(tmp_path / "phone_book.db")
+
+
+@pytest.fixture
+def tmp_plex_store(tmp_path):
+    """Temporary SQLite DB file for plex_store tests."""
+    return str(tmp_path / "plex_cache.db")
+
+
+@pytest.fixture
+def mock_audio():
+    """MockAudio instance for menu/session tests."""
+    from src.audio import MockAudio
+    return MockAudio()
+
+
+@pytest.fixture
+def mock_tts():
+    """MockTTS instance for menu/session tests."""
+    from src.tts import MockTTS
+    return MockTTS()
+
+
+@pytest.fixture
+def mock_plex():
+    """MockPlexClient instance for menu/session tests."""
+    from src.plex_client import MockPlexClient
+    return MockPlexClient()
+
+
+@pytest.fixture
+def mock_plex_store():
+    """MockPlexStore instance for menu/session tests."""
+    from src.plex_store import MockPlexStore
+    return MockPlexStore()
+
+
+@pytest.fixture
+def mock_error_queue():
+    """MockErrorQueue instance for menu/session tests."""
+    from src.error_queue import MockErrorQueue
+    return MockErrorQueue()
