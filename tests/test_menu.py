@@ -29,6 +29,10 @@ def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue
     )
 
 
+# Baseline fake time for handset lift (all tick() calls use times > this)
+_T0 = 0.0
+
+
 def tts_spoke(mock_tts, text_fragment):
     """Return True if mock_tts.speak_and_play was called with text containing fragment."""
     return any(
@@ -52,8 +56,10 @@ class TestReservedDigitsAndDisambiguation:
     def test_digit_0_single_goes_to_top_level(self, mock_audio, mock_tts, mock_plex,
                                                mock_plex_store, mock_error_queue, tmp_path):
         """Digit 0 alone → state resets to top-level menu."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.on_digit(0, now=0.0)
         # After disambiguation timeout: should be at top level
         menu.tick(now=0.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
@@ -66,7 +72,7 @@ class TestReservedDigitsAndDisambiguation:
             MediaItem("/p/1", "Jazz Mix", "playlist")
         ])
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         # Enter idle menu
         menu.tick(now=10.0)  # past dial tone timeout
         # Navigate into playlist browse
@@ -80,8 +86,10 @@ class TestReservedDigitsAndDisambiguation:
     def test_digit_9_at_top_level(self, mock_audio, mock_tts, mock_plex,
                                    mock_plex_store, mock_error_queue, tmp_path):
         """Digit 9 at top level → no crash, stays at top level."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         menu.on_digit(9, now=10.1)
         menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
@@ -92,7 +100,7 @@ class TestReservedDigitsAndDisambiguation:
         """First digit received, no second digit within timeout → treated as navigation."""
         mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         menu.on_digit(1, now=10.1)
         # Tick past disambiguation timeout
@@ -104,7 +112,7 @@ class TestReservedDigitsAndDisambiguation:
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """Second digit within timeout → DIRECT_DIAL mode entered."""
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         t = 10.0
         menu.on_digit(1, now=t)
         # Second digit within timeout
@@ -116,7 +124,7 @@ class TestReservedDigitsAndDisambiguation:
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """In DIRECT_DIAL mode, 0 and 9 are accumulated as phone number digits."""
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         t = 10.0
         # Enter direct dial
         menu.on_digit(5, now=t)
@@ -133,7 +141,7 @@ class TestReservedDigitsAndDisambiguation:
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """In DIRECT_DIAL mode, audio.play_dtmf called for each digit."""
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         t = 10.0
         # Enter direct dial with first two digits
         menu.on_digit(5, now=t)
@@ -184,7 +192,7 @@ class TestIdleMenu:
 
     def _advance_to_idle_menu(self, menu, now=10.0):
         """Lift handset and advance past dial tone timeout."""
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=now)
 
     def test_idle_menu_announces_options(self, idle_menu, mock_tts, mock_plex):
@@ -261,7 +269,7 @@ class TestIdleMenu:
         mock_plex_store.set_genres([])
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         texts = tts_calls(mock_tts)
         full_text = " ".join(texts).lower()
@@ -311,7 +319,7 @@ class TestIdleMenu:
             def refresh(self): raise RuntimeError("Plex down")
 
         menu = make_menu(mock_audio, mock_tts, mock_plex, FailingStore(), mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_PLEX_FAILURE in t for t in texts), f"plex failure not found: {texts}"
@@ -325,7 +333,7 @@ class TestIdleMenu:
         mock_plex_store.set_genres([])
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NO_CONTENT in t for t in texts), f"no_content not found: {texts}"
@@ -340,7 +348,7 @@ class TestIdleMenu:
         mock_plex_store.set_genres([])
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         mock_audio.calls.clear()
         menu.on_handset_on_cradle()
@@ -349,15 +357,17 @@ class TestIdleMenu:
 
     def test_inactivity_timeout_triggers_off_hook_tone(self, idle_menu, mock_audio):
         """No digit for INACTIVITY_TIMEOUT → off-hook warning tone plays."""
-        idle_menu.on_handset_lifted()
-        # Advance past dial tone AND inactivity timeout
-        idle_menu.tick(now=INACTIVITY_TIMEOUT + 20.0)
+        idle_menu.on_handset_lifted(now=_T0)
+        # Advance past dial tone to deliver menu (t=10)
+        idle_menu.tick(now=10.0)
+        # Now advance past inactivity timeout from menu delivery (t = 10 + INACTIVITY_TIMEOUT + margin)
+        idle_menu.tick(now=10.0 + INACTIVITY_TIMEOUT + 5.0)
         off_hook = [c for c in mock_audio.calls if c[0] == 'play_off_hook_tone']
         assert len(off_hook) >= 1
 
     def test_inactivity_timeout_reset_on_digit(self, idle_menu, mock_audio):
         """Digit before inactivity timeout → timer resets, off-hook not triggered."""
-        idle_menu.on_handset_lifted()
+        idle_menu.on_handset_lifted(now=_T0)
         idle_menu.tick(now=10.0)  # advance to idle menu state
         # Digit resets timer
         idle_menu.on_digit(9, now=10.1)
@@ -389,7 +399,7 @@ def playing_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_qu
 class TestPlayingMenu:
 
     def _advance_to_playing_menu(self, menu, now=10.0):
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=now)
 
     def test_playing_menu_announces_options(self, playing_menu, mock_tts, playing_item):
@@ -470,7 +480,7 @@ class TestPlayingMenu:
         # Initially playing, but at speak time it will be idle
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted()
+        menu.on_handset_lifted(now=_T0)
         menu.tick(now=10.0)
         texts = tts_calls(mock_tts)
         # Should get idle prompt, not playing prompt
