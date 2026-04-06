@@ -87,17 +87,17 @@ class MockErrorQueue(ErrorQueueInterface):
 
     def __init__(self):
         self.logged_calls: list = []
-        self._entries: List[ErrorEntry] = []
+        self.entries: List[ErrorEntry] = []  # public for test inspection
 
     def log(self, source: str, severity: str, message: str) -> None:
         self.logged_calls.append((source, severity, message))
         # Dedup by (source, message)
-        for e in self._entries:
+        for e in self.entries:
             if e.source == source and e.message == message:
                 e.count += 1
                 e.last_happened = datetime.now(timezone.utc).isoformat()
                 return
-        self._entries.append(ErrorEntry(
+        self.entries.append(ErrorEntry(
             source=source,
             severity=severity,
             message=message,
@@ -106,7 +106,7 @@ class MockErrorQueue(ErrorQueueInterface):
         ))
 
     def get_all(self) -> List[ErrorEntry]:
-        return list(reversed(self._entries))
+        return list(reversed(self.entries))
 
     def get_by_severity(self, severity: str) -> List[ErrorEntry]:
-        return [e for e in reversed(self._entries) if e.severity == severity]
+        return [e for e in reversed(self.entries) if e.severity == severity]
