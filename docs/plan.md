@@ -6,6 +6,8 @@ Work strictly in module order. Each module is fully testable with mocks before
 the next begins — never skip ahead. Use one Claude Code session per module
 (except `menu`, which warrants splitting by subsection).
 
+### Session Development Process
+
 **Test-first within every session:**
 1. Write all tests for the module from TEST_SPEC.md
 2. Run them — confirm they all fail

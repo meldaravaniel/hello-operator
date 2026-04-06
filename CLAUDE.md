@@ -8,10 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-This project has no code yet — only design and test specifications. Once implemented, expected commands will be:
-
 ```bash
-# Run unit tests (no hardware/network required)
+# Run all unit tests
 python -m pytest
 
 # Run a single test
@@ -20,9 +18,49 @@ python -m pytest tests/test_menu.py::test_idle_menu_announces_options
 # Run integration tests (requires live Plex server)
 python -m pytest -m integration
 
+# Run all tests except integration
+python -m pytest -m "not integration"
+
 # Run the application
 python main.py
 ```
+
+## Project Structure
+
+```
+src/
+  interfaces.py       # All ABCs, MediaItem, PlaybackState, ErrorEntry
+  error_queue.py      # SqliteErrorQueue
+  phone_book.py       # PhoneBook
+  gpio_handler.py     # GPIOHandler
+  audio.py            # SounddeviceAudio
+  tts.py              # PiperTTS
+  plex_client.py      # PlexClient
+  plex_store.py       # PlexStore
+  menu.py             # Menu state machine
+  session.py          # Session lifecycle
+  constants.py        # All configuration constants
+  main.py             # Wires everything together
+
+tests/
+  conftest.py         # Shared pytest fixtures (all mocks)
+  test_error_queue.py
+  test_phone_book.py
+  test_gpio_handler.py
+  test_audio.py
+  test_tts.py
+  test_plex_client.py
+  test_plex_store.py
+  test_menu.py
+  test_session.py
+```
+
+## Conventions
+
+- All constants live in constants.py; no magic numbers elsewhere
+- All TBD constants are defined with a placeholder value and a TODO comment
+- Mocks are defined in tests/conftest.py as pytest fixtures
+- Integration tests are marked with @pytest.mark.integration
 
 ## Architecture
 
@@ -75,6 +113,17 @@ main.py
 | `MAX_MENU_OPTIONS` | 8 |
 | `PHONE_NUMBER_LENGTH` | 7 |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 |
+
+## Development Process
+
+Follow the Session Development Process for every coding session:
+
+1. Write all tests for the module from TEST_SPEC.md
+2. Run them — confirm they all fail
+3. Implement until all tests pass
+4. Check for anything the spec implies but the tests don't cover
+
+Never skip ahead to the next module until the current one is fully tested and passing.
 
 ## Implementation Order
 
