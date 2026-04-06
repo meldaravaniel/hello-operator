@@ -98,6 +98,11 @@ main.py
 - **T9 browsing** — case-insensitive; strips leading "The ", "A ", "An " for indexing/sorting but speaks full names; digit `8` catches V/W/X/Y/Z and all special characters
 - **Phone numbers assigned lazily** — on first encounter of a `plex_key`, never reassigned
 - **`ErrorQueueInterface`** — deduplicated by `(source, message)`; persisted to SQLite; severity = `"warning"` | `"error"`
+- **ASSISTANT state owns its own digit routing** — `0` and `9` are NOT reserved navigation digits inside the ASSISTANT state; `_dispatch_navigation_digit` delegates to `_handle_assistant_digit` before applying global `0`/`9` rules
+- **ASSISTANT always stays in ASSISTANT until digit input** — even all-clear path stays in `ASSISTANT` state; redirect to idle/playing only happens when user dials `0`, `9`, or the redirect fires automatically after all-clear
+- **Refresh always offered in ASSISTANT** — `plex_store.refresh()` option appears in every assistant menu, even when error queue is empty
+- **Final selection announces digits individually** — `SCRIPT_CONNECTING_TEMPLATE` receives digits spoken as words (e.g. "five five five one two three four"), assembled from `_DIGIT_WORDS` map
+- **PhoneBook returns dicts** — `lookup_by_phone_number` and `lookup_by_plex_key` return `Optional[dict]` with keys `plex_key`, `media_type`, `name`, `phone_number`; use `assign_or_get(plex_key, media_type, name)` to create entries
 
 ### Data stores
 - **`phone_book`** (SQLite): maps `plex_key → 7-digit phone_number`; numbers never reassigned; `ASSISTANT_NUMBER` excluded from assignment
