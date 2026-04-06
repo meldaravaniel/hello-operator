@@ -1,8 +1,8 @@
 """Tests for src/gpio_handler.py — GPIOHandler hardware abstraction."""
 
-import time
 import pytest
 from src.gpio_handler import GPIOHandler, GpioEvent
+from src.constants import HOOK_DEBOUNCE, PULSE_DEBOUNCE, INTER_DIGIT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -17,14 +17,11 @@ def make_handler(hook_pin_reader=None, pulse_pin_reader=None):
     )
 
 
-def drain_events(handler, max_events=20):
-    """Poll the handler until no more events are produced (up to max_events)."""
-    events = []
-    for _ in range(max_events):
-        e = handler.poll()
-        if e is not None:
-            events.append(e)
-    return events
+def poll_at(handler, hook_val, pulse_val, t):
+    """Single poll at fake time t, overriding pin readers inline."""
+    handler._hook_reader = lambda: hook_val
+    handler._pulse_reader = lambda: pulse_val
+    return handler.poll(now=t)
 
 
 # ---------------------------------------------------------------------------
@@ -34,45 +31,57 @@ def drain_events(handler, max_events=20):
 class TestHookSwitch:
 
     def test_hook_lifted(self):
-        """GPIO LOW (0) → emits HANDSET_LIFTED."""
-        handler = make_handler(hook_pin_reader=lambda: 0)
-        event = handler.poll()
+        """GPIO LOW (0) stable for debounce window → emits HANDSET_LIFTED."""
+        handler = make_handler()
+        t = 0.0
+        # First reading: LOW appears (candidate starts)
+        poll_at(handler, hook_val=0, pulse_val=1, t=t)
+        # After debounce window: still LOW → commit → HANDSET_LIFTED
+        event = poll_at(handler, hook_val=0, pulse_val=1, t=t + HOOK_DEBOUNCE)
         assert event == GpioEvent.HANDSET_LIFTED
 
     def test_hook_on_cradle(self):
-        """GPIO HIGH (1) after being lifted → emits HANDSET_ON_CRADLE."""
-        readings = iter([0, 0, 1])
-        handler = make_handler(hook_pin_reader=lambda: next(readings))
-        # First poll: detects lift
-        handler.poll()
-        # consume extra HIGH=0 poll
-        handler.poll()
-        # Now hook goes back HIGH → HANDSET_ON_CRADLE
-        event = handler.poll()
+        """GPIO HIGH stable after being lifted → emits HANDSET_ON_CRADLE."""
+        handler = make_handler()
+        t = 0.0
+        # Lift handset
+        poll_at(handler, hook_val=0, pulse_val=1, t=t)
+        poll_at(handler, hook_val=0, pulse_val=1, t=t + HOOK_DEBOUNCE)
+        # Replace handset
+        t2 = t + HOOK_DEBOUNCE + 0.1
+        poll_at(handler, hook_val=1, pulse_val=1, t=t2)
+        event = poll_at(handler, hook_val=1, pulse_val=1, t=t2 + HOOK_DEBOUNCE)
         assert event == GpioEvent.HANDSET_ON_CRADLE
 
     def test_hook_debounce(self):
         """Rapid HIGH/LOW transitions within debounce window → only one event."""
-        # We provide a sequence that bounces before settling LOW
-        bounce_readings = [1, 0, 1, 0, 0, 0]  # starts HIGH, bounces, settles LOW
-        idx = [0]
+        handler = make_handler()
+        t = 0.0
+        dt = HOOK_DEBOUNCE * 0.1  # much shorter than debounce window
 
-        def reader():
-            v = bounce_readings[min(idx[0], len(bounce_readings) - 1)]
-            idx[0] += 1
-            return v
+        # Sequence: HIGH resting, bounces LOW/HIGH/LOW quickly, then settles LOW
+        results = []
+        # Bounce 1: LOW
+        results.append(poll_at(handler, hook_val=0, pulse_val=1, t=t))
+        t += dt
+        # Bounce 2: HIGH (within window — resets candidate)
+        results.append(poll_at(handler, hook_val=1, pulse_val=1, t=t))
+        t += dt
+        # Bounce 3: LOW (within window again)
+        results.append(poll_at(handler, hook_val=0, pulse_val=1, t=t))
+        t += dt
+        # Settle LOW for full debounce window
+        results.append(poll_at(handler, hook_val=0, pulse_val=1, t=t + HOOK_DEBOUNCE))
 
-        handler = make_handler(hook_pin_reader=reader)
-        events = drain_events(handler, max_events=len(bounce_readings) + 2)
-        lifted_events = [e for e in events if e == GpioEvent.HANDSET_LIFTED]
+        lifted_events = [e for e in results if e == GpioEvent.HANDSET_LIFTED]
         assert len(lifted_events) == 1
 
     def test_hook_no_event_when_state_unchanged(self):
         """Repeated reads of same HIGH state → no duplicate events."""
         handler = make_handler(hook_pin_reader=lambda: 1)
-        events = drain_events(handler, max_events=10)
-        # No state change → no events
-        assert events == []
+        # Initial state is HIGH (on cradle); poll many times with HIGH
+        events = [handler.poll(now=float(i) * 0.1) for i in range(10)]
+        assert all(e is None for e in events)
 
 
 # ---------------------------------------------------------------------------
@@ -81,44 +90,50 @@ class TestHookSwitch:
 
 class TestPulseDecoder:
     """
-    Pulse timing is simulated by controlling what the pin reader returns.
-    GPIOHandler.poll() accepts an optional 'now' parameter so tests can inject
-    a fake clock without sleeping.
+    Pulse timing is simulated by injecting fake timestamps via handler.poll(now=t).
+    Each pulse is LOW for ~20 ms (above PULSE_DEBOUNCE), HIGH for ~60 ms between
+    pulses.  After the last pulse, a gap of INTER_DIGIT_TIMEOUT + margin triggers
+    the DIGIT_DIALED event.
     """
 
-    def _build_pulse_sequence(self, num_pulses, inter_digit_gap=0.4):
-        """
-        Return a list of (pin_value, timestamp) pairs that simulate `num_pulses`
-        pulses followed by a long inter-digit gap.
+    PULSE_LOW_MS = 0.025   # 25 ms LOW per pulse (above PULSE_DEBOUNCE ~5 ms)
+    PULSE_HIGH_MS = 0.060  # 60 ms HIGH between pulses
 
-        Each pulse is LOW for 20 ms, then HIGH for 60 ms (80 ms per pulse cycle).
+    def _build_pulse_sequence(self, num_pulses, start_t=0.0):
+        """
+        Return list of (hook_val, pulse_val, timestamp) for `num_pulses` pulses
+        followed by an inter-digit gap.
         """
         events = []
-        t = 0.0
+        t = start_t
         for _ in range(num_pulses):
-            events.append((0, t))        # LOW: pulse start
-            t += 0.02
-            events.append((1, t))        # HIGH: pulse end
-            t += 0.06
-        # Add idle time beyond inter-digit timeout
-        events.append((1, t + inter_digit_gap))
+            events.append((0, 0, t))               # pulse start (LOW)
+            t += self.PULSE_LOW_MS
+            events.append((0, 1, t))               # pulse end (HIGH)
+            t += self.PULSE_HIGH_MS
+        # After last pulse, add idle beyond inter-digit timeout
+        events.append((0, 1, t + INTER_DIGIT_TIMEOUT + 0.05))
         return events
 
     def _run_sequence(self, seq):
-        """Drive a GPIOHandler through a timed sequence, collecting events."""
-        idx = [0]
-        def pulse_reader():
-            return seq[min(idx[0], len(seq) - 1)][0]
+        """Drive a GPIOHandler through (hook_val, pulse_val, t) triples.
 
-        handler = make_handler(
-            hook_pin_reader=lambda: 0,  # handset lifted
-            pulse_pin_reader=pulse_reader,
-        )
-
+        A two-poll hook-settling prefix is prepended automatically at t=-0.2
+        and t=-0.1 (before any sequence timestamps) so that the hook switch is
+        fully committed to 'lifted' before the first pulse arrives.
+        """
+        handler = make_handler()
         collected = []
-        for i, (pin_val, ts) in enumerate(seq):
-            idx[0] = i
-            event = handler.poll(now=ts)
+        # Settle hook to 'lifted' before pulses begin
+        for pre_t in (-0.2, -0.2 + HOOK_DEBOUNCE):
+            handler._hook_reader = lambda: 0
+            handler._pulse_reader = lambda: 1
+            handler.poll(now=pre_t)
+
+        for hook_val, pulse_val, t in seq:
+            handler._hook_reader = lambda h=hook_val: h
+            handler._pulse_reader = lambda p=pulse_val: p
+            event = handler.poll(now=t)
             if event is not None:
                 collected.append(event)
         return collected
@@ -156,11 +171,9 @@ class TestPulseDecoder:
 
     def test_multiple_digits_sequence(self):
         """Two bursts separated by timeout → two DIGIT_DIALED events in order."""
-        seq1 = self._build_pulse_sequence(3)
-        # Build second burst starting at the time after the first sequence ends
-        t_offset = seq1[-1][1] + 0.1
-        seq2_raw = self._build_pulse_sequence(7)
-        seq2 = [(v, t + t_offset) for v, t in seq2_raw]
+        seq1 = self._build_pulse_sequence(3, start_t=0.0)
+        t_offset = seq1[-1][2] + 0.2  # start well after first digit settles
+        seq2 = self._build_pulse_sequence(7, start_t=t_offset)
         full_seq = seq1 + seq2
 
         events = self._run_sequence(full_seq)
@@ -171,50 +184,45 @@ class TestPulseDecoder:
 
     def test_pulse_debounce(self):
         """Noise pulses shorter than minimum pulse width → ignored."""
-        # Very short LOW spike (1 ms) — below debounce threshold
-        noise_seq = [
-            (1, 0.0),
-            (0, 0.005),   # LOW for only 1 ms — noise
-            (1, 0.006),
-            (1, 0.5),     # settle with long timeout — no digit emitted
-        ]
-        idx = [0]
-        def pulse_reader():
-            return noise_seq[min(idx[0], len(noise_seq) - 1)][0]
+        handler = make_handler()
 
-        handler = make_handler(
-            hook_pin_reader=lambda: 0,
-            pulse_pin_reader=pulse_reader,
-        )
+        # Handset is lifted
+        handler._hook_reader = lambda: 0
+
+        t = 0.0
+        # Very short LOW (less than PULSE_DEBOUNCE — noise)
+        noise_duration = PULSE_DEBOUNCE * 0.4
 
         events = []
-        for i, (_, ts) in enumerate(noise_seq):
-            idx[0] = i
-            e = handler.poll(now=ts)
-            if e is not None:
-                events.append(e)
+
+        # Stable HIGH initially
+        handler._pulse_reader = lambda: 1
+        events.append(handler.poll(now=t))
+
+        # Brief LOW — noise spike
+        t += 0.01
+        handler._pulse_reader = lambda: 0
+        events.append(handler.poll(now=t))
+
+        # Back HIGH quickly (within noise threshold)
+        t += noise_duration
+        handler._pulse_reader = lambda: 1
+        events.append(handler.poll(now=t))
+
+        # Long idle → should NOT emit a digit
+        t += INTER_DIGIT_TIMEOUT + 0.1
+        events.append(handler.poll(now=t))
 
         digit_events = [e for e in events if isinstance(e, tuple) and e[0] == GpioEvent.DIGIT_DIALED]
         assert digit_events == []
 
     def test_dial_ignored_when_hook_on_cradle(self):
-        """Pulses while handset on cradle (hook HIGH) → no events emitted."""
-        seq = self._build_pulse_sequence(5)
-        idx = [0]
-        def pulse_reader():
-            return seq[min(idx[0], len(seq) - 1)][0]
+        """Pulses while handset on cradle (hook HIGH) → no digit events emitted."""
+        # Build a valid pulse sequence (hook_val=0 = lifted), then change to on-cradle
+        seq_lifted = self._build_pulse_sequence(5)
+        # Change all hook_val to 1 (on cradle)
+        seq_cradle = [(1, pulse_val, t) for _, pulse_val, t in seq_lifted]
 
-        handler = make_handler(
-            hook_pin_reader=lambda: 1,  # on cradle
-            pulse_pin_reader=pulse_reader,
-        )
-
-        events = []
-        for i, (_, ts) in enumerate(seq):
-            idx[0] = i
-            e = handler.poll(now=ts)
-            if e is not None:
-                events.append(e)
-
+        events = self._run_sequence(seq_cradle)
         digit_events = [e for e in events if isinstance(e, tuple) and e[0] == GpioEvent.DIGIT_DIALED]
         assert digit_events == []
