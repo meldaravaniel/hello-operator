@@ -90,6 +90,27 @@ SCRIPT_ARTIST_SINGLE_ALBUM_TEMPLATE = "To call {album}, dial one."
 SCRIPT_CONNECTING_TEMPLATE = ("Thank you for your patience. I'm connecting your call to "
                                "{digits} — {name}. Please hold.")
 
+# Diagnostic assistant scripts
+SCRIPT_ASSISTANT_GREETING = "Good day, this is the operator's assistant. Let me pull up your account now."
+SCRIPT_ASSISTANT_ALL_CLEAR = ("Everything is running just beautifully, I'm happy to report. "
+                               "No messages, no trouble on the lines. You're all set, chief. "
+                               "I'll let you get back to it — toodle-oo!")
+SCRIPT_ASSISTANT_STATUS_INTRO = "I do have a few things here for you. Let me see now..."
+SCRIPT_ASSISTANT_END_OF_MESSAGES = "And that's the last of them. Is there anything else I can help you with?"
+SCRIPT_ASSISTANT_NAVIGATION = ("To hear that again, dial one. For the previous menu, dial nine. "
+                                "To go back to the switchboard, dial zero.")
+SCRIPT_ASSISTANT_VALEDICTION_CLEAR = "Right then, I'll put you back through to the switchboard. Have a wonderful day!"
+SCRIPT_ASSISTANT_VALEDICTION_MESSAGES = "I'll put you back through now. Do give a shout if you need anything else!"
+SCRIPT_ASSISTANT_REFRESH_SUCCESS = ("All done! I've gone ahead and updated all my records from the exchange. "
+                                     "Everything's shipshape.")
+SCRIPT_ASSISTANT_REFRESH_FAILURE = ("I'm afraid I had some trouble reaching the exchange just now. "
+                                     "My records are unchanged. You might try again in a moment, dear.")
+SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE = ("That's {page_size}. Shall I go on? "
+                                              "Dial one to continue, or dial zero to go back to the switchboard.")
+SCRIPT_ASSISTANT_REFRESH_PROMPT = "To refresh my records from the exchange, dial {n}."
+# Alias used by tests
+SCRIPT_ASSISTANT_CONTINUE_PROMPT = SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE
+
 
 # ---------------------------------------------------------------------------
 # T9 utilities
@@ -246,6 +267,12 @@ class Menu:
         self._browse_items: List[MediaItem] = []     # current filtered items
         self._browse_listed: List[MediaItem] = []    # currently listed (≤8) options
         self._current_artist: Optional[MediaItem] = None  # selected artist
+
+        # Assistant sub-state
+        self._assistant_mode: str = "menu"  # "menu" | "reading" | "refreshed"
+        self._assistant_messages: List = []          # current message list being read
+        self._assistant_page_offset: int = 0         # how many messages already read
+        self._assistant_digit_map: dict = {}         # digit → action
 
     # ------------------------------------------------------------------
     # Public API
@@ -449,6 +476,11 @@ class Menu:
         """Handle a single confirmed navigation digit."""
         self._last_activity_time = now
 
+        # ASSISTANT state handles its own navigation (0 and 9 are not reserved there)
+        if self._state == MenuState.ASSISTANT:
+            self._handle_assistant_digit(digit, now)
+            return
+
         if digit == 0:
             # Return to top-level menu (always idle, even if music is playing)
             self._nav_stack.clear()
@@ -481,6 +513,8 @@ class Menu:
             self._handle_browse_digit(digit, now, "album")
         elif self._state == MenuState.ARTIST_SUBMENU:
             self._handle_artist_submenu_digit(digit, now)
+        elif self._state == MenuState.ASSISTANT:
+            self._handle_assistant_digit(digit, now)
         else:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
 
@@ -664,6 +698,12 @@ class Menu:
     def _execute_direct_dial(self, now: float) -> None:
         """Look up and play the phone number."""
         number = "".join(str(d) for d in self._dial_digits)
+
+        # Route to diagnostic assistant
+        if number == ASSISTANT_NUMBER:
+            self._enter_assistant(now)
+            return
+
         try:
             entry = self._phone_book.lookup_by_phone_number(number)
         except Exception:
@@ -674,7 +714,13 @@ class Menu:
             self._state = MenuState.IDLE_MENU
             return
 
-        self._plex_client.play(entry.plex_key)
+        # Speak connecting announcement with digits spoken individually
+        digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+        name = entry.get("name", number)
+        self._tts.speak_and_play(
+            SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
+        )
+        self._plex_client.play(entry["plex_key"])
         self._state = MenuState.PLAYING_MENU
 
     # ------------------------------------------------------------------
@@ -721,6 +767,154 @@ class Menu:
                                SCRIPT_BROWSE_PROMPT_ALBUM, now)
         else:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+
+    # ------------------------------------------------------------------
+    # Diagnostic assistant
+    # ------------------------------------------------------------------
+
+    def _enter_assistant(self, now: float) -> None:
+        """Enter ASSISTANT state and deliver initial status."""
+        self._state = MenuState.ASSISTANT
+        self._assistant_mode = "menu"
+        self._assistant_messages = []
+        self._assistant_page_offset = 0
+        self._assistant_digit_map = {}
+        self._last_activity_time = now
+
+        self._tts.speak_and_play(SCRIPT_ASSISTANT_GREETING)
+
+        all_entries = self._error_queue.get_all()
+
+        option_num = 1
+        digit_map = {}
+        parts = []
+
+        if not all_entries:
+            # All clear — speak and stay in ASSISTANT; any digit will redirect
+            self._tts.speak_and_play(SCRIPT_ASSISTANT_ALL_CLEAR)
+            # Still offer refresh and return
+            refresh_digit = option_num
+            parts.append(SCRIPT_ASSISTANT_REFRESH_PROMPT.format(n=refresh_digit))
+            digit_map[refresh_digit] = ('refresh', None)
+            option_num += 1
+            parts.append(f"Or dial zero to go back to the switchboard.")
+            self._tts.speak_and_play(" ".join(parts))
+            self._assistant_digit_map = digit_map
+            self._assistant_mode = "menu"
+            return
+
+        # Build options for messages
+        warnings = self._error_queue.get_by_severity("warning")
+        errors = self._error_queue.get_by_severity("error")
+
+        self._tts.speak_and_play(SCRIPT_ASSISTANT_STATUS_INTRO)
+
+        if warnings:
+            parts.append(f"I have {len(warnings)} warning{'s' if len(warnings) != 1 else ''} in the queue. "
+                         f"For warnings, dial {option_num}.")
+            digit_map[option_num] = ('warnings', warnings)
+            option_num += 1
+        if errors:
+            parts.append(f"I have {len(errors)} error{'s' if len(errors) != 1 else ''} in the queue. "
+                         f"For errors, dial {option_num}.")
+            digit_map[option_num] = ('errors', errors)
+            option_num += 1
+
+        # Refresh option always present
+        refresh_digit = option_num
+        parts.append(SCRIPT_ASSISTANT_REFRESH_PROMPT.format(n=refresh_digit))
+        digit_map[refresh_digit] = ('refresh', None)
+
+        parts.append("Or dial zero to go back to the switchboard.")
+        self._tts.speak_and_play(" ".join(parts))
+        self._assistant_digit_map = digit_map
+        self._assistant_mode = "menu"
+
+    def _handle_assistant_digit(self, digit: int, now: float) -> None:
+        """Handle a digit while in ASSISTANT state."""
+        self._last_activity_time = now
+
+        if self._assistant_mode == "reading":
+            self._assistant_continue_or_navigate(digit, now)
+            return
+
+        if digit == 0 or digit == 9:
+            self._deliver_assistant_redirect(now)
+            return
+
+        action = self._assistant_digit_map.get(digit)
+        if action is None:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+            return
+
+        kind, messages = action
+        if kind == 'refresh':
+            self._do_assistant_refresh(now)
+        elif kind in ('warnings', 'errors'):
+            self._assistant_messages = list(messages)
+            self._assistant_page_offset = 0
+            self._assistant_mode = "reading"
+            self._read_assistant_page(now)
+
+    def _read_assistant_page(self, now: float) -> None:
+        """Read the current page of assistant messages."""
+        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
+        messages = self._assistant_messages
+        offset = self._assistant_page_offset
+        page = messages[offset:offset + ASSISTANT_MESSAGE_PAGE_SIZE]
+        remaining = messages[offset + ASSISTANT_MESSAGE_PAGE_SIZE:]
+
+        total = len(messages)
+        page_size = ASSISTANT_MESSAGE_PAGE_SIZE
+        self._tts.speak_and_play(
+            f"All right, here we go. I have {total} message{'s' if total != 1 else ''} for you. "
+            f"I'll read you the first {min(page_size, total)}."
+        )
+        for entry in page:
+            self._tts.speak_and_play(entry.message)
+
+        if remaining:
+            self._tts.speak_and_play(
+                SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE.format(page_size=page_size)
+            )
+        else:
+            self._tts.speak_and_play(SCRIPT_ASSISTANT_END_OF_MESSAGES)
+
+        self._tts.speak_and_play(SCRIPT_ASSISTANT_NAVIGATION)
+        self._assistant_page_offset += len(page)
+
+    def _assistant_continue_or_navigate(self, digit: int, now: float) -> None:
+        """Handle digit while reading messages."""
+        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
+        if digit == 1:
+            # Continue reading
+            if self._assistant_page_offset < len(self._assistant_messages):
+                self._read_assistant_page(now)
+            else:
+                self._tts.speak_and_play(SCRIPT_ASSISTANT_END_OF_MESSAGES)
+                self._tts.speak_and_play(SCRIPT_ASSISTANT_NAVIGATION)
+        elif digit == 0 or digit == 9:
+            self._tts.speak_and_play(SCRIPT_ASSISTANT_VALEDICTION_MESSAGES)
+            self._deliver_assistant_redirect(now)
+        else:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+
+    def _do_assistant_refresh(self, now: float) -> None:
+        """Perform the assistant refresh action."""
+        try:
+            self._plex_store.refresh()
+            self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_SUCCESS)
+        except Exception:
+            self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_FAILURE)
+        self._tts.speak_and_play(SCRIPT_ASSISTANT_NAVIGATION)
+
+    def _deliver_assistant_redirect(self, now: float) -> None:
+        """Redirect from assistant to appropriate menu."""
+        playback = self._plex_client.now_playing()
+        if playback.item is not None:
+            self._deliver_playing_menu(playback, now)
+        else:
+            self._deliver_idle_menu(now)
 
     def _go_off_hook(self) -> None:
         """Enter the off-hook warning state."""
