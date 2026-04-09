@@ -46,6 +46,7 @@ DIAL_TONE_FREQUENCIES = [350, 440]  # Standard PSTN dial tone (Hz)
 # Menu constants
 MAX_MENU_OPTIONS = 8             # Max items listed before narrowing required
 PHONE_NUMBER_LENGTH = 7          # Digits in an assigned phone number
+PHONE_NUMBER_GENERATE_MAX_ATTEMPTS = 1000  # Max retries before raising RuntimeError in _generate_unique_number
 ASSISTANT_MESSAGE_PAGE_SIZE = 3  # Messages read aloud per page in assistant
 
 # Reserved phone number for the diagnostic assistant
