@@ -4,6 +4,7 @@ Instantiates all concrete implementations, pre-renders fixed TTS scripts,
 wires everything into Session, and starts the event loop.
 """
 
+import os
 import time
 import logging
 
@@ -124,6 +125,9 @@ def build_gpio_handler() -> GPIOHandler:
 def run() -> None:
     """Main entry point — wire all components and start the event loop."""
     log.info("hello-operator starting up")
+
+    # Ensure database directory exists before opening any SQLite files
+    os.makedirs(_DB_DIR, exist_ok=True)
 
     # Data stores
     error_queue = SqliteErrorQueue(db_path=_ERROR_QUEUE_DB)
