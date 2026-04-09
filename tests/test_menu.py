@@ -1293,3 +1293,157 @@ class TestFinalSelection:
         play_calls = [c for c in mock_plex.calls if c[0] == 'play']
         assert len(play_calls) >= 1
         assert play_calls[0][1] == "/pl/1"
+
+
+# ---------------------------------------------------------------------------
+# §9.8 Genre playback (F-06)
+# ---------------------------------------------------------------------------
+
+def _make_genre_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path,
+                     genres):
+    """Build a Menu pre-loaded with genres and advanced to BROWSE_GENRES state."""
+    mock_plex_store.set_playlists([])
+    mock_plex_store.set_artists([])
+    mock_plex_store.set_genres(genres)
+    mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+    menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+    menu.on_handset_lifted(now=0.0)
+    menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+    # Digit 1 = genres (only category available)
+    menu.on_digit(1, now=11.0)
+    menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+    assert menu.state == MenuState.BROWSE_GENRES, f"Expected BROWSE_GENRES, got {menu.state}"
+    return menu
+
+
+class TestGenrePlayback:
+    """F-06: genre browsing uses get_tracks_for_genre + play_tracks instead of play()."""
+
+    def test_selecting_genre_calls_get_tracks_for_genre(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre from browse calls plex_client.get_tracks_for_genre."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        # Only one genre → auto-selected after dialling its first letter (J → digit 4)
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)  # J is in group 4 (JKL)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        get_tracks_calls = [c for c in mock_plex.calls if c[0] == 'get_tracks_for_genre']
+        assert get_tracks_calls, f"get_tracks_for_genre not called; calls: {mock_plex.calls}"
+
+    def test_selecting_genre_calls_play_tracks_with_shuffle(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre calls play_tracks(..., shuffle=True)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_tracks_calls = [c for c in mock_plex.calls if c[0] == 'play_tracks']
+        assert play_tracks_calls, f"play_tracks not called; calls: {mock_plex.calls}"
+        assert play_tracks_calls[0][1] == ["101", "102"], \
+            f"Expected keys ['101', '102'], got {play_tracks_calls[0][1]}"
+        assert play_tracks_calls[0][2] is True, "shuffle should be True"
+
+    def test_selecting_genre_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After genre playback started → state transitions to PLAYING_MENU."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_selecting_genre_does_not_call_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre selection does NOT call plex_client.play() (uses play_tracks instead)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert not play_calls, f"play() should not be called for genre; calls: {mock_plex.calls}"
+
+    def test_empty_genre_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → SCRIPT_NOT_IN_SERVICE spoken."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_tts.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE not spoken; texts: {texts}"
+
+    def test_empty_genre_does_not_call_play_tracks(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → play_tracks NOT called."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_tracks_calls = [c for c in mock_plex.calls if c[0] == 'play_tracks']
+        assert not play_tracks_calls, f"play_tracks should not be called; calls: {mock_plex.calls}"
+
+    def test_empty_genre_returns_to_browse_state(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → user returned to browse state (not PLAYING_MENU)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state != MenuState.PLAYING_MENU, \
+            f"State should not be PLAYING_MENU after empty genre; got {menu.state}"
+
+    def test_playlist_selection_unaffected_by_genre_changes(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Existing playlist playback still calls plex_client.play() (not play_tracks)."""
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Navigate to playlist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS
+        mock_plex.calls.clear()
+        # Dial J (digit 4) → selects "Jazz Mix"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"play() should be called for playlist; calls: {mock_plex.calls}"
+        assert play_calls[0][1] == "/pl/1"
