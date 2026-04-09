@@ -35,24 +35,30 @@ class SqliteErrorQueue(ErrorQueueInterface):
             """)
 
     def log(self, source: str, severity: str, message: str) -> None:
+        """Persist an error entry, deduplicating by (source, message).
+
+        If an entry with the same (source, message) already exists, its count is
+        incremented and last_happened is updated. The severity is set on first
+        insert and never updated on subsequent calls — re-logging the same message
+        with an escalated severity does not change the stored severity.
+
+        Uses a single atomic INSERT ... ON CONFLICT DO UPDATE (UPSERT) statement
+        with no intermediate read query.
+        """
         if severity not in VALID_SEVERITIES:
             raise ValueError(f"Invalid severity: {severity!r}. Must be one of {VALID_SEVERITIES}")
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT count FROM error_queue WHERE source = ? AND message = ?",
-                (source, message)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE error_queue SET count = count + 1, last_happened = ? WHERE source = ? AND message = ?",
-                    (now, source, message)
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO error_queue (source, message, severity, count, last_happened) VALUES (?, ?, ?, 1, ?)",
-                    (source, message, severity, now)
-                )
+            conn.execute(
+                """
+                INSERT INTO error_queue (source, message, severity, count, last_happened)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(source, message) DO UPDATE SET
+                    count         = count + 1,
+                    last_happened = excluded.last_happened
+                """,
+                (source, message, severity, now)
+            )
 
     def get_all(self) -> List[ErrorEntry]:
         with self._connect() as conn:
