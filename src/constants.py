@@ -33,6 +33,7 @@ CACHE_RETRY_BACKOFF = 2.0        # TODO: tune — base backoff interval (seconds
 # Plex server configuration
 PLEX_URL = "http://localhost:32400"  # TODO: set to real Plex server URL
 PLEX_TOKEN = "YOUR_PLEX_TOKEN"       # TODO: set to real Plex auth token
+PLEX_PLAYER_IDENTIFIER = "YOUR_PLEX_PLAYER_ID"  # TODO: set to the machine identifier of the local Plex player (found in player settings or via /clients)
 
 # TTS (Piper) configuration
 PIPER_BINARY = "/usr/local/bin/piper"  # TODO: set to real Piper binary path

@@ -15,13 +15,27 @@ from src.interfaces import MediaItem, PlaybackState, PlexClientInterface
 class PlexClient(PlexClientInterface):
     """Concrete Plex API client using requests + Plex HTTP API."""
 
-    def __init__(self, url: str, token: str) -> None:
+    def __init__(self, url: str, token: str, player_identifier: str = "") -> None:
         self._url = url.rstrip('/')
         self._token = token
+        self._player_identifier = player_identifier
+        self._command_id = 0
         self._headers = {
             "X-Plex-Token": token,
             "Accept": "application/json",
         }
+
+    def _playback_headers(self) -> dict:
+        """Return headers for playback commands, including player targeting."""
+        headers = dict(self._headers)
+        if self._player_identifier:
+            headers["X-Plex-Target-Client-Identifier"] = self._player_identifier
+        return headers
+
+    def _next_command_id(self) -> int:
+        """Increment and return the next commandID for playback commands."""
+        self._command_id += 1
+        return self._command_id
 
     def _get(self, path: str) -> dict:
         resp = requests.get(f"{self._url}{path}", headers=self._headers, timeout=10)
@@ -93,33 +107,63 @@ class PlexClient(PlexClientInterface):
 
     def play(self, plex_key: str) -> None:
         # Use Plex playback API on the server
-        params = {"key": plex_key, "X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/playMedia", params=params, timeout=10)
+        params = {"key": plex_key, "commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/playMedia",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def shuffle_all(self) -> None:
-        params = {"shuffle": 1, "X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/playAll", params=params, timeout=10)
+        params = {"shuffle": 1, "commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/playAll",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def pause(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/pause", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/pause",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def unpause(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/play", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/play",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def skip(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/skipNext", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/skipNext",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def stop(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/stop", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/stop",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def now_playing(self) -> PlaybackState:

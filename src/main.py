@@ -9,7 +9,7 @@ import time
 import logging
 
 from src.constants import (
-    PLEX_URL, PLEX_TOKEN,
+    PLEX_URL, PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
 )
@@ -144,7 +144,7 @@ def run() -> None:
     )
 
     # Plex
-    plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN)
+    plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
     plex_store = PlexStore(db_path=_PLEX_STORE_DB, plex_client=plex_client)
 
     # Pre-render all fixed TTS scripts
