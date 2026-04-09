@@ -141,3 +141,37 @@ class TestDotEnvExample:
         with open(env_example_path) as f:
             content = f.read()
         assert "PLEX_URL" in content
+
+
+class TestDigitWords:
+    """F-17 — DIGIT_WORDS lives in constants, not duplicated in tts or menu."""
+
+    def test_digit_words_in_constants(self):
+        """constants.DIGIT_WORDS must be a complete 0–9 mapping."""
+        import src.constants as c
+        assert hasattr(c, "DIGIT_WORDS"), "DIGIT_WORDS not found in src.constants"
+        dw = c.DIGIT_WORDS
+        assert dw == {
+            '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+            '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
+        }
+
+    def test_digit_words_not_defined_in_tts(self):
+        """src/tts.py must not contain a local _DIGIT_WORDS definition."""
+        src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tts_path = os.path.join(src_root, "src", "tts.py")
+        with open(tts_path) as f:
+            content = f.read()
+        assert "_DIGIT_WORDS" not in content, (
+            "tts.py still defines _DIGIT_WORDS locally; it should import DIGIT_WORDS from constants"
+        )
+
+    def test_digit_words_not_defined_in_menu(self):
+        """src/menu.py must not contain a local _DIGIT_WORDS definition."""
+        src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        menu_path = os.path.join(src_root, "src", "menu.py")
+        with open(menu_path) as f:
+            content = f.read()
+        assert "_DIGIT_WORDS" not in content, (
+            "menu.py still defines _DIGIT_WORDS locally; it should import DIGIT_WORDS from constants"
+        )
