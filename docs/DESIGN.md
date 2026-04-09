@@ -20,6 +20,7 @@ mapped to media) and a menu navigation device.
 | Hook switch | Rotary phone hook switch → GPIO | Open = on cradle, closed = lifted |
 | Pulse switch | Rotary phone dial → optocoupler → GPIO | Open = resting, closed = pulsing |
 | Speaker | Rotary phone handset speaker | Driven by MAX98357A |
+| Radio tuner | RTL2832U USB dongle with FC0013 tuner | FM reception via `rtl_fm` subprocess |
 
 ### GPIO Signal Conventions
 
@@ -68,10 +69,10 @@ dependency directly. This means:
               │  interface  │
               └─────────────┘
                      │
-              ┌──────▼──────┐   ┌─────────────┐
-              │    audio    │   │     tts      │
-              │  interface  │   │  interface   │
-              └─────────────┘   └─────────────┘
+              ┌──────▼──────┐   ┌─────────────┐   ┌─────────────┐
+              │    audio    │   │     tts      │   │    radio    │
+              │  interface  │   │  interface   │   │  interface  │
+              └─────────────┘   └─────────────┘   └─────────────┘
 ```
 
 ---
@@ -129,13 +130,30 @@ Abstracts all Plex API calls.
 class MediaItem:
     plex_key: str
     name: str
-    media_type: str  # "playlist" | "artist" | "album" | "genre"
+    media_type: str  # "playlist" | "artist" | "album" | "genre" | "radio"
 
 @dataclass
 class PlaybackState:
     item: MediaItem | None  # None if nothing is playing
     is_paused: bool         # True if playback is paused; always False when item is None
+
+@dataclass
+class RadioStation:
+    name: str           # Human-readable station name (e.g. "KEXP")
+    frequency_hz: float # Carrier frequency in Hz (e.g. 90_300_000.0)
+    phone_number: str   # Pre-configured 7-digit direct-dial number
 ```
+
+### `RadioInterface`
+Abstracts FM radio reception via the RTL-SDR dongle.
+
+| Method | Description |
+|---|---|
+| `play(frequency_hz: float)` | Tune to the given frequency and begin streaming audio |
+| `stop()` | Stop radio playback |
+| `is_playing() -> bool` | True if radio is currently streaming |
+
+Radio streams are live and have no pause, skip, or queue position. `is_playing()` is the only state query.
 
 ### `ErrorQueueInterface`
 Abstracts the persistent error log.
@@ -230,7 +248,8 @@ audio hardware, or HTTP — only the interfaces.
 **States:**
 - `IDLE_DIAL_TONE` — handset lifted, playing dial tone, waiting
 - `IDLE_MENU` — browsing from idle (no music playing)
-- `PLAYING_MENU` — browsing while music is active
+- `PLAYING_MENU` — browsing while Plex music is active
+- `RADIO_PLAYING_MENU` — handset lifted while radio is streaming
 - `BROWSE_PLAYLISTS` / `BROWSE_ARTISTS` / `BROWSE_GENRES` — narrowing by T9
 - `ARTIST_SUBMENU` — shuffle artist or pick album
 - `BROWSE_ALBUMS` — T9 narrowing through an artist's albums
@@ -278,6 +297,9 @@ Plex state regardless of changes made by other clients.
 
 **T9 matching is case-insensitive.** "beatles" and "Beatles" both match digit `1`
 (ABC).
+
+### `radio`
+Concrete implementation of `RadioInterface`. Launches `rtl_fm` as a subprocess piped to `aplay` to receive and play FM audio through the system audio output. Accepts a frequency in Hz. `stop()` terminates the subprocess pair. `is_playing()` returns `True` while the subprocess is alive.
 
 ### `session`
 Owns the application lifecycle for a single handset interaction. Listens for
@@ -418,6 +440,28 @@ First digit dialed (in any state) →
     0 and 9 are treated as literal digits in DIRECT_DIAL mode
 ```
 
+### Radio direct dial
+
+Radio stations are pre-configured with specific 7-digit phone numbers in `radio_stations.json`. Dialing one of these numbers tunes the RTL-SDR dongle to that station's frequency.
+
+```
+7-digit number dialed → phone book lookup → media_type == "radio"
+  → Stop any active Plex playback
+  → Stop any active radio stream
+  → Speak SCRIPT_RADIO_CONNECTING (contains station name and frequency)
+  → radio.play(frequency_hz)
+  → State → RADIO_PLAYING_MENU
+  → Handset can be hung up; radio continues streaming
+
+Handset lifted while radio is playing:
+  → Dial tone plays briefly
+  → SCRIPT_RADIO_PLAYING_GREETING (contains station name and frequency)
+  → SCRIPT_RADIO_PLAYING_MENU: "To disconnect, dial three. To reach a new party, dial zero."
+  → Digit 3 → radio.stop() → IDLE_MENU
+  → Digit 0 → radio.stop() → IDLE_MENU (then deliver idle menu)
+  → No pause, no skip (radio is live)
+```
+
 ### Diagnostic assistant
 
 A reserved 7-digit number (configured at setup, never assigned to media) connects
@@ -527,6 +571,7 @@ Response:
 | `PHONE_NUMBER_LENGTH` | 7 | Digits in an assigned phone number |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 | Messages read aloud per page in assistant |
 | `ASSISTANT_NUMBER` | set in constants file | Reserved 7-digit diagnostic number; excluded from phone book assignment |
+| `RADIO_CONFIG_PATH` | `"/etc/hello-operator/radio_stations.json"` | Path to the radio station config file |
 | `HOOK_DEBOUNCE` | TBD | Hook switch debounce window; requires hardware tuning |
 | `PULSE_DEBOUNCE` | TBD | Pulse switch debounce window; requires hardware tuning |
 | `CACHE_RETRY_MAX` | TBD | Max repopulation attempts for missing TTS cache files |
