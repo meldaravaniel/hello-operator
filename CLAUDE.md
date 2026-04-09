@@ -101,7 +101,7 @@ main.py
 - **Stopping music → `IDLE_MENU` directly** — no dial tone replay after user ends a call
 - **T9 browsing** — case-insensitive; strips leading "The ", "A ", "An " for indexing/sorting but speaks full names; digit `8` catches V/W/X/Y/Z and all special characters
 - **Phone numbers assigned lazily** — on first encounter of a `plex_key`, never reassigned
-- **`ErrorQueueInterface`** — deduplicated by `(source, message)`; persisted to SQLite; severity = `"warning"` | `"error"`
+- **`ErrorQueueInterface`** — deduplicated by `(source, message)`; persisted to SQLite; severity = `"warning"` | `"error"`; `SqliteErrorQueue.log()` uses a single atomic `INSERT ... ON CONFLICT DO UPDATE` (UPSERT) — severity is set on first insert and never updated on re-log of the same `(source, message)`
 - **ASSISTANT state owns its own digit routing** — `0` and `9` are NOT reserved navigation digits inside the ASSISTANT state; `_dispatch_navigation_digit` delegates to `_handle_assistant_digit` before applying global `0`/`9` rules
 - **ASSISTANT always stays in ASSISTANT until digit input** — even all-clear path stays in `ASSISTANT` state; redirect to idle/playing only happens when user dials `0`, `9`, or the redirect fires automatically after all-clear
 - **Refresh always offered in ASSISTANT** — `plex_store.refresh()` option appears in every assistant menu, even when error queue is empty
