@@ -264,6 +264,40 @@ class TestIdleMenu:
         idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert any(c[0] == 'shuffle_all' for c in mock_plex.calls)
 
+    def test_idle_menu_shuffle_speaks_connecting_announcement(self, idle_menu, mock_tts, mock_plex):
+        """Digit 4 (shuffle) → TTS speaks a connecting/shuffle announcement."""
+        self._advance_to_idle_menu(idle_menu)
+        mock_tts.calls.clear()
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert len(texts) > 0, f"Expected a TTS announcement after shuffle, got none"
+        full_text = " ".join(texts).lower()
+        # The announcement should contain something about connecting / general exchange / shuffle
+        assert any(
+            phrase in full_text
+            for phrase in ("connecting", "general exchange", "trunk call", "shuffl")
+        ), f"No connecting/shuffle announcement found in: {texts}"
+
+    def test_idle_menu_shuffle_transitions_to_playing_menu(self, idle_menu, mock_plex):
+        """Digit 4 (shuffle) → state transitions to PLAYING_MENU."""
+        self._advance_to_idle_menu(idle_menu)
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert idle_menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after shuffle, got {idle_menu.state}"
+
+    def test_idle_menu_shuffle_hangup_leaves_music_playing(self, idle_menu, mock_plex):
+        """After shuffle, hanging up must not call plex_client.stop()."""
+        self._advance_to_idle_menu(idle_menu)
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_plex.calls.clear()
+        idle_menu.on_handset_on_cradle()
+        plex_stop_calls = [c for c in mock_plex.calls if c[0] == 'stop']
+        assert len(plex_stop_calls) == 0, \
+            f"Hang-up should not stop Plex, but stop() was called: {mock_plex.calls}"
+
     def test_idle_menu_omits_empty_category(self, mock_audio, mock_tts, mock_plex,
                                              mock_plex_store, mock_error_queue, tmp_path):
         """plex_store.has_content False for a category → not in menu."""
