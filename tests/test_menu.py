@@ -2049,4 +2049,3 @@ class TestDigitBeforeMenu:
         menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU when music playing, got {menu.state}"
-        assert play_calls[0][1] == "/a/1"

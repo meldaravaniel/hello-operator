@@ -489,6 +489,18 @@ class Menu:
         """Handle a single confirmed navigation digit."""
         self._last_activity_time = now
 
+        # Guard: digit dialed during IDLE_DIAL_TONE (before menu delivered).
+        # Deliver the appropriate menu first, stop the dial tone, then drop the
+        # digit — the user dialed before hearing the options and must dial again.
+        if self._state == MenuState.IDLE_DIAL_TONE:
+            self._audio.stop()
+            playback = self._plex_client.now_playing()
+            if playback.item is not None:
+                self._deliver_playing_menu(playback, now)
+            else:
+                self._deliver_idle_menu(now)
+            return
+
         # ASSISTANT state handles its own navigation (0 and 9 are not reserved there)
         if self._state == MenuState.ASSISTANT:
             self._handle_assistant_digit(digit, now)
