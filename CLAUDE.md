@@ -94,6 +94,7 @@ main.py
 - **Hang-up never stops Plex** — `HANDSET_ON_CRADLE` stops local audio only; music keeps playing
 - **Never hang up on the user** — the system must always be doing something while the handset is lifted; the only exit is the off-hook warning tone for unrecoverable dead-ends or inactivity timeout (`INACTIVITY_TIMEOUT = 30s`)
 - **Digit disambiguation** — first digit waits `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` for a second; single digit = navigation (`0`=top, `9`=back, `1`–`8`=option); two digits within timeout = enter `DIRECT_DIAL` mode where `0`/`9` are literal
+- **Digit before menu guard** — if a digit's disambiguation timeout fires while state is still `IDLE_DIAL_TONE`, `_dispatch_navigation_digit` stops the dial tone, delivers the appropriate menu (idle or playing), then **drops the digit**; the user must dial again after hearing the options; this prevents `SCRIPT_NOT_IN_SERVICE` from being spoken for premature digits
 - **DTMF feedback** — `play_dtmf(digit)` called for each digit in `DIRECT_DIAL` mode
 - **No local playback state** — all pause/play state derived from `now_playing()` → `PlaybackState` at speak time; never tracked locally
 - **`SCRIPT_OPERATOR_OPENER` spoken once per session** — only on the first menu prompt after handset lift; subsequent prompts omit it
