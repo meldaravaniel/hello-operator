@@ -43,6 +43,40 @@ def _make_fake_piper(tmp_path):
     return fake_piper
 
 
+def _make_file_based_piper():
+    """
+    Return a callable that simulates Piper's --output_file mode: reads the
+    output path from the --output_file argument in cmd and writes a valid WAV
+    file there directly (no stdout capture).
+    """
+    def fake_piper(cmd, stdin, stdout, stderr, **kwargs):
+        import wave, array
+        # Find --output_file <path> in cmd
+        output_path = None
+        for i, arg in enumerate(cmd):
+            if arg == "--output_file" and i + 1 < len(cmd):
+                output_path = cmd[i + 1]
+                break
+        proc = MagicMock()
+        if output_path is None:
+            # --output_file not present — simulate failure
+            proc.communicate.return_value = (b'', b'error: --output_file required')
+            proc.returncode = 1
+            return proc
+        # Write a tiny valid WAV file to the output path
+        with wave.open(output_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(22050)
+            samples = array.array('h', [100] * 2205)
+            wf.writeframes(samples.tobytes())
+        proc.communicate.return_value = (b'', b'')
+        proc.returncode = 0
+        return proc
+
+    return fake_piper
+
+
 def make_tts(tmp_path, error_queue=None):
     """Build a PiperTTS with a temp cache dir and fake Piper binary."""
     cache_dir = str(tmp_path / "tts_cache")
@@ -391,6 +425,111 @@ class TestPiperFailure:
 
         off_hook_calls = [c for c in audio.calls if c[0] == 'play_off_hook_tone']
         assert len(off_hook_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# WAV file validity (F-02: fix Piper output format)
+# ---------------------------------------------------------------------------
+
+class TestWavValidity:
+    """
+    Verify that PiperTTS produces files that are valid WAV (RIFF) files,
+    openable with wave.open() and containing nonzero frames.
+
+    Uses _make_file_based_piper which simulates Piper's --output_file mode:
+    it reads the output path from the command arguments and writes a real WAV
+    file there.  If _run_piper still uses --output-raw (the old bug), the
+    helper returns returncode=1 and no file is written, causing the tests to
+    fail.
+    """
+
+    def test_prerender_produces_valid_wav(self, tmp_path):
+        """Pre-rendered script files must be openable with wave.open()."""
+        import wave
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        prompts = {"SCRIPT_GREETING": "Hello, operator speaking."}
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.prerender(prompts)
+
+        wav_path = os.path.join(cache_dir, "SCRIPT_GREETING.wav")
+        assert os.path.exists(wav_path), "WAV file was not created"
+        with wave.open(wav_path, 'rb') as wf:
+            assert wf.getnframes() > 0, "WAV file has no audio frames"
+
+    def test_speak_produces_valid_wav(self, tmp_path):
+        """speak() must return a path to a valid WAV file."""
+        import wave
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            path = tts.speak("Hello world")
+        assert path is not None, "speak() returned None"
+        assert os.path.exists(path), f"speak() returned nonexistent path: {path}"
+        with wave.open(path, 'rb') as wf:
+            assert wf.getnframes() > 0, "Live synthesis WAV has no audio frames"
+
+    def test_speak_and_play_plays_valid_wav(self, tmp_path):
+        """speak_and_play() must pass a valid WAV path to audio.play_file()."""
+        import wave
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("Hello world")
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert len(play_calls) == 1, "play_file was not called"
+        played_path = play_calls[0][1]
+        assert os.path.exists(played_path), "play_file was called with nonexistent path"
+        with wave.open(played_path, 'rb') as wf:
+            assert wf.getnframes() > 0, "Played WAV file has no audio frames"
+
+    def test_prerender_then_speak_and_play_uses_valid_cached_wav(self, tmp_path):
+        """After prerender, speak_and_play uses the cached WAV; it must be valid."""
+        import wave
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        text = "Hello, operator."
+        script_name = "SCRIPT_GREETING"
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.prerender({script_name: text})
+
+        # speak_and_play should use cache, no new Piper call
+        piper_calls = [0]
+
+        def count_piper(cmd, stdin, stdout, stderr, **kwargs):
+            piper_calls[0] += 1
+            return _make_file_based_piper()(cmd, stdin, stdout, stderr)
+
+        with patch('subprocess.Popen', side_effect=count_piper):
+            tts.speak_and_play(text)
+
+        assert piper_calls[0] == 0, "Piper was called when cached WAV should have been used"
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert len(play_calls) == 1, "play_file was not called"
+        with wave.open(play_calls[0][1], 'rb') as wf:
+            assert wf.getnframes() > 0, "Cached WAV is not a valid WAV file"
+
+    def test_run_piper_uses_output_file_flag(self, tmp_path):
+        """_run_piper must pass --output_file <path> to Piper, not --output-raw."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        observed_cmds = []
+
+        def capture_cmd(cmd, stdin, stdout, stderr, **kwargs):
+            observed_cmds.append(list(cmd))
+            return _make_file_based_piper()(cmd, stdin, stdout, stderr)
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            out_path = f.name
+
+        try:
+            with patch('subprocess.Popen', side_effect=capture_cmd):
+                tts._run_piper("hello", out_path)
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+
+        assert observed_cmds, "Piper was never called"
+        cmd = observed_cmds[0]
+        assert '--output_file' in cmd, f"--output_file not in cmd: {cmd}"
+        assert '--output-raw' not in cmd, f"--output-raw still present in cmd: {cmd}"
 
 
 # ---------------------------------------------------------------------------
