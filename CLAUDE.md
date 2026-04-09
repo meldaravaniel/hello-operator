@@ -88,6 +88,7 @@ main.py
 
 - **`plex_store` is the only browse data path** — `menu` never calls `plex_client` directly for browse; playback commands (`play`, `shuffle_all`, `pause`, etc.) go directly to `plex_client`
 - **TTS pre-rendering** — all fixed `SCRIPT_*` strings from `SCRIPTS.md` are pre-rendered via `prerender({script_name: text})` at startup; only dynamic strings use live Piper at runtime
+- **Piper invocation** — `_run_piper(text, output_path)` uses `--output_file <path>` so Piper writes a valid RIFF/WAV file directly; never use `--output-raw` (raw PCM) as it produces files that `wave.open()` cannot read
 - **Hang-up never stops Plex** — `HANDSET_ON_CRADLE` stops local audio only; music keeps playing
 - **Never hang up on the user** — the system must always be doing something while the handset is lifted; the only exit is the off-hook warning tone for unrecoverable dead-ends or inactivity timeout (`INACTIVITY_TIMEOUT = 30s`)
 - **Digit disambiguation** — first digit waits `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` for a second; single digit = navigation (`0`=top, `9`=back, `1`–`8`=option); two digits within timeout = enter `DIRECT_DIAL` mode where `0`/`9` are literal
