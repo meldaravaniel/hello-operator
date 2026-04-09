@@ -89,6 +89,8 @@ SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX = " For a particular album, dial two."
 SCRIPT_ARTIST_SINGLE_ALBUM_TEMPLATE = "To call {album}, dial one."
 SCRIPT_CONNECTING_TEMPLATE = ("Thank you for your patience. I'm connecting your call to "
                                "{digits} — {name}. Please hold.")
+SCRIPT_SHUFFLE_CONNECTING = ("One moment, please — I'm putting you through to the general exchange. "
+                              "Enjoy your call!")
 
 # Diagnostic assistant scripts
 SCRIPT_ASSISTANT_GREETING = "Good day, this is the operator's assistant. Let me pull up your account now."
@@ -568,6 +570,8 @@ class Menu:
         name, next_state = options[idx]
         if name == 'shuffle':
             self._plex_client.shuffle_all()
+            self._tts.speak_and_play(SCRIPT_SHUFFLE_CONNECTING)
+            self._state = MenuState.PLAYING_MENU
         elif next_state == MenuState.BROWSE_PLAYLISTS:
             items = self._plex_store.get_playlists()
             self._start_browse(items, MenuState.BROWSE_PLAYLISTS,

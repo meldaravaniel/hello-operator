@@ -120,6 +120,10 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 **Runtime** (contains digits and media name)
 > "Thank you for your patience. I'm connecting your call to [digit] [digit] [digit], [digit] [digit] [digit] [digit] — [media name]. Please hold."
 
+### `SCRIPT_SHUFFLE_CONNECTING`
+**Pre-rendered** — spoken after the user selects the shuffle/general-exchange option
+> "One moment, please — I'm putting you through to the general exchange. Enjoy your call!"
+
 ---
 
 ## Error States

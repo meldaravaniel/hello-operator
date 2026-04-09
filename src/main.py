@@ -51,6 +51,7 @@ from src.menu import (
     SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     SCRIPT_ASSISTANT_REFRESH_FAILURE,
+    SCRIPT_SHUFFLE_CONNECTING,
 )
 
 logging.basicConfig(
@@ -100,6 +101,7 @@ _PRERENDER_SCRIPTS = {
     "assistant_valediction_messages": SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     "assistant_refresh_success": SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     "assistant_refresh_failure": SCRIPT_ASSISTANT_REFRESH_FAILURE,
+    "shuffle_connecting": SCRIPT_SHUFFLE_CONNECTING,
 }
 
 
