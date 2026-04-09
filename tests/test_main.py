@@ -11,25 +11,23 @@ fresh system.
 """
 
 import pytest
-import tempfile
 import os
 from unittest.mock import patch, MagicMock, call
 
 
-def test_piper_tts_accepts_piper_model_kwarg(mock_audio, mock_error_queue):
+def test_piper_tts_accepts_piper_model_kwarg(mock_audio, mock_error_queue, tmp_path):
     """PiperTTS constructor must accept piper_model= (not model_path=)."""
     from src.tts import PiperTTS
 
-    with tempfile.TemporaryDirectory() as cache_dir:
-        # Should not raise TypeError
-        tts = PiperTTS(
-            piper_binary="/usr/bin/piper",
-            piper_model="/path/to/model.onnx",
-            cache_dir=cache_dir,
-            audio=mock_audio,
-            error_queue=mock_error_queue,
-        )
-        assert tts is not None
+    # Should not raise TypeError
+    tts = PiperTTS(
+        piper_binary="/usr/bin/piper",
+        piper_model="/path/to/model.onnx",
+        cache_dir=str(tmp_path),
+        audio=mock_audio,
+        error_queue=mock_error_queue,
+    )
+    assert tts is not None
 
 
 def test_plex_client_accepts_url_kwarg():
@@ -71,19 +69,18 @@ def test_gpio_handler_rejects_old_kwargs():
         )
 
 
-def test_piper_tts_rejects_old_model_path_kwarg(mock_audio, mock_error_queue):
+def test_piper_tts_rejects_old_model_path_kwarg(mock_audio, mock_error_queue, tmp_path):
     """PiperTTS must NOT accept model_path= (the old wrong keyword name)."""
     from src.tts import PiperTTS
 
-    with tempfile.TemporaryDirectory() as cache_dir:
-        with pytest.raises(TypeError):
-            PiperTTS(
-                piper_binary="/usr/bin/piper",
-                model_path="/path/to/model.onnx",
-                cache_dir=cache_dir,
-                audio=mock_audio,
-                error_queue=mock_error_queue,
-            )
+    with pytest.raises(TypeError):
+        PiperTTS(
+            piper_binary="/usr/bin/piper",
+            model_path="/path/to/model.onnx",
+            cache_dir=str(tmp_path),
+            audio=mock_audio,
+            error_queue=mock_error_queue,
+        )
 
 
 def test_plex_client_rejects_old_base_url_kwarg():
