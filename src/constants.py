@@ -2,7 +2,36 @@
 
 TBD values are set to reasonable placeholder values with TODO comments indicating
 they need real values before deployment.
+
+Secrets are loaded from environment variables at import time.  Required
+variables raise RuntimeError immediately if absent so startup fails fast
+rather than producing a silent authentication failure later.
 """
+
+import os
+
+# ---------------------------------------------------------------------------
+# Secrets — loaded from environment variables
+# ---------------------------------------------------------------------------
+
+PLEX_URL = os.environ.get("PLEX_URL", "http://localhost:32400")
+
+_plex_token = os.environ.get("PLEX_TOKEN")
+if not _plex_token:
+    raise RuntimeError(
+        "Required environment variable PLEX_TOKEN is not set. "
+        "Export it before starting hello-operator (e.g. export PLEX_TOKEN=<your-token>)."
+    )
+PLEX_TOKEN: str = _plex_token
+
+_plex_player_identifier = os.environ.get("PLEX_PLAYER_IDENTIFIER")
+if not _plex_player_identifier:
+    raise RuntimeError(
+        "Required environment variable PLEX_PLAYER_IDENTIFIER is not set. "
+        "Export it before starting hello-operator "
+        "(e.g. export PLEX_PLAYER_IDENTIFIER=<machine-identifier>)."
+    )
+PLEX_PLAYER_IDENTIFIER: str = _plex_player_identifier
 
 # Timing constants (in seconds unless noted)
 DIAL_TONE_TIMEOUT_IDLE = 5       # Silence before idle operator prompt
@@ -29,11 +58,6 @@ PULSE_DEBOUNCE = 0.005           # TODO: tune on hardware — pulse switch debou
 # TTS cache retry behaviour
 CACHE_RETRY_MAX = 3              # TODO: tune — max repopulation attempts for missing TTS cache files
 CACHE_RETRY_BACKOFF = 2.0        # TODO: tune — base backoff interval (seconds) between cache repopulation attempts
-
-# Plex server configuration
-PLEX_URL = "http://localhost:32400"  # TODO: set to real Plex server URL
-PLEX_TOKEN = "YOUR_PLEX_TOKEN"       # TODO: set to real Plex auth token
-PLEX_PLAYER_IDENTIFIER = "YOUR_PLEX_PLAYER_ID"  # TODO: set to the machine identifier of the local Plex player (found in player settings or via /clients)
 
 # TTS (Piper) configuration
 PIPER_BINARY = "/usr/local/bin/piper"  # TODO: set to real Piper binary path
