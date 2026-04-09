@@ -547,12 +547,12 @@ class Menu:
         """Process digit in IDLE_MENU state."""
         if self._failure_mode == "plex":
             if digit == 1:
-                # Retry
-                try:
-                    self._plex_store.get_playlists()
+                # Retry — refresh all categories and check if at least one succeeded
+                result = self._plex_store.refresh()
+                if any(v == "ok" for v in result.values()):
                     self._failure_mode = None
                     self._deliver_idle_menu(now)
-                except Exception:
+                else:
                     self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
                     self._tts.speak_and_play(SCRIPT_RETRY_PROMPT)
             else:

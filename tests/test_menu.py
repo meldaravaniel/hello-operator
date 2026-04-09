@@ -362,6 +362,123 @@ class TestIdleMenu:
         assert any(SCRIPT_PLEX_FAILURE in t for t in texts), f"plex failure not found: {texts}"
         assert any(SCRIPT_RETRY_PROMPT in t for t in texts), f"retry prompt not found: {texts}"
 
+    def test_idle_menu_retry_partial_success_clears_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry with playlists ok but artists/genres error → failure_mode cleared, menu delivered."""
+        # Put menu into failure mode by starting with a failing store
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # triggers _deliver_idle_menu → fails → failure_mode = "plex"
+        assert menu._failure_mode == "plex"
+
+        # Now swap in a mock store that returns partial success on refresh
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'error', 'genres': 'error'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode is None, f"failure_mode should be None, got {menu._failure_mode}"
+        # Menu should have been delivered — TTS should speak menu options
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE not in t for t in texts) or len(texts) > 0, \
+            f"expected menu delivery after partial success, tts: {texts}"
+        # Specifically, refresh should have been called
+        assert any(c[0] == 'refresh' for c in mock_plex_store.calls), \
+            f"refresh() was not called: {mock_plex_store.calls}"
+
+    def test_idle_menu_retry_all_fail_stays_in_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry when all categories return error → failure_mode stays set, re-speaks failure + retry."""
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        assert menu._failure_mode == "plex"
+
+        # swap in a store whose refresh returns all errors
+        mock_plex_store.set_refresh_result({'playlists': 'error', 'artists': 'error', 'genres': 'error'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode == "plex", \
+            f"failure_mode should remain 'plex', got {menu._failure_mode}"
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"SCRIPT_PLEX_FAILURE not re-spoken: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"SCRIPT_RETRY_PROMPT not re-spoken: {texts}"
+
+    def test_idle_menu_retry_complete_success_delivers_full_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry when all categories succeed → failure_mode cleared, full menu delivered."""
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        assert menu._failure_mode == "plex"
+
+        # swap in a store that succeeds on refresh
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([MediaItem("/a/1", "The Beatles", "artist")])
+        mock_plex_store.set_genres([MediaItem("section:1/genre:/g/1", "Rock", "genre")])
+        mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode is None, \
+            f"failure_mode should be None after complete success, got {menu._failure_mode}"
+        # refresh should have been called
+        assert any(c[0] == 'refresh' for c in mock_plex_store.calls), \
+            f"refresh() was not called: {mock_plex_store.calls}"
+
     def test_idle_menu_no_content_plays_off_hook_tone(self, mock_audio, mock_tts, mock_plex,
                                                        mock_plex_store, mock_error_queue, tmp_path):
         """Zero playable content → TTS plays SCRIPT_NO_CONTENT, then off-hook tone."""

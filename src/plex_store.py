@@ -54,6 +54,7 @@ class MockPlexStore:
         self._genres: List[MediaItem] = []
         self._albums: Dict[str, List[MediaItem]] = {}
         self.calls: list = []
+        self._refresh_result: Dict[str, str] = {'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'}
 
     # -- Configuration (test-only) ------------------------------------------
     def set_playlists(self, items: List[MediaItem]) -> None:
@@ -67,6 +68,9 @@ class MockPlexStore:
 
     def set_albums_for_artist(self, artist_key: str, albums: List[MediaItem]) -> None:
         self._albums[artist_key] = list(albums)
+
+    def set_refresh_result(self, result: Dict[str, str]) -> None:
+        self._refresh_result = result
 
     # -- PlexStore interface -------------------------------------------------
     @property
@@ -107,7 +111,7 @@ class MockPlexStore:
 
     def refresh(self) -> Dict[str, str]:
         self.calls.append(('refresh',))
-        return {'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'}
+        return dict(self._refresh_result)
 
 
 class PlexStore:
