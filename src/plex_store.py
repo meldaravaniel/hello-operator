@@ -184,20 +184,26 @@ class PlexStore:
     # Public properties (has_content flags)
     # ------------------------------------------------------------------
 
+    def _has_content(self, cache_key: str) -> bool:
+        """Return True if cache_key exists and its data is not '[]'."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM plex_cache WHERE cache_key = ? AND data != '[]'",
+                (cache_key,),
+            ).fetchone()
+        return row is not None
+
     @property
     def playlists_has_content(self) -> bool:
-        items = self._read(_KEY_PLAYLISTS)
-        return bool(items)
+        return self._has_content(_KEY_PLAYLISTS)
 
     @property
     def artists_has_content(self) -> bool:
-        items = self._read(_KEY_ARTISTS)
-        return bool(items)
+        return self._has_content(_KEY_ARTISTS)
 
     @property
     def genres_has_content(self) -> bool:
-        items = self._read(_KEY_GENRES)
-        return bool(items)
+        return self._has_content(_KEY_GENRES)
 
     # ------------------------------------------------------------------
     # Browse data accessors
