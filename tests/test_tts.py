@@ -545,6 +545,148 @@ class TestWavValidity:
 
 
 # ---------------------------------------------------------------------------
+# TTS temp file cleanup (F-07)
+# ---------------------------------------------------------------------------
+
+class TestLiveDirCleanup:
+    """PiperTTS must write live-synthesis files to <cache_dir>/live/ and clean
+    them up after playback so no orphan WAVs accumulate."""
+
+    def test_init_creates_live_dir(self, tmp_path):
+        """PiperTTS.__init__ creates <cache_dir>/live/ if it does not exist."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        live_dir = os.path.join(cache_dir, "live")
+        assert os.path.isdir(live_dir), f"live/ dir not created: {live_dir}"
+
+    def test_init_clears_existing_live_files(self, tmp_path):
+        """Pre-existing files in <cache_dir>/live/ are removed on __init__."""
+        cache_dir = str(tmp_path / "tts_cache")
+        live_dir = os.path.join(cache_dir, "live")
+        os.makedirs(live_dir, exist_ok=True)
+        # Plant a leftover file from a previous session
+        leftover = os.path.join(live_dir, "leftover.wav")
+        open(leftover, 'wb').close()
+        assert os.path.exists(leftover)
+
+        # Instantiating PiperTTS should wipe the directory
+        audio = MockAudio()
+        eq = MockErrorQueue()
+        PiperTTS(
+            piper_binary="/fake/piper",
+            piper_model="/fake/model.onnx",
+            cache_dir=cache_dir,
+            audio=audio,
+            error_queue=eq,
+        )
+        assert not os.path.exists(leftover), "Leftover live file was not cleaned on init"
+
+    def test_live_synthesis_file_in_live_dir(self, tmp_path):
+        """_synthesize writes temp files inside <cache_dir>/live/, not system /tmp."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        live_dir = os.path.join(cache_dir, "live")
+        captured_paths = []
+
+        original_play_file = audio.play_file
+
+        def capturing_play_file(path):
+            captured_paths.append(path)
+            return original_play_file(path)
+
+        audio.play_file = capturing_play_file
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("some dynamic text not prerendered")
+
+        assert captured_paths, "play_file was never called"
+        played_path = captured_paths[0]
+        assert played_path.startswith(live_dir), (
+            f"Live synthesis file {played_path!r} is not inside live_dir {live_dir!r}"
+        )
+
+    def test_live_file_deleted_after_speak_and_play(self, tmp_path):
+        """After speak_and_play completes, the live temp WAV file is removed."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        captured_paths = []
+
+        original_play_file = audio.play_file
+
+        def capturing_play_file(path):
+            captured_paths.append(path)
+            return original_play_file(path)
+
+        audio.play_file = capturing_play_file
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("some dynamic text not prerendered")
+
+        assert captured_paths, "play_file was never called"
+        played_path = captured_paths[0]
+        assert not os.path.exists(played_path), (
+            f"Live temp file {played_path!r} was not deleted after speak_and_play"
+        )
+
+    def test_prerendered_cache_files_not_deleted(self, tmp_path):
+        """speak_and_play for a pre-rendered script must NOT delete the cache file."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        text = "Hello, operator speaking."
+        script_name = "SCRIPT_CLEANUP_TEST"
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.prerender({script_name: text})
+
+        wav_path = os.path.join(cache_dir, f"{script_name}.wav")
+        assert os.path.exists(wav_path), "Pre-rendered WAV should exist after prerender"
+
+        # Now play the cached script
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play(text)
+
+        assert os.path.exists(wav_path), (
+            "Pre-rendered cache WAV was incorrectly deleted after speak_and_play"
+        )
+
+    def test_multiple_live_calls_cleanup_all(self, tmp_path):
+        """Each live speak_and_play call deletes its own temp file; none accumulate."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        live_dir = os.path.join(cache_dir, "live")
+        played_paths = []
+
+        original_play_file = audio.play_file
+
+        def capturing_play_file(path):
+            played_paths.append(path)
+            return original_play_file(path)
+
+        audio.play_file = capturing_play_file
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("first dynamic string")
+            tts.speak_and_play("second dynamic string")
+            tts.speak_and_play("third dynamic string")
+
+        assert len(played_paths) == 3, "Expected 3 play_file calls"
+        for path in played_paths:
+            assert not os.path.exists(path), f"Temp file {path!r} was not cleaned up"
+
+        # live dir should be empty (no leftover files)
+        remaining = os.listdir(live_dir)
+        assert remaining == [], f"Live dir has leftover files: {remaining}"
+
+    def test_speak_also_cleans_up(self, tmp_path):
+        """speak() (not speak_and_play) must also write to live/ dir."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        live_dir = os.path.join(cache_dir, "live")
+
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            path = tts.speak("some text for speak")
+
+        assert path is not None, "speak() returned None"
+        assert path.startswith(live_dir), (
+            f"speak() returned path {path!r} not inside live_dir {live_dir!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MockTTS
 # ---------------------------------------------------------------------------
 
