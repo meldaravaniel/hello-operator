@@ -6,6 +6,7 @@ skipped by default.
 """
 
 import pytest
+from unittest.mock import MagicMock, patch
 from src.plex_client import MockPlexClient
 from src.interfaces import MediaItem, PlaybackState
 
@@ -120,7 +121,166 @@ class TestMockPlexClient:
 
 
 # ---------------------------------------------------------------------------
-# 6.2 Integration tests (skipped by default)
+# 6.2 PlexClient unit tests — F-05 player targeting
+# ---------------------------------------------------------------------------
+
+class TestPlexClientPlayerTargeting:
+    """Tests for F-05: player identifier header and commandID in playback calls."""
+
+    @pytest.fixture
+    def mock_response(self):
+        """A mock requests.Response that raises no error."""
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    @pytest.fixture
+    def plex_client(self):
+        """PlexClient constructed with a player_identifier."""
+        from src.plex_client import PlexClient
+        return PlexClient(
+            url="http://localhost:32400",
+            token="test-token",
+            player_identifier="test-machine-123",
+        )
+
+    def test_player_identifier_in_pause_header(self, plex_client, mock_response):
+        """pause() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.pause()
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_player_identifier_in_unpause_header(self, plex_client, mock_response):
+        """unpause() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.unpause()
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_player_identifier_in_skip_header(self, plex_client, mock_response):
+        """skip() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.skip()
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_player_identifier_in_stop_header(self, plex_client, mock_response):
+        """stop() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.stop()
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_player_identifier_in_play_header(self, plex_client, mock_response):
+        """play() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.play("/library/metadata/42")
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_player_identifier_in_shuffle_all_header(self, plex_client, mock_response):
+        """shuffle_all() includes X-Plex-Target-Client-Identifier in request headers."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.shuffle_all()
+            _, kwargs = mock_get.call_args
+            headers = kwargs.get("headers", {})
+            assert headers.get("X-Plex-Target-Client-Identifier") == "test-machine-123"
+
+    def test_command_id_increments_on_each_call(self, plex_client, mock_response):
+        """commandID increments with each successive playback call."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.pause()
+            first_call_args = mock_get.call_args
+            first_params = first_call_args[1].get("params", {})
+            first_command_id = first_params.get("commandID")
+
+            plex_client.unpause()
+            second_call_args = mock_get.call_args
+            second_params = second_call_args[1].get("params", {})
+            second_command_id = second_params.get("commandID")
+
+            assert first_command_id is not None
+            assert second_command_id is not None
+            assert int(second_command_id) == int(first_command_id) + 1
+
+    def test_command_id_starts_at_one(self, plex_client, mock_response):
+        """First playback call has commandID=1."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.pause()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert int(params.get("commandID", 0)) == 1
+
+    def test_plex_token_not_in_params_for_pause(self, plex_client, mock_response):
+        """pause() does not include X-Plex-Token in query params (already in headers)."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.pause()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_token_not_in_params_for_play(self, plex_client, mock_response):
+        """play() does not include X-Plex-Token in query params."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.play("/library/metadata/42")
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_token_not_in_params_for_shuffle_all(self, plex_client, mock_response):
+        """shuffle_all() does not include X-Plex-Token in query params."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.shuffle_all()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_token_not_in_params_for_unpause(self, plex_client, mock_response):
+        """unpause() does not include X-Plex-Token in query params."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.unpause()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_token_not_in_params_for_skip(self, plex_client, mock_response):
+        """skip() does not include X-Plex-Token in query params."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.skip()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_token_not_in_params_for_stop(self, plex_client, mock_response):
+        """stop() does not include X-Plex-Token in query params."""
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            plex_client.stop()
+            _, kwargs = mock_get.call_args
+            params = kwargs.get("params", {})
+            assert "X-Plex-Token" not in params
+
+    def test_plex_player_identifier_constant_exists(self):
+        """PLEX_PLAYER_IDENTIFIER constant exists in constants.py."""
+        from src.constants import PLEX_PLAYER_IDENTIFIER
+        assert isinstance(PLEX_PLAYER_IDENTIFIER, str)
+
+    def test_main_passes_player_identifier_to_plex_client(self):
+        """main.py passes PLEX_PLAYER_IDENTIFIER when constructing PlexClient."""
+        import inspect
+        import src.main as main_module
+        source = inspect.getsource(main_module)
+        assert "PLEX_PLAYER_IDENTIFIER" in source
+        assert "player_identifier" in source
+
+
+# ---------------------------------------------------------------------------
+# 6.3 Integration tests (skipped by default)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
