@@ -126,6 +126,22 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 
 ---
 
+## Radio
+
+### `SCRIPT_RADIO_CONNECTING`
+**Runtime** (contains station name and frequency)
+> "Thank you for your patience. Tuning in to [station name] — [frequency] megahertz. Please stand by."
+
+### `SCRIPT_RADIO_PLAYING_GREETING`
+**Runtime** (contains station name and frequency)
+> "You are currently tuned to [station name] on [frequency] megahertz."
+
+### `SCRIPT_RADIO_PLAYING_MENU`
+**Pre-rendered**
+> "To disconnect your call, dial three. To reach a new party, dial zero."
+
+---
+
 ## Error States
 
 ### `SCRIPT_PLEX_FAILURE`

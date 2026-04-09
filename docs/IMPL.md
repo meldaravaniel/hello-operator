@@ -14,6 +14,7 @@ suggested development order.
 | Audio playback | `sounddevice` + `numpy` |
 | TTS | Piper (offline binary) |
 | Plex integration | Plex HTTP API (server URL + auth token) |
+| FM radio | `rtl_fm` subprocess (from `rtl-sdr` package) piped to `aplay` |
 | Persistence | SQLite (three separate DB files) |
 
 ---
@@ -25,6 +26,7 @@ suggested development order.
 | `AudioInterface` | `SounddeviceAudio` | `MockAudio` |
 | `TTSInterface` | `PiperTTS` | `MockTTS` |
 | `PlexClientInterface` | `PlexClient` | `MockPlexClient` |
+| `RadioInterface` | `RtlFmRadio` | `MockRadio` |
 | `ErrorQueueInterface` | `SqliteErrorQueue` | `MockErrorQueue` |
 
 ---
@@ -69,6 +71,31 @@ suggested development order.
 
 ---
 
+## Radio Implementation (`RtlFmRadio`)
+
+- Launches `rtl_fm` and `aplay` as a two-process pipeline on `play(frequency_hz)`
+- Command pattern:
+  ```
+  rtl_fm -f {frequency_hz} -M fm -s 200k -r 48k - | aplay -r 48k -f S16_LE -t raw -
+  ```
+- Both processes are stored as instance attributes; `stop()` terminates them both and waits for clean exit
+- `is_playing()` returns `True` while the `rtl_fm` process is alive (`poll() is None`)
+- Raises `RuntimeError` if `rtl_fm` or `aplay` is not found on `PATH`
+- `MockRadio` records calls and exposes `set_playing(bool)` for test configuration
+
+### Radio station config (`radio_stations.json`)
+
+Loaded at startup from `RADIO_CONFIG_PATH`. Format:
+
+```json
+[
+  {"name": "KEXP",  "frequency_mhz": 90.3, "phone_number": "5550903"},
+  {"name": "KNKX",  "frequency_mhz": 88.5, "phone_number": "5550885"}
+]
+```
+
+Each entry is seeded into the phone book at startup via `phone_book.seed(phone_number, plex_key, media_type, name)`, where `plex_key = "radio:{frequency_hz}"` and `media_type = "radio"`. The `seed()` method inserts the entry only if the phone number is not already present — it never overwrites an existing entry.
+
 ## Plex Client Implementation (`PlexClient`)
 
 - Uses the Plex HTTP API with a configured server URL and auth token
@@ -86,11 +113,13 @@ suggested development order.
 ```sql
 CREATE TABLE phone_book (
     plex_key     TEXT PRIMARY KEY,
-    media_type   TEXT NOT NULL,
+    media_type   TEXT NOT NULL,   -- "playlist"|"artist"|"album"|"genre"|"radio"
     name         TEXT NOT NULL,
     phone_number TEXT NOT NULL UNIQUE
 );
 ```
+
+Radio station entries use `plex_key = "radio:{frequency_hz}"` (e.g. `"radio:90300000.0"`). These are pre-seeded at startup via `phone_book.seed()`; their phone numbers are user-configured and never auto-generated.
 
 ### `plex_cache` (SQLite, separate file from `phone_book`)
 
@@ -121,14 +150,15 @@ CREATE TABLE error_queue (
 
 Suggested implementation sequence, each layer building on the last:
 
-1. **Interfaces** — define ABCs, `MediaItem`, `PlaybackState`, `ErrorEntry`; no logic, all tests pass trivially
+1. **Interfaces** — define ABCs, `MediaItem`, `PlaybackState`, `RadioStation`, `ErrorEntry`; no logic, all tests pass trivially
 2. **`error_queue`** — `SqliteErrorQueue` + `MockErrorQueue`; pure Python + SQLite
-3. **`phone_book`** — pure Python + SQLite, no other dependencies
+3. **`phone_book`** — pure Python + SQLite, no other dependencies; includes `seed()` method
 4. **`gpio_handler`** — mock GPIO pin reader; fully unit-testable
 5. **`audio`** — `SounddeviceAudio` + `MockAudio`
 6. **`tts`** — `PiperTTS` + `MockTTS` + pre-render logic
 7. **`plex_client`** — `MockPlexClient` first; real client + integration tests after
 8. **`plex_store`** — uses `MockPlexClient`; tests persistence and update strategy
-9. **`menu`** — state machine; uses mocks for everything including `plex_store`
-10. **`session`** — wires GPIO events to menu; uses mocks
-11. **`main`** — wires concrete implementations together; smoke test on real hardware
+9. **`radio`** — `RtlFmRadio` + `MockRadio`; subprocess pipeline management
+10. **`menu`** — state machine; uses mocks for everything including `plex_store` and `radio`
+11. **`session`** — wires GPIO events to menu; uses mocks
+12. **`main`** — wires concrete implementations together; loads radio config; smoke test on real hardware

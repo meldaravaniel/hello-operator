@@ -73,15 +73,17 @@ main.py
         └── menu          (state machine; uses only interfaces, never concrete impls)
               ├── plex_store      (local SQLite cache; menu never calls plex_client directly for browse data)
               │     └── plex_client  (PlexClientInterface — HTTP calls to Plex)
-              ├── phone_book      (SQLite: auto-assigns 7-digit numbers to plex_keys)
+              ├── phone_book      (SQLite: auto-assigns 7-digit numbers to plex_keys; radio stations pre-seeded)
               ├── AudioInterface  (SounddeviceAudio / MockAudio)
-              └── TTSInterface    (PiperTTS / MockTTS)
+              ├── TTSInterface    (PiperTTS / MockTTS)
+              └── RadioInterface  (RtlFmRadio / MockRadio)
 ```
 
 ### Key interfaces
 - `AudioInterface` — `play_tone`, `play_file`, `play_dtmf`, `play_off_hook_tone`, `stop`, `is_playing`; all `play_*` methods on `SounddeviceAudio` are **non-blocking** (enqueue a task and return immediately); a daemon worker thread executes tasks in FIFO order; `stop()` clears the queue and halts playback within ~5 ms; `is_playing()` returns `True` if the worker is busy or the queue is non-empty
 - `TTSInterface` — `speak`, `speak_and_play`, `speak_digits`, `prerender({script_name: text})`
 - `PlexClientInterface` — browse (`get_playlists/artists/genres/albums_for_artist`) + genre tracks (`get_tracks_for_genre(section_id, genre_key) -> list`) + playback (`play/shuffle_all/play_tracks(track_keys, shuffle=True)/pause/unpause/skip/stop/now_playing/get_queue_position`); `now_playing()` returns `PlaybackState(item, is_paused)`
+- `RadioInterface` — `play(frequency_hz: float)`, `stop()`, `is_playing() -> bool`; `RtlFmRadio` launches `rtl_fm | aplay` as a subprocess pipeline; `stop()` terminates both processes; no pause, no skip, no queue position
 - `ErrorQueueInterface` — `log(source, severity, message)`, `get_all()`, `get_by_severity()`; injected into modules that originate errors (`tts`, `plex_store`)
 
 ### Important behavioral rules
@@ -111,6 +113,10 @@ main.py
 - **Genre plex_key encoding** — genre `MediaItem.plex_key` is stored as `"section:{section_id}/genre:{genre_key}"` (e.g., `"section:1/genre:/library/sections/1/genre/15"`); `menu._select_item()` parses this with `_parse_genre_plex_key()` to extract the two parts before calling `get_tracks_for_genre`
 - **Genre playback flow** — selecting a genre calls `get_tracks_for_genre(section_id, genre_key)` then `play_tracks(track_keys, shuffle=True)`; if the genre has no tracks, `SCRIPT_NOT_IN_SERVICE` is spoken and state returns to `BROWSE_GENRES`; `play()` is never called for genres
 - **`play_tracks` API** — `POST /playQueues` with `uri`, `shuffle`, and `commandID` params to create a queue, then `GET /player/playback/playMedia` with `playQueueID` to start playback
+- **Radio plex_key encoding** — radio entries in the phone book use `plex_key = "radio:{frequency_hz}"` (e.g. `"radio:90300000.0"`) and `media_type = "radio"`; seeded at startup via `phone_book.seed()` from `radio_stations.json`; `menu._execute_direct_dial()` parses the frequency from the plex_key and calls `radio.play(frequency_hz)`
+- **Radio playback flow** — dialing a radio number stops any active Plex playback, stops any active radio stream, speaks `SCRIPT_RADIO_CONNECTING`, calls `radio.play(frequency_hz)`, and transitions to `RADIO_PLAYING_MENU`; hang-up never stops radio (consistent with Plex hang-up behavior)
+- **Radio playing menu** — `RADIO_PLAYING_MENU` state offers only disconnect (digit 3 → `radio.stop()` → `IDLE_MENU`) and new party (digit 0 → `radio.stop()` → `IDLE_MENU`); no pause, no skip; lifting the handset while radio is playing delivers `SCRIPT_RADIO_PLAYING_GREETING` then `SCRIPT_RADIO_PLAYING_MENU`
+- **Radio state is local** — unlike Plex state (never tracked locally; always queried via `now_playing()`), radio playing state is tracked via `radio.is_playing()`; there is no remote authority to query; menu checks `radio.is_playing()` when `plex_client.now_playing().item is None` to decide between idle and radio playing menus
 
 ### Data stores
 - **`phone_book`** (SQLite): maps `plex_key → 7-digit phone_number`; numbers never reassigned; `ASSISTANT_NUMBER` excluded from assignment
