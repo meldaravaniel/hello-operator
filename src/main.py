@@ -11,7 +11,6 @@ from src.constants import (
     PLEX_URL, PLEX_TOKEN,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
-    HOOK_DEBOUNCE, PULSE_DEBOUNCE,
 )
 from src.error_queue import SqliteErrorQueue
 from src.phone_book import PhoneBook
@@ -117,10 +116,8 @@ def build_gpio_handler() -> GPIOHandler:
         return GPIO.input(PULSE_SWITCH_PIN)
 
     return GPIOHandler(
-        hook_reader=hook_reader,
-        pulse_reader=pulse_reader,
-        hook_debounce=HOOK_DEBOUNCE,
-        pulse_debounce=PULSE_DEBOUNCE,
+        hook_pin_reader=hook_reader,
+        pulse_pin_reader=pulse_reader,
     )
 
 
@@ -136,14 +133,14 @@ def run() -> None:
     audio = SounddeviceAudio()
     tts = PiperTTS(
         piper_binary=PIPER_BINARY,
-        model_path=PIPER_MODEL,
+        piper_model=PIPER_MODEL,
         cache_dir=TTS_CACHE_DIR,
         audio=audio,
         error_queue=error_queue,
     )
 
     # Plex
-    plex_client = PlexClient(base_url=PLEX_URL, token=PLEX_TOKEN)
+    plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN)
     plex_store = PlexStore(db_path=_PLEX_STORE_DB, plex_client=plex_client)
 
     # Pre-render all fixed TTS scripts
