@@ -934,9 +934,10 @@ class Menu:
 
         total = len(messages)
         page_size = ASSISTANT_MESSAGE_PAGE_SIZE
+        ordinal = "first" if offset == 0 else "next"
         self._tts.speak_and_play(
             f"All right, here we go. I have {total} message{'s' if total != 1 else ''} for you. "
-            f"I'll read you the first {min(page_size, total)}."
+            f"I'll read you the {ordinal} {min(page_size, len(page))}."
         )
         for entry in page:
             self._tts.speak_and_play(entry.message)

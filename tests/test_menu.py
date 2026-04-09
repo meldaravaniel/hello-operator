@@ -1360,6 +1360,37 @@ class TestDiagnosticAssistant:
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_NAVIGATION in texts or "menu" in texts.lower() or "switchboard" in texts.lower()
 
+    def test_assistant_pagination_says_first_then_next(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """First page announcement says 'first X'; second page says 'next X'."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        # 6 messages = 2 full pages of ASSISTANT_MESSAGE_PAGE_SIZE (3)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", f"Error message {i}", 1, "2026-01-01")
+            for i in range(ASSISTANT_MESSAGE_PAGE_SIZE * 2)
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        # Select errors (digit 1)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Capture page 1 announcement
+        page1_calls = list(tts_calls(mock_tts))
+        assert any("first" in t for t in page1_calls), \
+            f"Expected 'first' in first page announcement, got: {page1_calls}"
+        assert not any("next" in t for t in page1_calls), \
+            f"Expected no 'next' in first page announcement, got: {page1_calls}"
+        mock_tts.calls.clear()
+        # Continue to page 2 (digit 1)
+        menu.on_digit(1, now=21.0)
+        menu.tick(now=21.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Capture page 2 announcement
+        page2_calls = list(tts_calls(mock_tts))
+        assert any("next" in t for t in page2_calls), \
+            f"Expected 'next' in second page announcement, got: {page2_calls}"
+
 
 # ---------------------------------------------------------------------------
 # §9.7 Final selection announcement
