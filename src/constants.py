@@ -67,3 +67,9 @@ TTS_CACHE_DIR = "/var/cache/hello-operator/tts"  # TODO: adjust path if needed
 # GPIO pin assignments (BCM numbering)
 HOOK_SWITCH_PIN = 17   # TODO: set to real GPIO pin number for hook switch
 PULSE_SWITCH_PIN = 27  # TODO: set to real GPIO pin number for pulse switch
+
+# Digit-to-word mapping used by TTS (speak_digits) and Menu (SCRIPT_CONNECTING_TEMPLATE)
+DIGIT_WORDS = {
+    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
+}

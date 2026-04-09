@@ -35,14 +35,9 @@ from typing import Optional
 from src.constants import (
     CACHE_RETRY_MAX,
     CACHE_RETRY_BACKOFF,
+    DIGIT_WORDS,
 )
 from src.interfaces import AudioInterface, TTSInterface, ErrorQueueInterface
-
-# Mapping from digit character to English word
-_DIGIT_WORDS = {
-    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
-}
 
 _SOURCE = "tts"
 
@@ -112,7 +107,7 @@ class PiperTTS(TTSInterface):
 
     def speak_digits(self, digits: str) -> None:
         """Speak each digit character individually."""
-        words = " ".join(_DIGIT_WORDS.get(c, c) for c in digits)
+        words = " ".join(DIGIT_WORDS.get(c, c) for c in digits)
         self.speak_and_play(words)
 
     def prerender(self, prompts: dict) -> None:

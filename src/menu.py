@@ -37,6 +37,7 @@ from src.constants import (
     PHONE_NUMBER_LENGTH,
     MAX_MENU_OPTIONS,
     ASSISTANT_NUMBER,
+    DIGIT_WORDS,
 )
 
 # Script text (must match SCRIPTS.md)
@@ -216,12 +217,6 @@ class MenuState(Enum):
     DIRECT_DIAL = auto()
     ASSISTANT = auto()
     OFF_HOOK = auto()
-
-
-_DIGIT_WORDS = {
-    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
-}
 
 
 class Menu:
@@ -703,7 +698,7 @@ class Menu:
                 self._state = MenuState.BROWSE_GENRES
             else:
                 number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
-                digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+                digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
                 self._tts.speak_and_play(
                     SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
                 )
@@ -712,7 +707,7 @@ class Menu:
         else:
             # Playlist, album → play directly
             number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
-            digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+            digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
             self._tts.speak_and_play(
                 SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
             )
@@ -764,7 +759,7 @@ class Menu:
             return
 
         # Speak connecting announcement with digits spoken individually
-        digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+        digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
         name = entry.get("name", number)
         self._tts.speak_and_play(
             SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
@@ -820,7 +815,7 @@ class Menu:
                 self._current_artist.media_type,
                 self._current_artist.name,
             )
-            digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+            digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
             self._tts.speak_and_play(
                 SCRIPT_CONNECTING_TEMPLATE.format(
                     digits=digit_words_str, name=self._current_artist.name
