@@ -127,11 +127,9 @@ class PiperTTS(TTSInterface):
                     self._text_to_script[text] = script_name
                     continue
 
-            # Synthesize
-            wav_bytes = self._run_piper(text)
-            if wav_bytes:
-                with open(wav_path, 'wb') as f:
-                    f.write(wav_bytes)
+            # Synthesize directly to the cache path
+            success = self._run_piper(text, wav_path)
+            if success:
                 with open(hash_path, 'w') as f:
                     f.write(current_hash)
 
@@ -147,9 +145,17 @@ class PiperTTS(TTSInterface):
     def _hash_path(self, script_name: str) -> str:
         return os.path.join(self._cache_dir, f"{script_name}.hash")
 
-    def _run_piper(self, text: str) -> Optional[bytes]:
-        """Invoke Piper; return WAV bytes or None on failure."""
-        cmd = [self._binary, "--model", self._model, "--output-raw"]
+    def _run_piper(self, text: str, output_path: str) -> bool:
+        """Invoke Piper with --output_file to produce a valid WAV file.
+
+        Piper writes the WAV file directly to output_path.
+        Returns True on success, False on failure.
+        """
+        cmd = [
+            self._binary,
+            "--model", self._model,
+            "--output_file", output_path,
+        ]
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -157,39 +163,33 @@ class PiperTTS(TTSInterface):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            stdout, stderr = proc.communicate(input=text.encode())
-            if proc.returncode != 0 or not stdout:
-                return None
-            return stdout
+            _stdout, _stderr = proc.communicate(input=text.encode())
+            return proc.returncode == 0 and os.path.exists(output_path)
         except Exception:
-            return None
+            return False
 
     def _synthesize(self, text: str) -> Optional[str]:
         """Run Piper live and write output to a temp file. Returns path or None."""
         import tempfile
-        wav_bytes = self._run_piper(text)
-        if not wav_bytes:
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        success = self._run_piper(text, path)
+        if not success:
             self._error_queue.log(_SOURCE, "error", f"Piper synthesis failed for: {text[:80]}")
             self._audio.play_off_hook_tone()
-            return None
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        try:
-            with os.fdopen(fd, 'wb') as f:
-                f.write(wav_bytes)
-        except Exception:
+            if os.path.exists(path):
+                os.unlink(path)
             return None
         return path
 
     def _repopulate(self, script_name: str, text: str) -> bool:
         """Attempt to re-synthesize a cache entry. Returns True on success."""
+        wav_path = self._wav_path(script_name)
         for attempt in range(CACHE_RETRY_MAX):
             if attempt > 0:
                 time.sleep(CACHE_RETRY_BACKOFF)
-            wav_bytes = self._run_piper(text)
-            if wav_bytes:
-                wav_path = self._wav_path(script_name)
-                with open(wav_path, 'wb') as f:
-                    f.write(wav_bytes)
+            success = self._run_piper(text, wav_path)
+            if success:
                 return True
         # All retries exhausted
         self._error_queue.log(_SOURCE, "error", f"Cache repopulation exhausted for {script_name}")
