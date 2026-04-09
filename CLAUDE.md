@@ -79,7 +79,7 @@ main.py
 ```
 
 ### Key interfaces
-- `AudioInterface` — `play_tone`, `play_file`, `play_dtmf`, `play_off_hook_tone`, `stop`, `is_playing`
+- `AudioInterface` — `play_tone`, `play_file`, `play_dtmf`, `play_off_hook_tone`, `stop`, `is_playing`; all `play_*` methods on `SounddeviceAudio` are **non-blocking** (enqueue a task and return immediately); a daemon worker thread executes tasks in FIFO order; `stop()` clears the queue and halts playback within ~5 ms; `is_playing()` returns `True` if the worker is busy or the queue is non-empty
 - `TTSInterface` — `speak`, `speak_and_play`, `speak_digits`, `prerender({script_name: text})`
 - `PlexClientInterface` — browse (`get_playlists/artists/genres/albums_for_artist`) + playback (`play/shuffle_all/pause/unpause/skip/stop/now_playing/get_queue_position`); `now_playing()` returns `PlaybackState(item, is_paused)`
 - `ErrorQueueInterface` — `log(source, severity, message)`, `get_all()`, `get_by_severity()`; injected into modules that originate errors (`tts`, `plex_store`)
