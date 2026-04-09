@@ -1958,4 +1958,95 @@ class TestArtistSubmenuReDelivery:
         menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         play_calls = [c for c in mock_plex.calls if c[0] == 'play']
         assert play_calls, f"Expected play() after re-delivery, got: {mock_plex.calls}"
+
+
+# ---------------------------------------------------------------------------
+# F-11 · Digit received before dial-tone menu is delivered
+# ---------------------------------------------------------------------------
+
+class TestDigitBeforeMenu:
+    """Digits dialed during IDLE_DIAL_TONE (before timeout fires the menu)
+    must not cause invalid state routing.  The menu should be delivered first,
+    the dial tone stopped, and the queued digit dropped."""
+
+    def _make_menu_with_content(self, mock_audio, mock_tts, mock_plex,
+                                 mock_plex_store, mock_error_queue, tmp_path):
+        """Helper: build a Menu with one playlist available (idle state)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        return make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+
+    def test_digit_during_idle_dial_tone_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """Digit dialed during IDLE_DIAL_TONE transitions to IDLE_MENU."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        # Digit arrives well before the DIAL_TONE_TIMEOUT_IDLE (5s)
+        menu.on_digit(1, now=0.1)
+        # Advance past disambiguation timeout (1.5s) but still within dial-tone window
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit-before-menu guard, got {menu.state}"
+
+    def test_digit_during_idle_dial_tone_no_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """SCRIPT_NOT_IN_SERVICE must NOT be spoken when digit is dialed during IDLE_DIAL_TONE."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert not tts_spoke(mock_tts, "not in service"), \
+            f"SCRIPT_NOT_IN_SERVICE should not be spoken; tts calls: {tts_calls(mock_tts)}"
+
+    def test_digit_during_idle_dial_tone_stops_dial_tone(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """The dial tone must be stopped before the menu prompt is delivered."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        mock_audio.calls.clear()  # Clear the play_tone from handset lift
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # stop() must appear in audio calls before any speak_and_play
+        audio_stops = [i for i, c in enumerate(mock_audio.calls) if c[0] == 'stop']
+        assert audio_stops, \
+            f"Expected audio.stop() to be called; audio calls: {mock_audio.calls}"
+
+    def test_digit_during_idle_dial_tone_digit_dropped(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """The queued digit is dropped — no navigation action is taken on it."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Digit 1 in IDLE_MENU would navigate to playlists (BROWSE_PLAYLISTS)
+        # but since it was dropped we should still be at IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Digit should be dropped; expected IDLE_MENU, got {menu.state}"
+
+    def test_digit_during_idle_dial_tone_while_playing_delivers_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """When music is playing and digit arrives during IDLE_DIAL_TONE,
+        the PLAYING_MENU is delivered (not the idle menu)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        now_playing_item = MediaItem("/tracks/1", "Some Song", "track")
+        mock_plex.set_now_playing(PlaybackState(item=now_playing_item, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU when music playing, got {menu.state}"
         assert play_calls[0][1] == "/a/1"
