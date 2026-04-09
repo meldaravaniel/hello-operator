@@ -1,0 +1,12 @@
+services:
+  plex:
+    image: plexinc/pms-docker
+    container_name: plex
+    network_mode: host
+    environment:
+      - PLEX_CLAIM=${PLEX_CLAIM:-}
+      - TZ=${TZ:-America/Los_Angeles}
+    volumes:
+      - ./plex/config:/config
+      - ./plex/media:/data
+    restart: unless-stopped
