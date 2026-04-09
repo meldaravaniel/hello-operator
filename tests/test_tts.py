@@ -124,8 +124,8 @@ class TestSpeak:
         with patch('subprocess.Popen', side_effect=_make_fake_piper(tmp_path)):
             tts.speak_and_play("hello world")
         play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        # play_file must have been called once; the file is cleaned up afterward
         assert len(play_calls) == 1
-        assert os.path.exists(play_calls[0][1])
 
     def test_speak_digits_individual(self, tmp_path):
         tts, audio, eq, cache_dir = make_tts(tmp_path)
@@ -480,17 +480,29 @@ class TestWavValidity:
             assert wf.getnframes() > 0, "Live synthesis WAV has no audio frames"
 
     def test_speak_and_play_plays_valid_wav(self, tmp_path):
-        """speak_and_play() must pass a valid WAV path to audio.play_file()."""
+        """speak_and_play() must pass a valid WAV path to audio.play_file() at call time."""
         import wave
         tts, audio, eq, cache_dir = make_tts(tmp_path)
+        valid_wav_paths = []
+
+        original_play_file = audio.play_file
+
+        def intercepting_play_file(path):
+            # Capture whether the file is a valid WAV at the moment play_file is called
+            try:
+                with wave.open(path, 'rb') as wf:
+                    valid_wav_paths.append(wf.getnframes())
+            except Exception:
+                valid_wav_paths.append(0)
+            return original_play_file(path)
+
+        audio.play_file = intercepting_play_file
+
         with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
             tts.speak_and_play("Hello world")
-        play_calls = [c for c in audio.calls if c[0] == 'play_file']
-        assert len(play_calls) == 1, "play_file was not called"
-        played_path = play_calls[0][1]
-        assert os.path.exists(played_path), "play_file was called with nonexistent path"
-        with wave.open(played_path, 'rb') as wf:
-            assert wf.getnframes() > 0, "Played WAV file has no audio frames"
+
+        assert len(valid_wav_paths) == 1, "play_file was not called"
+        assert valid_wav_paths[0] > 0, "Played WAV file had no audio frames at call time"
 
     def test_prerender_then_speak_and_play_uses_valid_cached_wav(self, tmp_path):
         """After prerender, speak_and_play uses the cached WAV; it must be valid."""

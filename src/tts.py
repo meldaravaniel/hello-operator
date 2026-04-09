@@ -24,10 +24,12 @@ Piper failure
 If Piper fails during live synthesis, log an error and play the off-hook tone.
 """
 
+import glob as _glob
 import hashlib
 import os
 import subprocess
 import time
+import uuid
 from typing import Optional
 
 from src.constants import (
@@ -68,6 +70,10 @@ class PiperTTS(TTSInterface):
         # Map from normalized text → script_name (populated by prerender)
         self._text_to_script: dict[str, str] = {}
         os.makedirs(cache_dir, exist_ok=True)
+        # Create and clear the live-synthesis scratch directory
+        self._live_dir = os.path.join(cache_dir, "live")
+        os.makedirs(self._live_dir, exist_ok=True)
+        self._clear_live_dir()
 
     # ------------------------------------------------------------------
     # TTSInterface
@@ -96,13 +102,13 @@ class PiperTTS(TTSInterface):
             # Fall back to live synthesis
             path = self._synthesize(text)
             if path:
-                self._audio.play_file(path)
+                self._play_and_cleanup(path)
             return
 
         # Not a pre-rendered script — live synthesis
         path = self._synthesize(text)
         if path:
-            self._audio.play_file(path)
+            self._play_and_cleanup(path)
 
     def speak_digits(self, digits: str) -> None:
         """Speak each digit character individually."""
@@ -169,10 +175,9 @@ class PiperTTS(TTSInterface):
             return False
 
     def _synthesize(self, text: str) -> Optional[str]:
-        """Run Piper live and write output to a temp file. Returns path or None."""
-        import tempfile
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
+        """Run Piper live; write output to <cache_dir>/live/. Returns path or None."""
+        filename = f"{uuid.uuid4().hex}.wav"
+        path = os.path.join(self._live_dir, filename)
         success = self._run_piper(text, path)
         if not success:
             self._error_queue.log(_SOURCE, "error", f"Piper synthesis failed for: {text[:80]}")
@@ -181,6 +186,26 @@ class PiperTTS(TTSInterface):
                 os.unlink(path)
             return None
         return path
+
+    def _clear_live_dir(self) -> None:
+        """Remove all WAV files from the live-synthesis scratch directory."""
+        for f in _glob.glob(os.path.join(self._live_dir, "*.wav")):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+    def _play_and_cleanup(self, path: str) -> None:
+        """Call audio.play_file(path) then delete the live temp file.
+
+        SounddeviceAudio.play_file reads the file eagerly before enqueuing, so
+        the file may be deleted immediately after play_file returns.
+        """
+        try:
+            self._audio.play_file(path)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
 
     def _repopulate(self, script_name: str, text: str) -> bool:
         """Attempt to re-synthesize a cache entry. Returns True on success."""
