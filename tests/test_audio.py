@@ -539,24 +539,27 @@ class TestWorkerThread:
         assert audio._worker_thread.daemon, "Worker thread should be a daemon thread"
 
     def test_is_playing_true_when_queue_nonempty(self, audio):
-        """is_playing() returns True when tasks are queued even before worker starts them."""
+        """is_playing() returns True when tasks are queued while worker is busy."""
         block = threading.Event()
-        first_started = threading.Event()
 
         def slow_play(data, samplerate, **kwargs):
-            first_started.set()
             block.wait(timeout=2.0)
 
         _sd_mock.play.side_effect = slow_play
 
-        # Enqueue first task (will block worker)
-        self._enqueue(audio, 'play_tone', [350], 5000)
-        assert first_started.wait(timeout=2.0)
+        # Enqueue first task (will block THIS audio's worker inside sd.play)
+        audio.play_tone([350], 5000)
 
-        # Enqueue more while worker is blocked — queue is non-empty
-        self._enqueue(audio, 'play_tone', [440], 5000)
+        # Poll until THIS audio's worker is actually busy (not a foreign worker)
+        assert _wait_for(lambda: audio.is_playing(), timeout=2.0), \
+            "audio.is_playing() never became True after enqueuing a task"
+
+        # While worker is blocked, enqueue another task into the queue
+        audio.play_tone([440], 5000)
+
+        # is_playing() should still be True: worker busy and/or queue non-empty
         assert audio.is_playing(), \
-            "is_playing() should be True when queue is non-empty"
+            "is_playing() should be True when worker is busy and/or queue is non-empty"
 
         audio.stop()
         block.set()
