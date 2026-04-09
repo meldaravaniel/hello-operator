@@ -203,3 +203,88 @@ def test_run_makedirs_exist_ok_true():
             pass
 
     makedirs_mock.assert_called_with(_DB_DIR, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# F-18: GPIO.cleanup() called on clean shutdown
+# ---------------------------------------------------------------------------
+
+def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
+    """Run main.run() with all heavy dependencies stubbed out, capturing
+    GPIO.cleanup() calls via the provided mock.
+
+    If build_gpio_raises is True, build_gpio_handler() raises ImportError
+    (simulating a missing RPi.GPIO module).
+    """
+    import src.main as main_mod
+
+    if build_gpio_raises:
+        build_gpio_side_effect = ImportError("No module named 'RPi'")
+    else:
+        build_gpio_side_effect = None
+
+    with patch("src.main.SqliteErrorQueue", MagicMock()), \
+         patch("src.main.PhoneBook", MagicMock()), \
+         patch("src.main.SounddeviceAudio", MagicMock()), \
+         patch("src.main.PiperTTS", MagicMock()), \
+         patch("src.main.PlexClient", MagicMock()), \
+         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.build_gpio_handler",
+               MagicMock(side_effect=build_gpio_side_effect)), \
+         patch("src.main.Session", MagicMock()), \
+         patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \
+         patch("src.main._gpio_cleanup", gpio_cleanup_mock):
+        try:
+            main_mod.run()
+        except (KeyboardInterrupt, ImportError):
+            pass
+
+
+def test_gpio_cleanup_called_on_keyboard_interrupt():
+    """run() must call _gpio_cleanup() in the finally block when
+    build_gpio_handler() succeeds."""
+    gpio_cleanup_mock = MagicMock()
+    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False)
+    gpio_cleanup_mock.assert_called_once()
+
+
+def test_gpio_cleanup_not_called_when_build_raises():
+    """run() must NOT call _gpio_cleanup() if build_gpio_handler() raised
+    (i.e., GPIO was never initialised)."""
+    gpio_cleanup_mock = MagicMock()
+    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=True)
+    gpio_cleanup_mock.assert_not_called()
+
+
+def test_gpio_cleanup_called_after_audio_stop():
+    """GPIO.cleanup() must be called after audio.stop() in the finally block."""
+    import src.main as main_mod
+
+    call_order = []
+
+    audio_mock_instance = MagicMock()
+    audio_mock_instance.stop.side_effect = lambda: call_order.append("audio.stop")
+    audio_class_mock = MagicMock(return_value=audio_mock_instance)
+
+    gpio_cleanup_mock = MagicMock(side_effect=lambda: call_order.append("gpio_cleanup"))
+
+    with patch("src.main.SqliteErrorQueue", MagicMock()), \
+         patch("src.main.PhoneBook", MagicMock()), \
+         patch("src.main.SounddeviceAudio", audio_class_mock), \
+         patch("src.main.PiperTTS", MagicMock()), \
+         patch("src.main.PlexClient", MagicMock()), \
+         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main.Session", MagicMock()), \
+         patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \
+         patch("src.main._gpio_cleanup", gpio_cleanup_mock):
+        try:
+            main_mod.run()
+        except KeyboardInterrupt:
+            pass
+
+    assert "audio.stop" in call_order, "audio.stop was never called"
+    assert "gpio_cleanup" in call_order, "_gpio_cleanup was never called"
+    assert call_order.index("audio.stop") < call_order.index("gpio_cleanup"), (
+        "audio.stop must be called before gpio_cleanup"
+    )
