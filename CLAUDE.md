@@ -87,6 +87,7 @@ main.py
 ### Important behavioral rules
 
 - **`plex_store` is the only browse data path** — `menu` never calls `plex_client` directly for browse; playback commands (`play`, `shuffle_all`, `pause`, etc.) go directly to `plex_client`
+- **Plex player targeting** — `PlexClient` sends `X-Plex-Target-Client-Identifier: <player_identifier>` and an auto-incrementing `commandID` param on every playback call; `X-Plex-Token` lives in headers only (never in query params for playback methods)
 - **TTS pre-rendering** — all fixed `SCRIPT_*` strings from `SCRIPTS.md` are pre-rendered via `prerender({script_name: text})` at startup; only dynamic strings use live Piper at runtime
 - **Piper invocation** — `_run_piper(text, output_path)` uses `--output_file <path>` so Piper writes a valid RIFF/WAV file directly; never use `--output-raw` (raw PCM) as it produces files that `wave.open()` cannot read
 - **Hang-up never stops Plex** — `HANDSET_ON_CRADLE` stops local audio only; music keeps playing
@@ -119,6 +120,7 @@ main.py
 | `MAX_MENU_OPTIONS` | 8 |
 | `PHONE_NUMBER_LENGTH` | 7 |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 |
+| `PLEX_PLAYER_IDENTIFIER` | `"YOUR_PLEX_PLAYER_ID"` (TODO) |
 
 ## Development Process
 
