@@ -787,6 +787,13 @@ class Menu:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_GENRE)
         elif self._state == MenuState.BROWSE_ALBUMS:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ALBUM)
+        elif self._state == MenuState.ARTIST_SUBMENU:
+            if self._current_artist:
+                albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
+                text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=self._current_artist.name)
+                if albums:
+                    text += SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX
+                self._tts.speak_and_play(text)
 
     def _handle_artist_submenu_digit(self, digit: int, now: float) -> None:
         """Handle digit in ARTIST_SUBMENU state."""
@@ -815,6 +822,7 @@ class Menu:
                                SCRIPT_BROWSE_PROMPT_ALBUM, now)
         else:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+            self._re_deliver_current_state(now)
 
     # ------------------------------------------------------------------
     # Diagnostic assistant

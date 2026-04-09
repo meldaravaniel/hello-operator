@@ -1859,3 +1859,103 @@ class TestBrowseConnectingAnnouncement:
         total_count = sum(len(re.findall(r'\b' + w + r'\b', full_text)) for w in digit_word_list)
         assert total_count >= PHONE_NUMBER_LENGTH, \
             f"Expected {PHONE_NUMBER_LENGTH} digit word occurrences, found {total_count} in: {full_text}"
+
+
+# ---------------------------------------------------------------------------
+# §F10 · Artist submenu re-delivery on invalid digit
+# ---------------------------------------------------------------------------
+
+class TestArtistSubmenuReDelivery:
+    """F-10: _re_deliver_current_state handles ARTIST_SUBMENU."""
+
+    def _make_artist_submenu_with_albums(self, mock_audio, mock_tts, mock_plex,
+                                         mock_plex_store, mock_error_queue, tmp_path):
+        """Build a Menu in ARTIST_SUBMENU state with albums available."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        album = MediaItem("/al/1", "Abbey Road", "album")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [album])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 -> artist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 -> B (Beatles)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def test_invalid_digit_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing an invalid digit in ARTIST_SUBMENU speaks SCRIPT_NOT_IN_SERVICE."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        # Digit 5 is not a valid option in ARTIST_SUBMENU
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE not spoken after invalid digit; texts: {texts}"
+
+    def test_invalid_digit_re_delivers_artist_submenu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After invalid digit, artist submenu prompt is re-spoken (contains artist name)."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # The re-delivered submenu text must contain the artist name
+        assert any("Beatles" in t for t in texts), \
+            f"Artist name not found in re-delivered submenu; texts: {texts}"
+
+    def test_invalid_digit_re_delivered_text_includes_album_option(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Re-delivered artist submenu includes the album option when albums exist."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX contains "album"
+        assert any("album" in t.lower() for t in texts), \
+            f"Album option not found in re-delivered submenu; texts: {texts}"
+
+    def test_current_artist_preserved_after_invalid_digit(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """_current_artist is preserved after an invalid digit re-delivery."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # State must still be ARTIST_SUBMENU (current artist preserved)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU after invalid digit, got {menu.state}"
+
+    def test_current_artist_still_usable_after_re_delivery(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After re-delivery, digit 1 still plays the correct artist."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        # First, dial invalid digit
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        # Now dial 1 -- should still play the artist
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() after re-delivery, got: {mock_plex.calls}"
+        assert play_calls[0][1] == "/a/1"
