@@ -1,0 +1,121 @@
+# Hello Operator
+
+A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interface for a Plex media server. Picking up the handset triggers an interactive voice menu — styled as a telephone operator experience — where you browse and play playlists, artists, albums, and genres by dialing.
+
+---
+
+## How it works
+
+| Action | Result |
+|---|---|
+| Lift handset | Dial tone → operator greeting → main menu |
+| Dial `1`–`8` | Select the Nth menu option |
+| Dial `0` | Return to top / main menu |
+| Dial `9` | Go back one level |
+| Dial two digits within 300 ms | Enter direct-dial mode |
+| Direct-dial a 7-digit number | Connect directly to a media item or radio station |
+| Replace handset | Stop local audio (music keeps playing on Plex) |
+
+All menus are spoken aloud. There are no screens.
+
+---
+
+## Hardware
+
+| Component | Purpose |
+|---|---|
+| Raspberry Pi 4 | Runs the software |
+| Vintage rotary phone | Handset, speaker, dial |
+| Adafruit MAX98357A I2S amplifier | Drives the handset speaker |
+| Hook switch → GPIO | Detects handset up/down |
+| Rotary dial → IR breakbeam → GPIO | Decodes dialed digits |
+| RTL-SDR USB dongle (optional) | FM radio via `rtl_fm` |
+
+Setup guides for each hardware component are in `docs/`:
+
+- [`docs/AMP_SETUP.md`](docs/AMP_SETUP.md) — MAX98357A I2S amplifier
+- [`docs/BREAKBEAM_SETUP.md`](docs/BREAKBEAM_SETUP.md) — IR breakbeam pulse switch
+- [`docs/HOOK_SWITCH_SETUP.md`](docs/HOOK_SWITCH_SETUP.md) — hook switch
+- [`docs/PIPER_SETUP.md`](docs/PIPER_SETUP.md) — Piper TTS voice engine
+- [`docs/PLEX_SETUP.md`](docs/PLEX_SETUP.md) — Plex server configuration
+
+---
+
+## Installation
+
+See [`INSTALL.md`](INSTALL.md) for the full guide. The short version:
+
+```bash
+git clone <repo-url> hello-operator
+cd hello-operator
+sudo ./install.sh
+# edit /etc/hello-operator/config.env
+sudo systemctl start hello-operator
+```
+
+The install script handles system packages, the Piper TTS binary and voice model, the Python virtual environment, and the systemd service.
+
+---
+
+## Configuration
+
+All configuration lives in `/etc/hello-operator/config.env` after installation.
+
+**Required:**
+- `PLEX_TOKEN` — your Plex authentication token
+- `PLEX_PLAYER_IDENTIFIER` — machine identifier of the Plex player to control
+- `ASSISTANT_NUMBER` — reserved 7-digit number for the diagnostic assistant
+
+**Optional:** Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. Defaults match the install script. See [`INSTALL.md`](INSTALL.md) for the full table.
+
+---
+
+## Development
+
+```bash
+# Install dev dependencies (no RPi.GPIO — not needed for tests)
+pip install -r requirements-dev.txt
+
+# Run all unit tests
+python -m pytest -m "not integration" -v
+
+# Run integration tests (requires live Plex server)
+python -m pytest -m integration -v
+
+# Run the app
+python main.py
+```
+
+Tests use dependency injection via Python ABCs — no hardware or network required. GPIO, audio, TTS, and Plex are all mockable at the seam without patching.
+
+On a Raspberry Pi, install with `requirements-pi.txt` instead (adds `RPi.GPIO`).
+
+---
+
+## Project structure
+
+```
+src/
+  main.py          # entry point — wires everything together
+  session.py       # lifecycle: GPIO events → menu state machine
+  menu.py          # state machine
+  gpio_handler.py  # decodes raw GPIO pulses into events
+  plex_client.py   # Plex HTTP API
+  plex_store.py    # local SQLite browse cache
+  phone_book.py    # maps 7-digit numbers to media items
+  audio.py         # sounddevice audio output
+  tts.py           # Piper TTS
+  interfaces.py    # all ABCs and data types
+  constants.py     # all configuration constants
+
+docs/
+  DESIGN.md        # architecture and interface reference
+  SCRIPTS.md       # all spoken TTS strings
+  IMPL.md          # implementation order and status
+```
+
+---
+
+## License
+
+[MIT](LICENSE)
