@@ -1481,3 +1481,379 @@ class TestGenrePlayback:
         play_calls = [c for c in mock_plex.calls if c[0] == 'play']
         assert play_calls, f"play() should be called for playlist; calls: {mock_plex.calls}"
         assert play_calls[0][1] == "/pl/1"
+
+
+# ---------------------------------------------------------------------------
+# §9.9 Browse connecting announcement (F-09)
+# ---------------------------------------------------------------------------
+
+class TestBrowseConnectingAnnouncement:
+    """F-09 — _select_item() and artist submenu shuffle speak SCRIPT_CONNECTING_TEMPLATE."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_playlist_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                             mock_error_queue, tmp_path):
+        """Build a Menu with one playlist and advance to BROWSE_PLAYLISTS."""
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+        # Digit 1 → playlist browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS, \
+            f"Expected BROWSE_PLAYLISTS, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_album_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                          mock_error_queue, tmp_path):
+        """Build a Menu with one artist + one album and advance to BROWSE_ALBUMS."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        album = MediaItem("/album/1", "Abbey Road", "album")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [album])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → artist browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 → B (Beatles starts with B)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        # Digit 2 → browse albums
+        menu.on_digit(2, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ALBUMS, \
+            f"Expected BROWSE_ALBUMS, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_genre_menu_f09(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                              mock_error_queue, tmp_path):
+        """Build a Menu with one genre and advance to BROWSE_GENRES."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/10"
+        genre = MediaItem(genre_plex_key, "Jazz", "genre")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([genre])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/10",
+                                       ["t1", "t2", "t3"])
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → genre browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_GENRES, \
+            f"Expected BROWSE_GENRES, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_artist_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                           mock_error_queue, tmp_path):
+        """Build a Menu with one artist (no albums) and advance to ARTIST_SUBMENU."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → artist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 → B (Beatles)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    # ------------------------------------------------------------------
+    # Playlist
+    # ------------------------------------------------------------------
+
+    def test_playlist_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a playlist speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        from src.menu import SCRIPT_CONNECTING_TEMPLATE
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        # Dial J (digit 4) → selects "Jazz Mix"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_playlist_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the playlist name."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Jazz Mix" in " ".join(connecting_texts), \
+            f"Expected 'Jazz Mix' in connecting template, got: {connecting_texts}"
+
+    def test_playlist_selection_speaks_digit_words(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes digit words from the phone number."""
+        digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                       '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'}
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        full_text = " ".join(connecting_texts).lower()
+        # All 7 digit words (for PHONE_NUMBER_LENGTH) should appear in the text
+        found_words = [word for word in digit_words.values() if word in full_text]
+        assert len(found_words) >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit words in connecting text, found {found_words} in: {full_text}"
+
+    def test_playlist_selection_calls_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After announcing, plex_client.play() is called with the playlist key."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() call, got: {mock_plex.calls}"
+        assert play_calls[0][1] == "/pl/1"
+
+    def test_playlist_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after playlist selection."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_playlist_announcement_before_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """speak_and_play is called before plex_client.play()."""
+        from src.menu import SCRIPT_CONNECTING_TEMPLATE
+        call_order = []
+        original_speak = mock_tts.speak_and_play
+
+        def tracking_speak(text):
+            call_order.append(('speak', text))
+            return original_speak(text)
+
+        mock_tts.speak_and_play = tracking_speak
+
+        original_play = mock_plex.play
+
+        def tracking_play(key):
+            call_order.append(('play', key))
+            return original_play(key)
+
+        mock_plex.play = tracking_play
+
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        # "Please hold" is unique to SCRIPT_CONNECTING_TEMPLATE
+        speak_indices = [i for i, c in enumerate(call_order) if c[0] == 'speak'
+                         and 'Please hold' in c[1]]
+        play_indices = [i for i, c in enumerate(call_order) if c[0] == 'play']
+        assert speak_indices, f"No SCRIPT_CONNECTING_TEMPLATE speak call found in order: {call_order}"
+        assert play_indices, f"No play call found in order: {call_order}"
+        assert speak_indices[0] < play_indices[0], \
+            f"speak should precede play; order: {call_order}"
+
+    # ------------------------------------------------------------------
+    # Album
+    # ------------------------------------------------------------------
+
+    def test_album_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting an album speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        # Digit 1 → A (Abbey Road starts with A) → auto-selects
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_album_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the album name."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Abbey Road" in " ".join(connecting_texts), \
+            f"Expected 'Abbey Road' in connecting template, got: {connecting_texts}"
+
+    def test_album_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after album selection."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    # ------------------------------------------------------------------
+    # Genre
+    # ------------------------------------------------------------------
+
+    def test_genre_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        # Dial J (digit 4) → selects "Jazz"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_genre_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the genre name."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Jazz" in " ".join(connecting_texts), \
+            f"Expected 'Jazz' in connecting template, got: {connecting_texts}"
+
+    def test_genre_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after genre selection."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    # ------------------------------------------------------------------
+    # Artist submenu — digit 1 (shuffle artist)
+    # ------------------------------------------------------------------
+
+    def test_artist_shuffle_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Digit 1 in ARTIST_SUBMENU speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_artist_shuffle_speaks_artist_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Artist shuffle announcement includes the artist name."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Beatles" in " ".join(connecting_texts), \
+            f"Expected 'Beatles' in connecting template text, got: {connecting_texts}"
+
+    def test_artist_shuffle_calls_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After announcing, plex_client.play() is called with the artist key."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() call, got: {mock_plex.calls}"
+        assert play_calls[0][1] == "/a/1"
+
+    def test_artist_shuffle_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after artist shuffle selection."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_artist_shuffle_phone_number_matches_phone_book(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """The phone number spoken in the announcement matches the phone book entry."""
+        from src.phone_book import PhoneBook
+        digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                       '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'}
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # The SCRIPT_CONNECTING_TEMPLATE call must contain digit words (phone number)
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        full_text = " ".join(connecting_texts).lower()
+        # All 7 digit words (for PHONE_NUMBER_LENGTH) should appear in the text
+        found_words = [word for word in digit_words.values() if word in full_text]
+        assert len(found_words) >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit words in connecting text, found {found_words} in: {full_text}"
