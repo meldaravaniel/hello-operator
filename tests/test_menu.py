@@ -1633,8 +1633,9 @@ class TestBrowseConnectingAnnouncement:
     def test_playlist_selection_speaks_digit_words(
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """Connecting announcement includes digit words from the phone number."""
-        digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                       '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'}
+        import re
+        digit_word_list = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+                           'eight', 'nine']
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
@@ -1644,10 +1645,10 @@ class TestBrowseConnectingAnnouncement:
         assert connecting_texts, \
             f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
         full_text = " ".join(connecting_texts).lower()
-        # All 7 digit words (for PHONE_NUMBER_LENGTH) should appear in the text
-        found_words = [word for word in digit_words.values() if word in full_text]
-        assert len(found_words) >= PHONE_NUMBER_LENGTH, \
-            f"Expected {PHONE_NUMBER_LENGTH} digit words in connecting text, found {found_words} in: {full_text}"
+        # Count total digit word occurrences (with repetitions) to match PHONE_NUMBER_LENGTH
+        total_count = sum(len(re.findall(r'\b' + w + r'\b', full_text)) for w in digit_word_list)
+        assert total_count >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit word occurrences, found {total_count} in: {full_text}"
 
     def test_playlist_selection_calls_play(
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
@@ -1841,9 +1842,10 @@ class TestBrowseConnectingAnnouncement:
     def test_artist_shuffle_phone_number_matches_phone_book(
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """The phone number spoken in the announcement matches the phone book entry."""
+        import re
         from src.phone_book import PhoneBook
-        digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                       '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'}
+        digit_word_list = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+                           'eight', 'nine']
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
@@ -1853,7 +1855,7 @@ class TestBrowseConnectingAnnouncement:
         assert connecting_texts, \
             f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
         full_text = " ".join(connecting_texts).lower()
-        # All 7 digit words (for PHONE_NUMBER_LENGTH) should appear in the text
-        found_words = [word for word in digit_words.values() if word in full_text]
-        assert len(found_words) >= PHONE_NUMBER_LENGTH, \
-            f"Expected {PHONE_NUMBER_LENGTH} digit words in connecting text, found {found_words} in: {full_text}"
+        # Count total digit word occurrences (with repetitions) to match PHONE_NUMBER_LENGTH
+        total_count = sum(len(re.findall(r'\b' + w + r'\b', full_text)) for w in digit_word_list)
+        assert total_count >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit word occurrences, found {total_count} in: {full_text}"
