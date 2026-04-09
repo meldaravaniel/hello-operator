@@ -690,10 +690,20 @@ class Menu:
                 # Return to the genre browse state
                 self._state = MenuState.BROWSE_GENRES
             else:
+                number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+                digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+                self._tts.speak_and_play(
+                    SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
+                )
                 self._plex_client.play_tracks(track_keys, shuffle=True)
                 self._state = MenuState.PLAYING_MENU
         else:
             # Playlist, album → play directly
+            number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+            digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+            self._tts.speak_and_play(
+                SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
+            )
             self._plex_client.play(item.plex_key)
             self._state = MenuState.PLAYING_MENU
 
@@ -785,7 +795,18 @@ class Menu:
             return
         albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
         if digit == 1:
-            # Play / shuffle artist
+            # Play / shuffle artist — announce connection first
+            number = self._phone_book.assign_or_get(
+                self._current_artist.plex_key,
+                self._current_artist.media_type,
+                self._current_artist.name,
+            )
+            digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+            self._tts.speak_and_play(
+                SCRIPT_CONNECTING_TEMPLATE.format(
+                    digits=digit_words_str, name=self._current_artist.name
+                )
+            )
             self._plex_client.play(self._current_artist.plex_key)
             self._state = MenuState.PLAYING_MENU
         elif digit == 2 and albums:
