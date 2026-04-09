@@ -165,3 +165,27 @@ See `IMPL.md` § *Development Order* — interfaces first, then `error_queue`, `
 - GPIO is abstracted so `gpio_handler` can be driven by a mock pin reader
 - Shared fixtures: `mock_gpio`, `mock_audio`, `mock_tts`, `mock_plex`, `mock_plex_store`, `tmp_phone_book`, `tmp_plex_store`
 - Full test suite is specified in `TEST_SPEC.md`; all TTS script strings are in `SCRIPTS.md`
+
+### Clean-room rules (unit tests only; integration tests are exempt)
+
+- **No writes outside `tmp_path`** — any file I/O in a unit test must go through
+  pytest's `tmp_path` fixture. Never pass production paths
+  (`/var/lib/hello-operator/`, `/etc/hello-operator/`, `/var/cache/hello-operator/`,
+  `/usr/local/`) to any class under test.
+- **Use the `tmp_*` fixtures** — always use `tmp_phone_book`, `tmp_plex_store`, and
+  `tmp_error_queue` from `conftest.py`; never construct real DB paths manually.
+- **`tmp_path` not `/tmp/`** — use pytest's `tmp_path`, not hardcoded `/tmp/` paths.
+  `tmp_path` is isolated per test and cleaned up automatically.
+- **Environment variables via `monkeypatch`** — use `monkeypatch.setenv` /
+  `monkeypatch.delenv`, never assign to `os.environ` directly. `monkeypatch`
+  auto-restores the environment after each test.
+- **`src.constants` reimport** — `src.constants` reads env vars at module level, so
+  tests that need different values must call `monkeypatch.setenv` before
+  `importlib.reload(src.constants)`. Always reload again in teardown (or use a
+  fixture) so the modified module does not leak into subsequent tests.
+- **No real subprocess launches** — mock `subprocess.Popen` or the concrete class
+  (`RtlFmRadio`, `PiperTTS`) for all unit tests. Never launch real `rtl_fm`,
+  `aplay`, or `piper` processes.
+- **Project-root file tests are read-only** — tests that verify repo files
+  (`install.sh`, `*.service.template`, `*.example`, `INSTALL.md`) only read and
+  parse those files. They never write to system paths or execute the files.

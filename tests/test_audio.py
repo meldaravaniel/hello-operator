@@ -576,13 +576,13 @@ class TestMockAudio:
         mock = MockAudio()
         mock.play_tone([350, 440], 500)
         mock.play_dtmf(5)
-        mock.play_file("/tmp/test.wav")
+        mock.play_file("test.wav")
         mock.play_off_hook_tone()
         mock.stop()
         assert mock.calls == [
             ('play_tone', [350, 440], 500),
             ('play_dtmf', 5),
-            ('play_file', "/tmp/test.wav"),
+            ('play_file', "test.wav"),
             ('play_off_hook_tone',),
             ('stop',),
         ]
