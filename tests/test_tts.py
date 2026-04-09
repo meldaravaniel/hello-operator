@@ -21,12 +21,16 @@ from src.error_queue import MockErrorQueue
 
 def _make_fake_piper(tmp_path):
     """
-    Return a callable that acts as a fake Piper subprocess: writes a non-empty
-    WAV file to the path that would be determined by PiperTTS for the given text.
+    Return a callable that acts as a fake Piper subprocess.
+
+    Compatible with both the old --output-raw interface (returns WAV bytes via
+    stdout) and the new --output_file interface (writes a WAV file to the path
+    given by --output_file in cmd).  This lets existing tests continue to work
+    after the implementation is updated to use --output_file.
     """
     def fake_piper(cmd, stdin, stdout, stderr, **kwargs):
-        # Write a tiny WAV to stdout that PiperTTS will capture
         import wave, array, io
+        # Build a minimal valid WAV in memory
         buf = io.BytesIO()
         with wave.open(buf, 'wb') as wf:
             wf.setnchannels(1)
@@ -35,6 +39,14 @@ def _make_fake_piper(tmp_path):
             samples = array.array('h', [100] * 2205)
             wf.writeframes(samples.tobytes())
         wav_bytes = buf.getvalue()
+
+        # If --output_file is present, write the WAV there (new interface)
+        for i, arg in enumerate(cmd):
+            if arg == "--output_file" and i + 1 < len(cmd):
+                with open(cmd[i + 1], 'wb') as f:
+                    f.write(wav_bytes)
+                break
+
         proc = MagicMock()
         proc.communicate.return_value = (wav_bytes, b'')
         proc.returncode = 0
