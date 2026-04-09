@@ -81,7 +81,7 @@ main.py
 ### Key interfaces
 - `AudioInterface` — `play_tone`, `play_file`, `play_dtmf`, `play_off_hook_tone`, `stop`, `is_playing`; all `play_*` methods on `SounddeviceAudio` are **non-blocking** (enqueue a task and return immediately); a daemon worker thread executes tasks in FIFO order; `stop()` clears the queue and halts playback within ~5 ms; `is_playing()` returns `True` if the worker is busy or the queue is non-empty
 - `TTSInterface` — `speak`, `speak_and_play`, `speak_digits`, `prerender({script_name: text})`
-- `PlexClientInterface` — browse (`get_playlists/artists/genres/albums_for_artist`) + playback (`play/shuffle_all/pause/unpause/skip/stop/now_playing/get_queue_position`); `now_playing()` returns `PlaybackState(item, is_paused)`
+- `PlexClientInterface` — browse (`get_playlists/artists/genres/albums_for_artist`) + genre tracks (`get_tracks_for_genre(section_id, genre_key) -> list`) + playback (`play/shuffle_all/play_tracks(track_keys, shuffle=True)/pause/unpause/skip/stop/now_playing/get_queue_position`); `now_playing()` returns `PlaybackState(item, is_paused)`
 - `ErrorQueueInterface` — `log(source, severity, message)`, `get_all()`, `get_by_severity()`; injected into modules that originate errors (`tts`, `plex_store`)
 
 ### Important behavioral rules
@@ -105,6 +105,9 @@ main.py
 - **Refresh always offered in ASSISTANT** — `plex_store.refresh()` option appears in every assistant menu, even when error queue is empty
 - **Final selection announces digits individually** — `SCRIPT_CONNECTING_TEMPLATE` receives digits spoken as words (e.g. "five five five one two three four"), assembled from `_DIGIT_WORDS` map
 - **PhoneBook returns dicts** — `lookup_by_phone_number` and `lookup_by_plex_key` return `Optional[dict]` with keys `plex_key`, `media_type`, `name`, `phone_number`; use `assign_or_get(plex_key, media_type, name)` to create entries
+- **Genre plex_key encoding** — genre `MediaItem.plex_key` is stored as `"section:{section_id}/genre:{genre_key}"` (e.g., `"section:1/genre:/library/sections/1/genre/15"`); `menu._select_item()` parses this with `_parse_genre_plex_key()` to extract the two parts before calling `get_tracks_for_genre`
+- **Genre playback flow** — selecting a genre calls `get_tracks_for_genre(section_id, genre_key)` then `play_tracks(track_keys, shuffle=True)`; if the genre has no tracks, `SCRIPT_NOT_IN_SERVICE` is spoken and state returns to `BROWSE_GENRES`; `play()` is never called for genres
+- **`play_tracks` API** — `POST /playQueues` with `uri`, `shuffle`, and `commandID` params to create a queue, then `GET /player/playback/playMedia` with `playQueueID` to start playback
 
 ### Data stores
 - **`phone_book`** (SQLite): maps `plex_key → 7-digit phone_number`; numbers never reassigned; `ASSISTANT_NUMBER` excluded from assignment
