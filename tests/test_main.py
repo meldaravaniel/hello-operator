@@ -1,13 +1,19 @@
-"""Tests for F-01: constructor argument mismatches in main.py.
+"""Tests for main.py: constructor argument mismatches (F-01) and startup
+directory creation (F-03).
 
-Verifies that each concrete class used in main.py accepts the exact
+F-01: Verifies that each concrete class used in main.py accepts the exact
 keyword arguments that main.py passes to it. No TypeError should be raised
 during object construction.
+
+F-03: Verifies that run() creates the database directory before instantiating
+any SQLite-backed classes, so startup does not raise OperationalError on a
+fresh system.
 """
 
 import pytest
 import tempfile
 import os
+from unittest.mock import patch, MagicMock, call
 
 
 def test_piper_tts_accepts_piper_model_kwarg(mock_audio, mock_error_queue):
@@ -86,3 +92,114 @@ def test_plex_client_rejects_old_base_url_kwarg():
 
     with pytest.raises(TypeError):
         PlexClient(base_url="http://localhost:32400", token="dummy-token")
+
+
+# ---------------------------------------------------------------------------
+# F-03: Database directory creation on startup
+# ---------------------------------------------------------------------------
+
+def _run_with_stubs(makedirs_mock=None):
+    """Run main.run() with all heavy dependencies stubbed out.
+
+    Stops the event loop immediately via KeyboardInterrupt from time.sleep.
+    If makedirs_mock is None, os.makedirs is left unpatched.
+    Returns the makedirs mock used (or None).
+    """
+    import src.main as main_mod
+
+    patches = [
+        patch("src.main.SqliteErrorQueue", MagicMock()),
+        patch("src.main.PhoneBook", MagicMock()),
+        patch("src.main.SounddeviceAudio", MagicMock()),
+        patch("src.main.PiperTTS", MagicMock()),
+        patch("src.main.PlexClient", MagicMock()),
+        patch("src.main.PlexStore", MagicMock()),
+        patch("src.main.build_gpio_handler", MagicMock()),
+        patch("src.main.Session", MagicMock()),
+        patch("src.main.time.sleep", side_effect=KeyboardInterrupt),
+    ]
+    if makedirs_mock is not None:
+        patches.append(patch("src.main.os.makedirs", makedirs_mock))
+
+    ctx = [p.__enter__() for p in patches]
+    try:
+        try:
+            main_mod.run()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        for p in reversed(patches):
+            p.__exit__(None, None, None)
+
+    return makedirs_mock
+
+
+def test_run_calls_makedirs_before_db_instantiation():
+    """run() must call os.makedirs(_DB_DIR, exist_ok=True) before
+    instantiating SqliteErrorQueue, PhoneBook, or PlexStore."""
+    from src.main import _DB_DIR
+
+    makedirs_mock = MagicMock()
+    _run_with_stubs(makedirs_mock=makedirs_mock)
+
+    makedirs_mock.assert_called_once_with(_DB_DIR, exist_ok=True)
+
+
+def test_run_makedirs_called_before_sqlite_error_queue():
+    """makedirs must be called before SqliteErrorQueue is instantiated."""
+    from src.main import _DB_DIR
+
+    call_order = []
+
+    makedirs_mock = MagicMock(side_effect=lambda *a, **kw: call_order.append("makedirs"))
+    error_queue_mock = MagicMock(side_effect=lambda **kw: call_order.append("SqliteErrorQueue") or MagicMock())
+
+    import src.main as main_mod
+
+    with patch("src.main.os.makedirs", makedirs_mock), \
+         patch("src.main.SqliteErrorQueue", error_queue_mock), \
+         patch("src.main.PhoneBook", MagicMock()), \
+         patch("src.main.SounddeviceAudio", MagicMock()), \
+         patch("src.main.PiperTTS", MagicMock()), \
+         patch("src.main.PlexClient", MagicMock()), \
+         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main.Session", MagicMock()), \
+         patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
+        try:
+            main_mod.run()
+        except KeyboardInterrupt:
+            pass
+
+    assert "makedirs" in call_order, "makedirs was never called"
+    assert "SqliteErrorQueue" in call_order, "SqliteErrorQueue was never called"
+    assert call_order.index("makedirs") < call_order.index("SqliteErrorQueue"), (
+        "makedirs must be called before SqliteErrorQueue"
+    )
+
+
+def test_run_makedirs_exist_ok_true():
+    """run() must pass exist_ok=True to os.makedirs so an existing directory
+    does not cause an error."""
+    from src.main import _DB_DIR
+
+    makedirs_mock = MagicMock()
+
+    import src.main as main_mod
+
+    with patch("src.main.os.makedirs", makedirs_mock), \
+         patch("src.main.SqliteErrorQueue", MagicMock()), \
+         patch("src.main.PhoneBook", MagicMock()), \
+         patch("src.main.SounddeviceAudio", MagicMock()), \
+         patch("src.main.PiperTTS", MagicMock()), \
+         patch("src.main.PlexClient", MagicMock()), \
+         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main.Session", MagicMock()), \
+         patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
+        try:
+            main_mod.run()
+        except KeyboardInterrupt:
+            pass
+
+    makedirs_mock.assert_called_with(_DB_DIR, exist_ok=True)
