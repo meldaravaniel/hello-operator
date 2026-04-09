@@ -125,7 +125,15 @@ main.py
 | `MAX_MENU_OPTIONS` | 8 |
 | `PHONE_NUMBER_LENGTH` | 7 |
 | `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 |
-| `PLEX_PLAYER_IDENTIFIER` | `"YOUR_PLEX_PLAYER_ID"` (TODO) |
+| `PLEX_URL` | `os.environ.get("PLEX_URL", "http://localhost:32400")` |
+| `PLEX_TOKEN` | `os.environ["PLEX_TOKEN"]` (required; raises `RuntimeError` if absent) |
+| `PLEX_PLAYER_IDENTIFIER` | `os.environ["PLEX_PLAYER_IDENTIFIER"]` (required; raises `RuntimeError` if absent) |
+
+### Secrets and environment variables
+
+- **No hardcoded secrets** — `PLEX_TOKEN` and `PLEX_PLAYER_IDENTIFIER` are read from the environment at import time; the app raises `RuntimeError` immediately if either is absent
+- **`.env.example`** at the repo root documents all three Plex variables with placeholder values; never commit a real `.env` file
+- **Tests that import `src.constants`** must set `PLEX_TOKEN` and `PLEX_PLAYER_IDENTIFIER` in the environment (or use `_reimport_constants()` helper from `test_constants.py`); the CI/test runner command should include these: `PLEX_TOKEN=tok PLEX_PLAYER_IDENTIFIER=pid python -m pytest`
 
 ## Development Process
 
