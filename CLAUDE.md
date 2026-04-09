@@ -129,6 +129,7 @@ main.py
 | `PLEX_URL` | `os.environ.get("PLEX_URL", "http://localhost:32400")` |
 | `PLEX_TOKEN` | `os.environ["PLEX_TOKEN"]` (required; raises `RuntimeError` if absent) |
 | `PLEX_PLAYER_IDENTIFIER` | `os.environ["PLEX_PLAYER_IDENTIFIER"]` (required; raises `RuntimeError` if absent) |
+| `PHONE_NUMBER_GENERATE_MAX_ATTEMPTS` | `1000` — max retries in `_generate_unique_number`; exceeding this raises `RuntimeError("Phone book number space exhausted")` |
 
 ### Secrets and environment variables
 
