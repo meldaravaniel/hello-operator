@@ -191,6 +191,17 @@ def _t9_digit_for_char(ch: str) -> int:
     return 8
 
 
+def _parse_genre_plex_key(plex_key: str):
+    """Parse a genre plex_key of the form 'section:{section_id}/genre:{genre_key}'.
+
+    Returns (section_id, genre_key).
+    """
+    # Format: section:{section_id}/genre:{genre_key}
+    section_part, genre_part = plex_key.split("/genre:", 1)
+    section_id = section_part.split("section:", 1)[1]
+    return section_id, genre_part
+
+
 class MenuState(Enum):
     IDLE_DIAL_TONE = auto()
     IDLE_MENU = auto()
@@ -665,8 +676,20 @@ class Menu:
                 text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=item.name)
             self._tts.speak_and_play(text)
             self._browse_listed = []
+        elif media_type == "genre":
+            # Genre: decode section_id and genre_key from plex_key, fetch tracks, play shuffled
+            # plex_key format: "section:{section_id}/genre:{genre_key}"
+            section_id, genre_key = _parse_genre_plex_key(item.plex_key)
+            track_keys = self._plex_client.get_tracks_for_genre(section_id, genre_key)
+            if not track_keys:
+                self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+                # Return to the genre browse state
+                self._state = MenuState.BROWSE_GENRES
+            else:
+                self._plex_client.play_tracks(track_keys, shuffle=True)
+                self._state = MenuState.PLAYING_MENU
         else:
-            # Playlist, genre, album → play directly
+            # Playlist, album → play directly
             self._plex_client.play(item.plex_key)
             self._state = MenuState.PLAYING_MENU
 
