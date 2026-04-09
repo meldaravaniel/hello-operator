@@ -115,12 +115,16 @@ def _gpio_cleanup() -> None:
     try:
         import RPi.GPIO as GPIO  # type: ignore[import]
         GPIO.cleanup()
-    except ImportError:
+    except (ImportError, RuntimeError):
         pass  # Non-Pi environment — nothing to clean up
 
 
 def build_gpio_handler() -> GPIOHandler:
-    """Construct GPIOHandler with real RPi.GPIO pin readers."""
+    """Construct GPIOHandler with real RPi.GPIO pin readers.
+
+    Raises ImportError if RPi.GPIO is not installed, RuntimeError if not on a Pi.
+    run() catches both and skips GPIO setup.
+    """
     import RPi.GPIO as GPIO
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(HOOK_SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)

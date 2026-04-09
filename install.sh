@@ -135,7 +135,7 @@ echo "==> Creating Python virtual environment..."
 sudo -u "$INSTALL_USER" python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
-sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
 
 # ---------------------------------------------------------------------------
 # Systemd service
