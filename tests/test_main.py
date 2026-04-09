@@ -223,7 +223,8 @@ def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
     else:
         build_gpio_side_effect = None
 
-    with patch("src.main.SqliteErrorQueue", MagicMock()), \
+    with patch("src.main.os.makedirs", MagicMock()), \
+         patch("src.main.SqliteErrorQueue", MagicMock()), \
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
@@ -268,7 +269,8 @@ def test_gpio_cleanup_called_after_audio_stop():
 
     gpio_cleanup_mock = MagicMock(side_effect=lambda: call_order.append("gpio_cleanup"))
 
-    with patch("src.main.SqliteErrorQueue", MagicMock()), \
+    with patch("src.main.os.makedirs", MagicMock()), \
+         patch("src.main.SqliteErrorQueue", MagicMock()), \
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", audio_class_mock), \
          patch("src.main.PiperTTS", MagicMock()), \

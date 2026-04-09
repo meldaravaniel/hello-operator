@@ -105,6 +105,20 @@ _PRERENDER_SCRIPTS = {
 }
 
 
+def _gpio_cleanup() -> None:
+    """Call GPIO.cleanup() to release pin reservations on shutdown.
+
+    Imports RPi.GPIO lazily so this module can be imported on non-Pi hosts.
+    Module-level so tests can patch it; run() only calls it after
+    build_gpio_handler() has succeeded (i.e. GPIO was actually initialised).
+    """
+    try:
+        import RPi.GPIO as GPIO  # type: ignore[import]
+        GPIO.cleanup()
+    except ImportError:
+        pass  # Non-Pi environment — nothing to clean up
+
+
 def build_gpio_handler() -> GPIOHandler:
     """Construct GPIOHandler with real RPi.GPIO pin readers."""
     import RPi.GPIO as GPIO
@@ -154,8 +168,11 @@ def run() -> None:
     tts.prerender(_PRERENDER_SCRIPTS)
     log.info("Pre-render complete.")
 
-    # GPIO handler
+    # GPIO handler — track whether GPIO was successfully initialised so the
+    # finally block only calls _gpio_cleanup() when it is safe to do so.
+    _gpio_ready = False
     gpio = build_gpio_handler()
+    _gpio_ready = True
 
     # Session
     session = Session(
@@ -182,6 +199,8 @@ def run() -> None:
         log.info("Shutting down.")
     finally:
         audio.stop()
+        if _gpio_ready:
+            _gpio_cleanup()
 
 
 if __name__ == "__main__":
