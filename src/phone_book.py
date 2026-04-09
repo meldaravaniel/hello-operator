@@ -4,7 +4,7 @@ import random
 import sqlite3
 from typing import Optional
 
-from src.constants import PHONE_NUMBER_LENGTH, ASSISTANT_NUMBER
+from src.constants import PHONE_NUMBER_LENGTH, PHONE_NUMBER_GENERATE_MAX_ATTEMPTS, ASSISTANT_NUMBER
 
 
 class PhoneBook:
@@ -34,10 +34,14 @@ class PhoneBook:
             raise RuntimeError(f"PhoneBook: cannot open database at {self._db_path!r}: {e}") from e
 
     def _generate_unique_number(self, conn: sqlite3.Connection) -> str:
-        """Generate a random PHONE_NUMBER_LENGTH-digit number not already in use."""
+        """Generate a random PHONE_NUMBER_LENGTH-digit number not already in use.
+
+        Raises RuntimeError if a unique number cannot be found within
+        PHONE_NUMBER_GENERATE_MAX_ATTEMPTS iterations.
+        """
         min_val = 10 ** (PHONE_NUMBER_LENGTH - 1)
         max_val = (10 ** PHONE_NUMBER_LENGTH) - 1
-        while True:
+        for _ in range(PHONE_NUMBER_GENERATE_MAX_ATTEMPTS):
             candidate = str(random.randint(min_val, max_val))
             if candidate == ASSISTANT_NUMBER:
                 continue
@@ -46,6 +50,7 @@ class PhoneBook:
             ).fetchone()
             if not exists:
                 return candidate
+        raise RuntimeError("Phone book number space exhausted")
 
     def assign_or_get(self, plex_key: str, media_type: str, name: str) -> str:
         """Return existing phone number for plex_key, or assign a new one."""

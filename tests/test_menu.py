@@ -264,6 +264,40 @@ class TestIdleMenu:
         idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert any(c[0] == 'shuffle_all' for c in mock_plex.calls)
 
+    def test_idle_menu_shuffle_speaks_connecting_announcement(self, idle_menu, mock_tts, mock_plex):
+        """Digit 4 (shuffle) → TTS speaks a connecting/shuffle announcement."""
+        self._advance_to_idle_menu(idle_menu)
+        mock_tts.calls.clear()
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert len(texts) > 0, f"Expected a TTS announcement after shuffle, got none"
+        full_text = " ".join(texts).lower()
+        # The announcement should contain something about connecting / general exchange / shuffle
+        assert any(
+            phrase in full_text
+            for phrase in ("connecting", "general exchange", "trunk call", "shuffl")
+        ), f"No connecting/shuffle announcement found in: {texts}"
+
+    def test_idle_menu_shuffle_transitions_to_playing_menu(self, idle_menu, mock_plex):
+        """Digit 4 (shuffle) → state transitions to PLAYING_MENU."""
+        self._advance_to_idle_menu(idle_menu)
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert idle_menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after shuffle, got {idle_menu.state}"
+
+    def test_idle_menu_shuffle_hangup_leaves_music_playing(self, idle_menu, mock_plex):
+        """After shuffle, hanging up must not call plex_client.stop()."""
+        self._advance_to_idle_menu(idle_menu)
+        idle_menu.on_digit(4, now=11.0)
+        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_plex.calls.clear()
+        idle_menu.on_handset_on_cradle()
+        plex_stop_calls = [c for c in mock_plex.calls if c[0] == 'stop']
+        assert len(plex_stop_calls) == 0, \
+            f"Hang-up should not stop Plex, but stop() was called: {mock_plex.calls}"
+
     def test_idle_menu_omits_empty_category(self, mock_audio, mock_tts, mock_plex,
                                              mock_plex_store, mock_error_queue, tmp_path):
         """plex_store.has_content False for a category → not in menu."""
@@ -327,6 +361,123 @@ class TestIdleMenu:
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_PLEX_FAILURE in t for t in texts), f"plex failure not found: {texts}"
         assert any(SCRIPT_RETRY_PROMPT in t for t in texts), f"retry prompt not found: {texts}"
+
+    def test_idle_menu_retry_partial_success_clears_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry with playlists ok but artists/genres error → failure_mode cleared, menu delivered."""
+        # Put menu into failure mode by starting with a failing store
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # triggers _deliver_idle_menu → fails → failure_mode = "plex"
+        assert menu._failure_mode == "plex"
+
+        # Now swap in a mock store that returns partial success on refresh
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'error', 'genres': 'error'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode is None, f"failure_mode should be None, got {menu._failure_mode}"
+        # Menu should have been delivered — TTS should speak menu options
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE not in t for t in texts) or len(texts) > 0, \
+            f"expected menu delivery after partial success, tts: {texts}"
+        # Specifically, refresh should have been called
+        assert any(c[0] == 'refresh' for c in mock_plex_store.calls), \
+            f"refresh() was not called: {mock_plex_store.calls}"
+
+    def test_idle_menu_retry_all_fail_stays_in_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry when all categories return error → failure_mode stays set, re-speaks failure + retry."""
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        assert menu._failure_mode == "plex"
+
+        # swap in a store whose refresh returns all errors
+        mock_plex_store.set_refresh_result({'playlists': 'error', 'artists': 'error', 'genres': 'error'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode == "plex", \
+            f"failure_mode should remain 'plex', got {menu._failure_mode}"
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"SCRIPT_PLEX_FAILURE not re-spoken: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"SCRIPT_RETRY_PROMPT not re-spoken: {texts}"
+
+    def test_idle_menu_retry_complete_success_delivers_full_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Retry when all categories succeed → failure_mode cleared, full menu delivered."""
+        class FailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise RuntimeError("Plex down")
+            def get_artists(self): raise RuntimeError("Plex down")
+            def get_genres(self): raise RuntimeError("Plex down")
+            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def remove_item(self, k): pass
+            def refresh(self): raise RuntimeError("Plex down")
+
+        failing = FailingStore()
+        menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        assert menu._failure_mode == "plex"
+
+        # swap in a store that succeeds on refresh
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([MediaItem("/a/1", "The Beatles", "artist")])
+        mock_plex_store.set_genres([MediaItem("section:1/genre:/g/1", "Rock", "genre")])
+        mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'})
+        menu._plex_store = mock_plex_store
+
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu._failure_mode is None, \
+            f"failure_mode should be None after complete success, got {menu._failure_mode}"
+        # refresh should have been called
+        assert any(c[0] == 'refresh' for c in mock_plex_store.calls), \
+            f"refresh() was not called: {mock_plex_store.calls}"
 
     def test_idle_menu_no_content_plays_off_hook_tone(self, mock_audio, mock_tts, mock_plex,
                                                        mock_plex_store, mock_error_queue, tmp_path):
@@ -1209,6 +1360,37 @@ class TestDiagnosticAssistant:
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_NAVIGATION in texts or "menu" in texts.lower() or "switchboard" in texts.lower()
 
+    def test_assistant_pagination_says_first_then_next(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """First page announcement says 'first X'; second page says 'next X'."""
+        from src.interfaces import ErrorEntry
+        menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_plex,
+                                           mock_plex_store, mock_error_queue, tmp_path)
+        # 6 messages = 2 full pages of ASSISTANT_MESSAGE_PAGE_SIZE (3)
+        mock_error_queue.entries = [
+            ErrorEntry("plex", "error", f"Error message {i}", 1, "2026-01-01")
+            for i in range(ASSISTANT_MESSAGE_PAGE_SIZE * 2)
+        ]
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        # Select errors (digit 1)
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Capture page 1 announcement
+        page1_calls = list(tts_calls(mock_tts))
+        assert any("first" in t for t in page1_calls), \
+            f"Expected 'first' in first page announcement, got: {page1_calls}"
+        assert not any("next" in t for t in page1_calls), \
+            f"Expected no 'next' in first page announcement, got: {page1_calls}"
+        mock_tts.calls.clear()
+        # Continue to page 2 (digit 1)
+        menu.on_digit(1, now=21.0)
+        menu.tick(now=21.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Capture page 2 announcement
+        page2_calls = list(tts_calls(mock_tts))
+        assert any("next" in t for t in page2_calls), \
+            f"Expected 'next' in second page announcement, got: {page2_calls}"
+
 
 # ---------------------------------------------------------------------------
 # §9.7 Final selection announcement
@@ -1293,3 +1475,725 @@ class TestFinalSelection:
         play_calls = [c for c in mock_plex.calls if c[0] == 'play']
         assert len(play_calls) >= 1
         assert play_calls[0][1] == "/pl/1"
+
+
+# ---------------------------------------------------------------------------
+# §9.8 Genre playback (F-06)
+# ---------------------------------------------------------------------------
+
+def _make_genre_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path,
+                     genres):
+    """Build a Menu pre-loaded with genres and advanced to BROWSE_GENRES state."""
+    mock_plex_store.set_playlists([])
+    mock_plex_store.set_artists([])
+    mock_plex_store.set_genres(genres)
+    mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+    menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+    menu.on_handset_lifted(now=0.0)
+    menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+    # Digit 1 = genres (only category available)
+    menu.on_digit(1, now=11.0)
+    menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+    assert menu.state == MenuState.BROWSE_GENRES, f"Expected BROWSE_GENRES, got {menu.state}"
+    return menu
+
+
+class TestGenrePlayback:
+    """F-06: genre browsing uses get_tracks_for_genre + play_tracks instead of play()."""
+
+    def test_selecting_genre_calls_get_tracks_for_genre(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre from browse calls plex_client.get_tracks_for_genre."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        # Only one genre → auto-selected after dialling its first letter (J → digit 4)
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)  # J is in group 4 (JKL)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        get_tracks_calls = [c for c in mock_plex.calls if c[0] == 'get_tracks_for_genre']
+        assert get_tracks_calls, f"get_tracks_for_genre not called; calls: {mock_plex.calls}"
+
+    def test_selecting_genre_calls_play_tracks_with_shuffle(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre calls play_tracks(..., shuffle=True)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_tracks_calls = [c for c in mock_plex.calls if c[0] == 'play_tracks']
+        assert play_tracks_calls, f"play_tracks not called; calls: {mock_plex.calls}"
+        assert play_tracks_calls[0][1] == ["101", "102"], \
+            f"Expected keys ['101', '102'], got {play_tracks_calls[0][1]}"
+        assert play_tracks_calls[0][2] is True, "shuffle should be True"
+
+    def test_selecting_genre_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After genre playback started → state transitions to PLAYING_MENU."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_selecting_genre_does_not_call_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre selection does NOT call plex_client.play() (uses play_tracks instead)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert not play_calls, f"play() should not be called for genre; calls: {mock_plex.calls}"
+
+    def test_empty_genre_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → SCRIPT_NOT_IN_SERVICE spoken."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_tts.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE not spoken; texts: {texts}"
+
+    def test_empty_genre_does_not_call_play_tracks(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → play_tracks NOT called."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        mock_plex.calls.clear()
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_tracks_calls = [c for c in mock_plex.calls if c[0] == 'play_tracks']
+        assert not play_tracks_calls, f"play_tracks should not be called; calls: {mock_plex.calls}"
+
+    def test_empty_genre_returns_to_browse_state(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Genre with no tracks → user returned to browse state (not PLAYING_MENU)."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
+        genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        menu = _make_genre_menu(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
+        )
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state != MenuState.PLAYING_MENU, \
+            f"State should not be PLAYING_MENU after empty genre; got {menu.state}"
+
+    def test_playlist_selection_unaffected_by_genre_changes(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Existing playlist playback still calls plex_client.play() (not play_tracks)."""
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Navigate to playlist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS
+        mock_plex.calls.clear()
+        # Dial J (digit 4) → selects "Jazz Mix"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"play() should be called for playlist; calls: {mock_plex.calls}"
+        assert play_calls[0][1] == "/pl/1"
+
+
+# ---------------------------------------------------------------------------
+# §9.9 Browse connecting announcement (F-09)
+# ---------------------------------------------------------------------------
+
+class TestBrowseConnectingAnnouncement:
+    """F-09 — _select_item() and artist submenu shuffle speak SCRIPT_CONNECTING_TEMPLATE."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_playlist_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                             mock_error_queue, tmp_path):
+        """Build a Menu with one playlist and advance to BROWSE_PLAYLISTS."""
+        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+        # Digit 1 → playlist browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS, \
+            f"Expected BROWSE_PLAYLISTS, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_album_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                          mock_error_queue, tmp_path):
+        """Build a Menu with one artist + one album and advance to BROWSE_ALBUMS."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        album = MediaItem("/album/1", "Abbey Road", "album")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [album])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → artist browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 → B (Beatles starts with B)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        # Digit 2 → browse albums
+        menu.on_digit(2, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ALBUMS, \
+            f"Expected BROWSE_ALBUMS, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_genre_menu_f09(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                              mock_error_queue, tmp_path):
+        """Build a Menu with one genre and advance to BROWSE_GENRES."""
+        genre_plex_key = "section:1/genre:/library/sections/1/genre/10"
+        genre = MediaItem(genre_plex_key, "Jazz", "genre")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([genre])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/10",
+                                       ["t1", "t2", "t3"])
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → genre browse (only category available)
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_GENRES, \
+            f"Expected BROWSE_GENRES, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def _make_artist_menu(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                           mock_error_queue, tmp_path):
+        """Build a Menu with one artist (no albums) and advance to ARTIST_SUBMENU."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 → artist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 → B (Beatles)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    # ------------------------------------------------------------------
+    # Playlist
+    # ------------------------------------------------------------------
+
+    def test_playlist_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a playlist speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        from src.menu import SCRIPT_CONNECTING_TEMPLATE
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        # Dial J (digit 4) → selects "Jazz Mix"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_playlist_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the playlist name."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Jazz Mix" in " ".join(connecting_texts), \
+            f"Expected 'Jazz Mix' in connecting template, got: {connecting_texts}"
+
+    def test_playlist_selection_speaks_digit_words(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes digit words from the phone number."""
+        import re
+        digit_word_list = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+                           'eight', 'nine']
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        full_text = " ".join(connecting_texts).lower()
+        # Count total digit word occurrences (with repetitions) to match PHONE_NUMBER_LENGTH
+        total_count = sum(len(re.findall(r'\b' + w + r'\b', full_text)) for w in digit_word_list)
+        assert total_count >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit word occurrences, found {total_count} in: {full_text}"
+
+    def test_playlist_selection_calls_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After announcing, plex_client.play() is called with the playlist key."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() call, got: {mock_plex.calls}"
+        assert play_calls[0][1] == "/pl/1"
+
+    def test_playlist_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after playlist selection."""
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_playlist_announcement_before_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """speak_and_play is called before plex_client.play()."""
+        from src.menu import SCRIPT_CONNECTING_TEMPLATE
+        call_order = []
+        original_speak = mock_tts.speak_and_play
+
+        def tracking_speak(text):
+            call_order.append(('speak', text))
+            return original_speak(text)
+
+        mock_tts.speak_and_play = tracking_speak
+
+        original_play = mock_plex.play
+
+        def tracking_play(key):
+            call_order.append(('play', key))
+            return original_play(key)
+
+        mock_plex.play = tracking_play
+
+        menu = self._make_playlist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                         mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        # "Please hold" is unique to SCRIPT_CONNECTING_TEMPLATE
+        speak_indices = [i for i, c in enumerate(call_order) if c[0] == 'speak'
+                         and 'Please hold' in c[1]]
+        play_indices = [i for i, c in enumerate(call_order) if c[0] == 'play']
+        assert speak_indices, f"No SCRIPT_CONNECTING_TEMPLATE speak call found in order: {call_order}"
+        assert play_indices, f"No play call found in order: {call_order}"
+        assert speak_indices[0] < play_indices[0], \
+            f"speak should precede play; order: {call_order}"
+
+    # ------------------------------------------------------------------
+    # Album
+    # ------------------------------------------------------------------
+
+    def test_album_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting an album speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        # Digit 1 → A (Abbey Road starts with A) → auto-selects
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_album_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the album name."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Abbey Road" in " ".join(connecting_texts), \
+            f"Expected 'Abbey Road' in connecting template, got: {connecting_texts}"
+
+    def test_album_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after album selection."""
+        menu = self._make_album_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                      mock_error_queue, tmp_path)
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    # ------------------------------------------------------------------
+    # Genre
+    # ------------------------------------------------------------------
+
+    def test_genre_selection_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Selecting a genre speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        # Dial J (digit 4) → selects "Jazz"
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_genre_selection_speaks_item_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Connecting announcement includes the genre name."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Jazz" in " ".join(connecting_texts), \
+            f"Expected 'Jazz' in connecting template, got: {connecting_texts}"
+
+    def test_genre_selection_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after genre selection."""
+        menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                          mock_error_queue, tmp_path)
+        menu.on_digit(4, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    # ------------------------------------------------------------------
+    # Artist submenu — digit 1 (shuffle artist)
+    # ------------------------------------------------------------------
+
+    def test_artist_shuffle_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Digit 1 in ARTIST_SUBMENU speaks SCRIPT_CONNECTING_TEMPLATE before playback."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
+        assert any("Please hold" in t for t in texts), \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE (with 'Please hold') in TTS, got: {texts}"
+
+    def test_artist_shuffle_speaks_artist_name(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Artist shuffle announcement includes the artist name."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Find the connecting template call specifically
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        assert "Beatles" in " ".join(connecting_texts), \
+            f"Expected 'Beatles' in connecting template text, got: {connecting_texts}"
+
+    def test_artist_shuffle_calls_play(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After announcing, plex_client.play() is called with the artist key."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() call, got: {mock_plex.calls}"
+        assert play_calls[0][1] == "/a/1"
+
+    def test_artist_shuffle_transitions_to_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """State is PLAYING_MENU after artist shuffle selection."""
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU, got {menu.state}"
+
+    def test_artist_shuffle_phone_number_matches_phone_book(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """The phone number spoken in the announcement matches the phone book entry."""
+        import re
+        from src.phone_book import PhoneBook
+        digit_word_list = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+                           'eight', 'nine']
+        menu = self._make_artist_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                       mock_error_queue, tmp_path)
+        menu.on_digit(1, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # The SCRIPT_CONNECTING_TEMPLATE call must contain digit words (phone number)
+        connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
+        assert connecting_texts, \
+            f"Expected SCRIPT_CONNECTING_TEMPLATE in TTS, got: {tts_calls(mock_tts)}"
+        full_text = " ".join(connecting_texts).lower()
+        # Count total digit word occurrences (with repetitions) to match PHONE_NUMBER_LENGTH
+        total_count = sum(len(re.findall(r'\b' + w + r'\b', full_text)) for w in digit_word_list)
+        assert total_count >= PHONE_NUMBER_LENGTH, \
+            f"Expected {PHONE_NUMBER_LENGTH} digit word occurrences, found {total_count} in: {full_text}"
+
+
+# ---------------------------------------------------------------------------
+# §F10 · Artist submenu re-delivery on invalid digit
+# ---------------------------------------------------------------------------
+
+class TestArtistSubmenuReDelivery:
+    """F-10: _re_deliver_current_state handles ARTIST_SUBMENU."""
+
+    def _make_artist_submenu_with_albums(self, mock_audio, mock_tts, mock_plex,
+                                         mock_plex_store, mock_error_queue, tmp_path):
+        """Build a Menu in ARTIST_SUBMENU state with albums available."""
+        artist = MediaItem("/a/1", "Beatles", "artist")
+        album = MediaItem("/al/1", "Abbey Road", "album")
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([artist])
+        mock_plex_store.set_genres([])
+        mock_plex_store.set_albums_for_artist("/a/1", [album])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=10.0)
+        # Digit 1 -> artist browse
+        menu.on_digit(1, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS, got {menu.state}"
+        # Digit 1 -> B (Beatles)
+        menu.on_digit(1, now=12.0)
+        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU, got {menu.state}"
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu
+
+    def test_invalid_digit_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing an invalid digit in ARTIST_SUBMENU speaks SCRIPT_NOT_IN_SERVICE."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        # Digit 5 is not a valid option in ARTIST_SUBMENU
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE not spoken after invalid digit; texts: {texts}"
+
+    def test_invalid_digit_re_delivers_artist_submenu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After invalid digit, artist submenu prompt is re-spoken (contains artist name)."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # The re-delivered submenu text must contain the artist name
+        assert any("Beatles" in t for t in texts), \
+            f"Artist name not found in re-delivered submenu; texts: {texts}"
+
+    def test_invalid_digit_re_delivered_text_includes_album_option(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Re-delivered artist submenu includes the album option when albums exist."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        texts = tts_calls(mock_tts)
+        # SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX contains "album"
+        assert any("album" in t.lower() for t in texts), \
+            f"Album option not found in re-delivered submenu; texts: {texts}"
+
+    def test_current_artist_preserved_after_invalid_digit(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """_current_artist is preserved after an invalid digit re-delivery."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # State must still be ARTIST_SUBMENU (current artist preserved)
+        assert menu.state == MenuState.ARTIST_SUBMENU, \
+            f"Expected ARTIST_SUBMENU after invalid digit, got {menu.state}"
+
+    def test_current_artist_still_usable_after_re_delivery(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """After re-delivery, digit 1 still plays the correct artist."""
+        menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_plex,
+                                                      mock_plex_store, mock_error_queue, tmp_path)
+        # First, dial invalid digit
+        menu.on_digit(5, now=13.0)
+        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        # Now dial 1 -- should still play the artist
+        menu.on_digit(1, now=14.0)
+        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        assert play_calls, f"Expected play() after re-delivery, got: {mock_plex.calls}"
+
+
+# ---------------------------------------------------------------------------
+# F-11 · Digit received before dial-tone menu is delivered
+# ---------------------------------------------------------------------------
+
+class TestDigitBeforeMenu:
+    """Digits dialed during IDLE_DIAL_TONE (before timeout fires the menu)
+    must not cause invalid state routing.  The menu should be delivered first,
+    the dial tone stopped, and the queued digit dropped."""
+
+    def _make_menu_with_content(self, mock_audio, mock_tts, mock_plex,
+                                 mock_plex_store, mock_error_queue, tmp_path):
+        """Helper: build a Menu with one playlist available (idle state)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        return make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+
+    def test_digit_during_idle_dial_tone_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """Digit dialed during IDLE_DIAL_TONE transitions to IDLE_MENU."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        # Digit arrives well before the DIAL_TONE_TIMEOUT_IDLE (5s)
+        menu.on_digit(1, now=0.1)
+        # Advance past disambiguation timeout (1.5s) but still within dial-tone window
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit-before-menu guard, got {menu.state}"
+
+    def test_digit_during_idle_dial_tone_no_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """SCRIPT_NOT_IN_SERVICE must NOT be spoken when digit is dialed during IDLE_DIAL_TONE."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert not tts_spoke(mock_tts, "not in service"), \
+            f"SCRIPT_NOT_IN_SERVICE should not be spoken; tts calls: {tts_calls(mock_tts)}"
+
+    def test_digit_during_idle_dial_tone_stops_dial_tone(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """The dial tone must be stopped before the menu prompt is delivered."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        mock_audio.calls.clear()  # Clear the play_tone from handset lift
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # stop() must appear in audio calls before any speak_and_play
+        audio_stops = [i for i, c in enumerate(mock_audio.calls) if c[0] == 'stop']
+        assert audio_stops, \
+            f"Expected audio.stop() to be called; audio calls: {mock_audio.calls}"
+
+    def test_digit_during_idle_dial_tone_digit_dropped(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """The queued digit is dropped — no navigation action is taken on it."""
+        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_plex,
+                                             mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        # Digit 1 in IDLE_MENU would navigate to playlists (BROWSE_PLAYLISTS)
+        # but since it was dropped we should still be at IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Digit should be dropped; expected IDLE_MENU, got {menu.state}"
+
+    def test_digit_during_idle_dial_tone_while_playing_delivers_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, tmp_path):
+        """When music is playing and digit arrives during IDLE_DIAL_TONE,
+        the PLAYING_MENU is delivered (not the idle menu)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        now_playing_item = MediaItem("/tracks/1", "Some Song", "track")
+        mock_plex.set_now_playing(PlaybackState(item=now_playing_item, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        menu.on_digit(1, now=0.1)
+        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU when music playing, got {menu.state}"

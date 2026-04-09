@@ -1,7 +1,9 @@
 """Tests for src/plex_store.py — PlexStore local SQLite cache."""
 
+import sqlite3
+
 import pytest
-from src.plex_store import PlexStore
+from src.plex_store import PlexStore, _KEY_PLAYLISTS, _KEY_ARTISTS, _KEY_GENRES
 from src.plex_client import MockPlexClient
 from src.interfaces import MediaItem
 
@@ -291,3 +293,97 @@ class TestManualRefresh:
         assert 'playlists' in summary
         assert 'artists' in summary
         assert 'genres' in summary
+
+
+# ---------------------------------------------------------------------------
+# 5.6 has_content lightweight existence check
+# ---------------------------------------------------------------------------
+
+def _write_raw(db_path: str, cache_key: str, data: str) -> None:
+    """Directly write a raw data string into plex_cache, bypassing PlexStore."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS plex_cache "
+        "(cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO plex_cache (cache_key, data, updated_at) VALUES (?, ?, '2024-01-01T00:00:00+00:00') "
+        "ON CONFLICT(cache_key) DO UPDATE SET data=excluded.data",
+        (cache_key, data),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestHasContentExistenceCheck:
+    """Verify has_content uses a lightweight SQL check, not full deserialization."""
+
+    # --- playlists ---
+
+    def test_playlists_has_content_false_when_absent(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        # No data written at all
+        assert store.playlists_has_content is False
+
+    def test_playlists_has_content_false_when_empty_json(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(tmp_store_db, _KEY_PLAYLISTS, '[]')
+        assert store.playlists_has_content is False
+
+    def test_playlists_has_content_true_when_nonempty(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(
+            tmp_store_db,
+            _KEY_PLAYLISTS,
+            '[{"plex_key": "1", "name": "A", "media_type": "playlist"}]',
+        )
+        assert store.playlists_has_content is True
+
+    # --- artists ---
+
+    def test_artists_has_content_false_when_absent(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        assert store.artists_has_content is False
+
+    def test_artists_has_content_false_when_empty_json(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(tmp_store_db, _KEY_ARTISTS, '[]')
+        assert store.artists_has_content is False
+
+    def test_artists_has_content_true_when_nonempty(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(
+            tmp_store_db,
+            _KEY_ARTISTS,
+            '[{"plex_key": "/artists/1", "name": "Beatles", "media_type": "artist"}]',
+        )
+        assert store.artists_has_content is True
+
+    # --- genres ---
+
+    def test_genres_has_content_false_when_absent(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        assert store.genres_has_content is False
+
+    def test_genres_has_content_false_when_empty_json(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(tmp_store_db, _KEY_GENRES, '[]')
+        assert store.genres_has_content is False
+
+    def test_genres_has_content_true_when_nonempty(self, tmp_store_db):
+        mock = MockPlexClient()
+        store = make_store(tmp_store_db, mock)
+        _write_raw(
+            tmp_store_db,
+            _KEY_GENRES,
+            '[{"plex_key": "/genre/rock", "name": "Rock", "media_type": "genre"}]',
+        )
+        assert store.genres_has_content is True

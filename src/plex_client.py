@@ -15,13 +15,27 @@ from src.interfaces import MediaItem, PlaybackState, PlexClientInterface
 class PlexClient(PlexClientInterface):
     """Concrete Plex API client using requests + Plex HTTP API."""
 
-    def __init__(self, url: str, token: str) -> None:
+    def __init__(self, url: str, token: str, player_identifier: str = "") -> None:
         self._url = url.rstrip('/')
         self._token = token
+        self._player_identifier = player_identifier
+        self._command_id = 0
         self._headers = {
             "X-Plex-Token": token,
             "Accept": "application/json",
         }
+
+    def _playback_headers(self) -> dict:
+        """Return headers for playback commands, including player targeting."""
+        headers = dict(self._headers)
+        if self._player_identifier:
+            headers["X-Plex-Target-Client-Identifier"] = self._player_identifier
+        return headers
+
+    def _next_command_id(self) -> int:
+        """Increment and return the next commandID for playback commands."""
+        self._command_id += 1
+        return self._command_id
 
     def _get(self, path: str) -> dict:
         resp = requests.get(f"{self._url}{path}", headers=self._headers, timeout=10)
@@ -72,8 +86,9 @@ class PlexClient(PlexClientInterface):
             section_id = section["key"]
             genre_data = self._get(f"/library/sections/{section_id}/genre")
             for item in genre_data.get("MediaContainer", {}).get("Directory", []) or []:
+                genre_key = item.get("key", item.get("title", ""))
                 genres.append(MediaItem(
-                    plex_key=item.get("key", item.get("title", "")),
+                    plex_key=f"section:{section_id}/genre:{genre_key}",
                     name=item["title"],
                     media_type="genre",
                 ))
@@ -93,33 +108,63 @@ class PlexClient(PlexClientInterface):
 
     def play(self, plex_key: str) -> None:
         # Use Plex playback API on the server
-        params = {"key": plex_key, "X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/playMedia", params=params, timeout=10)
+        params = {"key": plex_key, "commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/playMedia",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def shuffle_all(self) -> None:
-        params = {"shuffle": 1, "X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/playAll", params=params, timeout=10)
+        params = {"shuffle": 1, "commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/playAll",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def pause(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/pause", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/pause",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def unpause(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/play", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/play",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def skip(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/skipNext", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/skipNext",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def stop(self) -> None:
-        params = {"X-Plex-Token": self._token}
-        resp = requests.get(f"{self._url}/player/playback/stop", params=params, timeout=10)
+        params = {"commandID": self._next_command_id()}
+        resp = requests.get(
+            f"{self._url}/player/playback/stop",
+            params=params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
 
     def now_playing(self) -> PlaybackState:
@@ -143,6 +188,51 @@ class PlexClient(PlexClientInterface):
         total = container.get("size", 0)
         return (current, total)
 
+    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
+        """Return list of track ratingKey values for a genre filter path."""
+        params = {"genre": genre_key}
+        resp = requests.get(
+            f"{self._url}/library/sections/{section_id}/all",
+            params=params,
+            headers=self._headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("MediaContainer", {}).get("Metadata", []) or []
+        return [item["ratingKey"] for item in items]
+
+    def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
+        """Create a Plex play queue from track keys and start playback."""
+        # Build the uri as a comma-joined list of library metadata items
+        uri = "library://plex/directory//library/metadata/" + ",".join(str(k) for k in track_keys)
+        post_params = {
+            "uri": uri,
+            "shuffle": 1 if shuffle else 0,
+            "commandID": self._next_command_id(),
+        }
+        resp = requests.post(
+            f"{self._url}/playQueues",
+            params=post_params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        queue_data = resp.json()
+        queue_id = queue_data.get("MediaContainer", {}).get("playQueueID", "")
+        # Now start playback of the queue
+        play_params = {
+            "playQueueID": queue_id,
+            "commandID": self._next_command_id(),
+        }
+        play_resp = requests.get(
+            f"{self._url}/player/playback/playMedia",
+            params=play_params,
+            headers=self._playback_headers(),
+            timeout=10,
+        )
+        play_resp.raise_for_status()
+
 
 class MockPlexClient(PlexClientInterface):
     """Configurable mock for unit tests; records all calls."""
@@ -155,6 +245,7 @@ class MockPlexClient(PlexClientInterface):
         self._albums: dict = {}  # artist_key -> list
         self._now_playing: PlaybackState = PlaybackState(item=None, is_paused=False)
         self._queue_position: tuple = (0, 0)
+        self._tracks_for_genre: dict = {}  # (section_id, genre_key) -> list of ratingKeys
 
     # -- Configuration methods (test-only) ------------------------------------
 
@@ -169,6 +260,9 @@ class MockPlexClient(PlexClientInterface):
 
     def set_albums_for_artist(self, artist_key: str, albums: list) -> None:
         self._albums[artist_key] = albums
+
+    def set_tracks_for_genre(self, section_id: str, genre_key: str, tracks: list) -> None:
+        self._tracks_for_genre[(section_id, genre_key)] = tracks
 
     def set_now_playing(self, state: PlaybackState) -> None:
         self._now_playing = state
@@ -219,3 +313,10 @@ class MockPlexClient(PlexClientInterface):
     def get_queue_position(self) -> tuple:
         self.calls.append(('get_queue_position',))
         return self._queue_position
+
+    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
+        self.calls.append(('get_tracks_for_genre', section_id, genre_key))
+        return list(self._tracks_for_genre.get((section_id, genre_key), []))
+
+    def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
+        self.calls.append(('play_tracks', track_keys, shuffle))

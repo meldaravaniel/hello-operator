@@ -2,8 +2,9 @@
 
 import re
 import pytest
+from unittest.mock import patch
 from src.phone_book import PhoneBook
-from src.constants import PHONE_NUMBER_LENGTH, ASSISTANT_NUMBER
+from src.constants import PHONE_NUMBER_LENGTH, ASSISTANT_NUMBER, PHONE_NUMBER_GENERATE_MAX_ATTEMPTS
 
 
 def test_assign_new_number(tmp_phone_book):
@@ -99,3 +100,25 @@ def test_get_all_returns_all_entries(tmp_phone_book):
     pb.assign_or_get("/lib/2", "artist", "Artist B")
     all_items = pb.get_all()
     assert len(all_items) == 2
+
+
+def test_generate_unique_number_raises_after_max_attempts(tmp_phone_book):
+    """_generate_unique_number raises RuntimeError when all candidates are taken."""
+    pb = PhoneBook(tmp_phone_book)
+    # Patch random.randint so every candidate is always the same "taken" number,
+    # simulating a full number space after PHONE_NUMBER_GENERATE_MAX_ATTEMPTS tries.
+    import sqlite3
+    with pb._connect() as conn:
+        conn.execute(
+            "INSERT INTO phone_book (plex_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
+            ("/taken/1", "artist", "Taken", "1234567")
+        )
+    with patch("src.phone_book.random.randint", return_value=1234567):
+        with pytest.raises(RuntimeError, match="Phone book number space exhausted"):
+            pb.assign_or_get("/lib/new", "artist", "New Artist")
+
+
+def test_phone_number_generate_max_attempts_constant_exists():
+    """PHONE_NUMBER_GENERATE_MAX_ATTEMPTS is defined in constants."""
+    assert isinstance(PHONE_NUMBER_GENERATE_MAX_ATTEMPTS, int)
+    assert PHONE_NUMBER_GENERATE_MAX_ATTEMPTS > 0

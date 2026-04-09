@@ -37,6 +37,7 @@ from src.constants import (
     PHONE_NUMBER_LENGTH,
     MAX_MENU_OPTIONS,
     ASSISTANT_NUMBER,
+    DIGIT_WORDS,
 )
 
 # Script text (must match SCRIPTS.md)
@@ -89,6 +90,8 @@ SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX = " For a particular album, dial two."
 SCRIPT_ARTIST_SINGLE_ALBUM_TEMPLATE = "To call {album}, dial one."
 SCRIPT_CONNECTING_TEMPLATE = ("Thank you for your patience. I'm connecting your call to "
                                "{digits} — {name}. Please hold.")
+SCRIPT_SHUFFLE_CONNECTING = ("One moment, please — I'm putting you through to the general exchange. "
+                              "Enjoy your call!")
 
 # Diagnostic assistant scripts
 SCRIPT_ASSISTANT_GREETING = "Good day, this is the operator's assistant. Let me pull up your account now."
@@ -191,6 +194,17 @@ def _t9_digit_for_char(ch: str) -> int:
     return 8
 
 
+def _parse_genre_plex_key(plex_key: str):
+    """Parse a genre plex_key of the form 'section:{section_id}/genre:{genre_key}'.
+
+    Returns (section_id, genre_key).
+    """
+    # Format: section:{section_id}/genre:{genre_key}
+    section_part, genre_part = plex_key.split("/genre:", 1)
+    section_id = section_part.split("section:", 1)[1]
+    return section_id, genre_part
+
+
 class MenuState(Enum):
     IDLE_DIAL_TONE = auto()
     IDLE_MENU = auto()
@@ -203,12 +217,6 @@ class MenuState(Enum):
     DIRECT_DIAL = auto()
     ASSISTANT = auto()
     OFF_HOOK = auto()
-
-
-_DIGIT_WORDS = {
-    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
-}
 
 
 class Menu:
@@ -476,6 +484,18 @@ class Menu:
         """Handle a single confirmed navigation digit."""
         self._last_activity_time = now
 
+        # Guard: digit dialed during IDLE_DIAL_TONE (before menu delivered).
+        # Deliver the appropriate menu first, stop the dial tone, then drop the
+        # digit — the user dialed before hearing the options and must dial again.
+        if self._state == MenuState.IDLE_DIAL_TONE:
+            self._audio.stop()
+            playback = self._plex_client.now_playing()
+            if playback.item is not None:
+                self._deliver_playing_menu(playback, now)
+            else:
+                self._deliver_idle_menu(now)
+            return
+
         # ASSISTANT state handles its own navigation (0 and 9 are not reserved there)
         if self._state == MenuState.ASSISTANT:
             self._handle_assistant_digit(digit, now)
@@ -522,12 +542,12 @@ class Menu:
         """Process digit in IDLE_MENU state."""
         if self._failure_mode == "plex":
             if digit == 1:
-                # Retry
-                try:
-                    self._plex_store.get_playlists()
+                # Retry — refresh all categories and check if at least one succeeded
+                result = self._plex_store.refresh()
+                if any(v == "ok" for v in result.values()):
                     self._failure_mode = None
                     self._deliver_idle_menu(now)
-                except Exception:
+                else:
                     self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
                     self._tts.speak_and_play(SCRIPT_RETRY_PROMPT)
             else:
@@ -557,6 +577,8 @@ class Menu:
         name, next_state = options[idx]
         if name == 'shuffle':
             self._plex_client.shuffle_all()
+            self._tts.speak_and_play(SCRIPT_SHUFFLE_CONNECTING)
+            self._state = MenuState.PLAYING_MENU
         elif next_state == MenuState.BROWSE_PLAYLISTS:
             items = self._plex_store.get_playlists()
             self._start_browse(items, MenuState.BROWSE_PLAYLISTS,
@@ -665,8 +687,30 @@ class Menu:
                 text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=item.name)
             self._tts.speak_and_play(text)
             self._browse_listed = []
+        elif media_type == "genre":
+            # Genre: decode section_id and genre_key from plex_key, fetch tracks, play shuffled
+            # plex_key format: "section:{section_id}/genre:{genre_key}"
+            section_id, genre_key = _parse_genre_plex_key(item.plex_key)
+            track_keys = self._plex_client.get_tracks_for_genre(section_id, genre_key)
+            if not track_keys:
+                self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+                # Return to the genre browse state
+                self._state = MenuState.BROWSE_GENRES
+            else:
+                number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+                digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
+                self._tts.speak_and_play(
+                    SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
+                )
+                self._plex_client.play_tracks(track_keys, shuffle=True)
+                self._state = MenuState.PLAYING_MENU
         else:
-            # Playlist, genre, album → play directly
+            # Playlist, album → play directly
+            number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+            digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
+            self._tts.speak_and_play(
+                SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
+            )
             self._plex_client.play(item.plex_key)
             self._state = MenuState.PLAYING_MENU
 
@@ -715,7 +759,7 @@ class Menu:
             return
 
         # Speak connecting announcement with digits spoken individually
-        digit_words_str = " ".join(_DIGIT_WORDS[d] for d in number)
+        digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
         name = entry.get("name", number)
         self._tts.speak_and_play(
             SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
@@ -750,6 +794,13 @@ class Menu:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_GENRE)
         elif self._state == MenuState.BROWSE_ALBUMS:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ALBUM)
+        elif self._state == MenuState.ARTIST_SUBMENU:
+            if self._current_artist:
+                albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
+                text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=self._current_artist.name)
+                if albums:
+                    text += SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX
+                self._tts.speak_and_play(text)
 
     def _handle_artist_submenu_digit(self, digit: int, now: float) -> None:
         """Handle digit in ARTIST_SUBMENU state."""
@@ -758,7 +809,18 @@ class Menu:
             return
         albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
         if digit == 1:
-            # Play / shuffle artist
+            # Play / shuffle artist — announce connection first
+            number = self._phone_book.assign_or_get(
+                self._current_artist.plex_key,
+                self._current_artist.media_type,
+                self._current_artist.name,
+            )
+            digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
+            self._tts.speak_and_play(
+                SCRIPT_CONNECTING_TEMPLATE.format(
+                    digits=digit_words_str, name=self._current_artist.name
+                )
+            )
             self._plex_client.play(self._current_artist.plex_key)
             self._state = MenuState.PLAYING_MENU
         elif digit == 2 and albums:
@@ -767,6 +829,7 @@ class Menu:
                                SCRIPT_BROWSE_PROMPT_ALBUM, now)
         else:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+            self._re_deliver_current_state(now)
 
     # ------------------------------------------------------------------
     # Diagnostic assistant
@@ -866,9 +929,10 @@ class Menu:
 
         total = len(messages)
         page_size = ASSISTANT_MESSAGE_PAGE_SIZE
+        ordinal = "first" if offset == 0 else "next"
         self._tts.speak_and_play(
             f"All right, here we go. I have {total} message{'s' if total != 1 else ''} for you. "
-            f"I'll read you the first {min(page_size, total)}."
+            f"I'll read you the {ordinal} {min(page_size, len(page))}."
         )
         for entry in page:
             self._tts.speak_and_play(entry.message)

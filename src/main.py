@@ -4,14 +4,14 @@ Instantiates all concrete implementations, pre-renders fixed TTS scripts,
 wires everything into Session, and starts the event loop.
 """
 
+import os
 import time
 import logging
 
 from src.constants import (
-    PLEX_URL, PLEX_TOKEN,
+    PLEX_URL, PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
-    HOOK_DEBOUNCE, PULSE_DEBOUNCE,
 )
 from src.error_queue import SqliteErrorQueue
 from src.phone_book import PhoneBook
@@ -51,6 +51,7 @@ from src.menu import (
     SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     SCRIPT_ASSISTANT_REFRESH_FAILURE,
+    SCRIPT_SHUFFLE_CONNECTING,
 )
 
 logging.basicConfig(
@@ -100,7 +101,22 @@ _PRERENDER_SCRIPTS = {
     "assistant_valediction_messages": SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     "assistant_refresh_success": SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     "assistant_refresh_failure": SCRIPT_ASSISTANT_REFRESH_FAILURE,
+    "shuffle_connecting": SCRIPT_SHUFFLE_CONNECTING,
 }
+
+
+def _gpio_cleanup() -> None:
+    """Call GPIO.cleanup() to release pin reservations on shutdown.
+
+    Imports RPi.GPIO lazily so this module can be imported on non-Pi hosts.
+    Module-level so tests can patch it; run() only calls it after
+    build_gpio_handler() has succeeded (i.e. GPIO was actually initialised).
+    """
+    try:
+        import RPi.GPIO as GPIO  # type: ignore[import]
+        GPIO.cleanup()
+    except ImportError:
+        pass  # Non-Pi environment — nothing to clean up
 
 
 def build_gpio_handler() -> GPIOHandler:
@@ -117,16 +133,17 @@ def build_gpio_handler() -> GPIOHandler:
         return GPIO.input(PULSE_SWITCH_PIN)
 
     return GPIOHandler(
-        hook_reader=hook_reader,
-        pulse_reader=pulse_reader,
-        hook_debounce=HOOK_DEBOUNCE,
-        pulse_debounce=PULSE_DEBOUNCE,
+        hook_pin_reader=hook_reader,
+        pulse_pin_reader=pulse_reader,
     )
 
 
 def run() -> None:
     """Main entry point — wire all components and start the event loop."""
     log.info("hello-operator starting up")
+
+    # Ensure database directory exists before opening any SQLite files
+    os.makedirs(_DB_DIR, exist_ok=True)
 
     # Data stores
     error_queue = SqliteErrorQueue(db_path=_ERROR_QUEUE_DB)
@@ -136,14 +153,14 @@ def run() -> None:
     audio = SounddeviceAudio()
     tts = PiperTTS(
         piper_binary=PIPER_BINARY,
-        model_path=PIPER_MODEL,
+        piper_model=PIPER_MODEL,
         cache_dir=TTS_CACHE_DIR,
         audio=audio,
         error_queue=error_queue,
     )
 
     # Plex
-    plex_client = PlexClient(base_url=PLEX_URL, token=PLEX_TOKEN)
+    plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
     plex_store = PlexStore(db_path=_PLEX_STORE_DB, plex_client=plex_client)
 
     # Pre-render all fixed TTS scripts
@@ -151,8 +168,11 @@ def run() -> None:
     tts.prerender(_PRERENDER_SCRIPTS)
     log.info("Pre-render complete.")
 
-    # GPIO handler
+    # GPIO handler — track whether GPIO was successfully initialised so the
+    # finally block only calls _gpio_cleanup() when it is safe to do so.
+    _gpio_ready = False
     gpio = build_gpio_handler()
+    _gpio_ready = True
 
     # Session
     session = Session(
@@ -179,6 +199,8 @@ def run() -> None:
         log.info("Shutting down.")
     finally:
         audio.stop()
+        if _gpio_ready:
+            _gpio_cleanup()
 
 
 if __name__ == "__main__":

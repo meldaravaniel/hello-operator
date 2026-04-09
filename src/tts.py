@@ -24,23 +24,20 @@ Piper failure
 If Piper fails during live synthesis, log an error and play the off-hook tone.
 """
 
+import glob as _glob
 import hashlib
 import os
 import subprocess
 import time
+import uuid
 from typing import Optional
 
 from src.constants import (
     CACHE_RETRY_MAX,
     CACHE_RETRY_BACKOFF,
+    DIGIT_WORDS,
 )
 from src.interfaces import AudioInterface, TTSInterface, ErrorQueueInterface
-
-# Mapping from digit character to English word
-_DIGIT_WORDS = {
-    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine',
-}
 
 _SOURCE = "tts"
 
@@ -68,6 +65,10 @@ class PiperTTS(TTSInterface):
         # Map from normalized text → script_name (populated by prerender)
         self._text_to_script: dict[str, str] = {}
         os.makedirs(cache_dir, exist_ok=True)
+        # Create and clear the live-synthesis scratch directory
+        self._live_dir = os.path.join(cache_dir, "live")
+        os.makedirs(self._live_dir, exist_ok=True)
+        self._clear_live_dir()
 
     # ------------------------------------------------------------------
     # TTSInterface
@@ -96,17 +97,17 @@ class PiperTTS(TTSInterface):
             # Fall back to live synthesis
             path = self._synthesize(text)
             if path:
-                self._audio.play_file(path)
+                self._play_and_cleanup(path)
             return
 
         # Not a pre-rendered script — live synthesis
         path = self._synthesize(text)
         if path:
-            self._audio.play_file(path)
+            self._play_and_cleanup(path)
 
     def speak_digits(self, digits: str) -> None:
         """Speak each digit character individually."""
-        words = " ".join(_DIGIT_WORDS.get(c, c) for c in digits)
+        words = " ".join(DIGIT_WORDS.get(c, c) for c in digits)
         self.speak_and_play(words)
 
     def prerender(self, prompts: dict) -> None:
@@ -127,11 +128,9 @@ class PiperTTS(TTSInterface):
                     self._text_to_script[text] = script_name
                     continue
 
-            # Synthesize
-            wav_bytes = self._run_piper(text)
-            if wav_bytes:
-                with open(wav_path, 'wb') as f:
-                    f.write(wav_bytes)
+            # Synthesize directly to the cache path
+            success = self._run_piper(text, wav_path)
+            if success:
                 with open(hash_path, 'w') as f:
                     f.write(current_hash)
 
@@ -147,9 +146,17 @@ class PiperTTS(TTSInterface):
     def _hash_path(self, script_name: str) -> str:
         return os.path.join(self._cache_dir, f"{script_name}.hash")
 
-    def _run_piper(self, text: str) -> Optional[bytes]:
-        """Invoke Piper; return WAV bytes or None on failure."""
-        cmd = [self._binary, "--model", self._model, "--output-raw"]
+    def _run_piper(self, text: str, output_path: str) -> bool:
+        """Invoke Piper with --output_file to produce a valid WAV file.
+
+        Piper writes the WAV file directly to output_path.
+        Returns True on success, False on failure.
+        """
+        cmd = [
+            self._binary,
+            "--model", self._model,
+            "--output_file", output_path,
+        ]
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -157,39 +164,52 @@ class PiperTTS(TTSInterface):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            stdout, stderr = proc.communicate(input=text.encode())
-            if proc.returncode != 0 or not stdout:
-                return None
-            return stdout
+            _stdout, _stderr = proc.communicate(input=text.encode())
+            return proc.returncode == 0 and os.path.exists(output_path)
         except Exception:
-            return None
+            return False
 
     def _synthesize(self, text: str) -> Optional[str]:
-        """Run Piper live and write output to a temp file. Returns path or None."""
-        import tempfile
-        wav_bytes = self._run_piper(text)
-        if not wav_bytes:
+        """Run Piper live; write output to <cache_dir>/live/. Returns path or None."""
+        filename = f"{uuid.uuid4().hex}.wav"
+        path = os.path.join(self._live_dir, filename)
+        success = self._run_piper(text, path)
+        if not success:
             self._error_queue.log(_SOURCE, "error", f"Piper synthesis failed for: {text[:80]}")
             self._audio.play_off_hook_tone()
-            return None
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        try:
-            with os.fdopen(fd, 'wb') as f:
-                f.write(wav_bytes)
-        except Exception:
+            if os.path.exists(path):
+                os.unlink(path)
             return None
         return path
 
+    def _clear_live_dir(self) -> None:
+        """Remove all WAV files from the live-synthesis scratch directory."""
+        for f in _glob.glob(os.path.join(self._live_dir, "*.wav")):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+    def _play_and_cleanup(self, path: str) -> None:
+        """Call audio.play_file(path) then delete the live temp file.
+
+        SounddeviceAudio.play_file reads the file eagerly before enqueuing, so
+        the file may be deleted immediately after play_file returns.
+        """
+        try:
+            self._audio.play_file(path)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
     def _repopulate(self, script_name: str, text: str) -> bool:
         """Attempt to re-synthesize a cache entry. Returns True on success."""
+        wav_path = self._wav_path(script_name)
         for attempt in range(CACHE_RETRY_MAX):
             if attempt > 0:
                 time.sleep(CACHE_RETRY_BACKOFF)
-            wav_bytes = self._run_piper(text)
-            if wav_bytes:
-                wav_path = self._wav_path(script_name)
-                with open(wav_path, 'wb') as f:
-                    f.write(wav_bytes)
+            success = self._run_piper(text, wav_path)
+            if success:
                 return True
         # All retries exhausted
         self._error_queue.log(_SOURCE, "error", f"Cache repopulation exhausted for {script_name}")

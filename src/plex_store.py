@@ -54,6 +54,7 @@ class MockPlexStore:
         self._genres: List[MediaItem] = []
         self._albums: Dict[str, List[MediaItem]] = {}
         self.calls: list = []
+        self._refresh_result: Dict[str, str] = {'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'}
 
     # -- Configuration (test-only) ------------------------------------------
     def set_playlists(self, items: List[MediaItem]) -> None:
@@ -67,6 +68,9 @@ class MockPlexStore:
 
     def set_albums_for_artist(self, artist_key: str, albums: List[MediaItem]) -> None:
         self._albums[artist_key] = list(albums)
+
+    def set_refresh_result(self, result: Dict[str, str]) -> None:
+        self._refresh_result = result
 
     # -- PlexStore interface -------------------------------------------------
     @property
@@ -107,7 +111,7 @@ class MockPlexStore:
 
     def refresh(self) -> Dict[str, str]:
         self.calls.append(('refresh',))
-        return {'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'}
+        return dict(self._refresh_result)
 
 
 class PlexStore:
@@ -180,20 +184,26 @@ class PlexStore:
     # Public properties (has_content flags)
     # ------------------------------------------------------------------
 
+    def _has_content(self, cache_key: str) -> bool:
+        """Return True if cache_key exists and its data is not '[]'."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM plex_cache WHERE cache_key = ? AND data != '[]'",
+                (cache_key,),
+            ).fetchone()
+        return row is not None
+
     @property
     def playlists_has_content(self) -> bool:
-        items = self._read(_KEY_PLAYLISTS)
-        return bool(items)
+        return self._has_content(_KEY_PLAYLISTS)
 
     @property
     def artists_has_content(self) -> bool:
-        items = self._read(_KEY_ARTISTS)
-        return bool(items)
+        return self._has_content(_KEY_ARTISTS)
 
     @property
     def genres_has_content(self) -> bool:
-        items = self._read(_KEY_GENRES)
-        return bool(items)
+        return self._has_content(_KEY_GENRES)
 
     # ------------------------------------------------------------------
     # Browse data accessors

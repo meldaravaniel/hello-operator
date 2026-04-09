@@ -92,3 +92,27 @@ def test_dedup_updates_last_happened(tmp_error_queue):
     q.log("tts", "warning", "msg")
     second_time = q.get_all()[0].last_happened
     assert second_time >= first_time
+
+
+def test_log_uses_single_sql_statement(tmp_error_queue, monkeypatch):
+    """log() must use a single UPSERT statement (INSERT ... ON CONFLICT), never a SELECT."""
+    import sqlite3
+    import inspect
+
+    q = SqliteErrorQueue(tmp_error_queue)
+
+    # Inspect the source of log() — it must contain ON CONFLICT and must not SELECT
+    source = inspect.getsource(q.log)
+    source_upper = source.upper()
+    assert "ON CONFLICT" in source_upper, "log() must use INSERT ... ON CONFLICT (UPSERT)"
+    assert "SELECT" not in source_upper, "log() must not use a SELECT statement"
+
+
+def test_dedup_does_not_change_severity(tmp_error_queue):
+    """Re-logging the same (source, message) with a different severity does not change severity."""
+    q = SqliteErrorQueue(tmp_error_queue)
+    q.log("tts", "warning", "msg")
+    q.log("tts", "error", "msg")
+    entries = q.get_all()
+    assert len(entries) == 1
+    assert entries[0].severity == "warning"  # severity set on first insert, never updated

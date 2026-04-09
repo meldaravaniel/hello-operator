@@ -126,6 +126,14 @@ class PlexClientInterface(ABC):
     def get_queue_position(self) -> tuple:
         """Return (current_track, total_tracks)."""
 
+    @abstractmethod
+    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
+        """Return list of track ratingKey values for a genre."""
+
+    @abstractmethod
+    def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
+        """Create a Plex play queue from track keys and start playback."""
+
 
 class ErrorQueueInterface(ABC):
     """Abstracts the persistent error log."""
