@@ -2776,7 +2776,7 @@ class TestDirectDialFailureReturn:
         db = str(tmp_path / "pb_f25.db")
         phone_book = PhoneBook(db_path=db)
         # Seed a known entry
-        number = phone_book.assign_or_get("/track/42", "track", "Test Track")
+        number = phone_book.assign_or_get("/track/42", "playlist", "Test Track")
 
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
         # Replace the phone_book with one containing our entry

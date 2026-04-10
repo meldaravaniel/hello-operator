@@ -25,7 +25,7 @@ class PhoneBook:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS phone_book (
                         plex_key     TEXT PRIMARY KEY,
-                        media_type   TEXT NOT NULL,
+                        media_type   TEXT NOT NULL CHECK(media_type IN ('playlist','artist','album','genre','radio')),
                         name         TEXT NOT NULL,
                         phone_number TEXT NOT NULL UNIQUE
                     )
