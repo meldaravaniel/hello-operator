@@ -119,6 +119,7 @@ main.py
 - **Radio playback flow** — dialing a radio number stops any active Plex playback, stops any active radio stream, speaks `SCRIPT_RADIO_CONNECTING`, calls `radio.play(frequency_hz)`, and transitions to `RADIO_PLAYING_MENU`; hang-up never stops radio (consistent with Plex hang-up behavior)
 - **Radio playing menu** — `RADIO_PLAYING_MENU` state offers only disconnect (digit 3 → `radio.stop()` → `IDLE_MENU`) and new party (digit 0 → `radio.stop()` → `IDLE_MENU`); no pause, no skip; lifting the handset while radio is playing delivers `SCRIPT_RADIO_PLAYING_GREETING` then `SCRIPT_RADIO_PLAYING_MENU`
 - **Radio state is local** — unlike Plex state (never tracked locally; always queried via `now_playing()`), radio playing state is tracked via `radio.is_playing()`; there is no remote authority to query; menu checks `radio.is_playing()` when `plex_client.now_playing().item is None` to decide between idle and radio playing menus
+- **`load_radio_stations(path)`** — module-level helper in `main.py`; reads `radio_stations.json`, converts `frequency_mhz` → `frequency_hz` (multiply by 1_000_000), returns `list[RadioStation]`; returns `[]` (with warning log) on `FileNotFoundError` or JSON/key parse error; never raises
 
 ### Data stores
 - **`phone_book`** (SQLite): maps `plex_key → 7-digit phone_number`; numbers never reassigned; `ASSISTANT_NUMBER` excluded from assignment
@@ -138,6 +139,7 @@ main.py
 | `PLEX_TOKEN` | `os.environ["PLEX_TOKEN"]` (required; raises `RuntimeError` if absent) |
 | `PLEX_PLAYER_IDENTIFIER` | `os.environ["PLEX_PLAYER_IDENTIFIER"]` (required; raises `RuntimeError` if absent) |
 | `PHONE_NUMBER_GENERATE_MAX_ATTEMPTS` | `1000` — max retries in `_generate_unique_number`; exceeding this raises `RuntimeError("Phone book number space exhausted")` |
+| `RADIO_CONFIG_PATH` | `"/etc/hello-operator/radio_stations.json"` — path to JSON file seeding radio stations into phone book at startup |
 
 ### Secrets and environment variables
 
