@@ -722,6 +722,61 @@ class TestHashFileContextManager:
 
 
 # ---------------------------------------------------------------------------
+# F-23: Narrow except Exception in _run_piper()
+# ---------------------------------------------------------------------------
+
+class TestNarrowRunPiperException:
+    """_run_piper() must catch OSError (not bare except Exception)."""
+
+    def test_run_piper_oserror_returns_false(self, tmp_path):
+        """OSError from subprocess.Popen → _run_piper() returns False."""
+        from src.tts import PiperTTS
+        from src.error_queue import MockErrorQueue
+        from src.audio import MockAudio
+        from unittest.mock import patch
+
+        eq = MockErrorQueue()
+        audio = MockAudio()
+        cache_dir = str(tmp_path / "tts_cache")
+        tts = PiperTTS(
+            piper_binary="/fake/piper",
+            piper_model="/fake/model.onnx",
+            cache_dir=cache_dir,
+            audio=audio,
+            error_queue=eq,
+        )
+
+        with patch('subprocess.Popen', side_effect=OSError("No such file or directory")):
+            result = tts._run_piper("hello", str(tmp_path / "out.wav"))
+
+        assert result is False, f"Expected False when Popen raises OSError; got {result!r}"
+
+    def test_run_piper_oserror_logs_error(self, tmp_path):
+        """OSError from subprocess.Popen → error is logged via error_queue."""
+        from src.tts import PiperTTS
+        from src.error_queue import MockErrorQueue
+        from src.audio import MockAudio
+        from unittest.mock import patch
+
+        eq = MockErrorQueue()
+        audio = MockAudio()
+        cache_dir = str(tmp_path / "tts_cache")
+        tts = PiperTTS(
+            piper_binary="/fake/piper",
+            piper_model="/fake/model.onnx",
+            cache_dir=cache_dir,
+            audio=audio,
+            error_queue=eq,
+        )
+
+        with patch('subprocess.Popen', side_effect=OSError("No such file or directory")):
+            tts.speak_and_play("some text")
+
+        errors = [e for e in eq.entries if e.severity == 'error']
+        assert len(errors) >= 1, f"Expected error logged for OSError; entries: {eq.entries}"
+
+
+# ---------------------------------------------------------------------------
 # MockTTS
 # ---------------------------------------------------------------------------
 

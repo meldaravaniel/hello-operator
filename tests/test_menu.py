@@ -2427,3 +2427,166 @@ class TestRadioMenu:
         menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
         assert menu.state == MenuState.RADIO_PLAYING_MENU, \
             f"Expected RADIO_PLAYING_MENU after timeout; got {menu.state}"
+
+
+# ---------------------------------------------------------------------------
+# F-23: Narrow broad except Exception handlers
+# ---------------------------------------------------------------------------
+
+class TestNarrowExceptionHandlers:
+    """Verify that each narrowed handler triggers correctly on the specific
+    exception types the called code can raise."""
+
+    # -----------------------------------------------------------------------
+    # menu.py — plex_store browse call (line ~425)
+    # -----------------------------------------------------------------------
+
+    def test_plex_store_browse_sqlite_error_enters_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_error_queue, tmp_path):
+        """sqlite3.Error from plex_store.get_playlists() → enters failure mode."""
+        import sqlite3
+        from src.menu import SCRIPT_PLEX_FAILURE, SCRIPT_RETRY_PROMPT
+
+        class SqliteFailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise sqlite3.Error("DB locked")
+            def get_artists(self): raise sqlite3.Error("DB locked")
+            def get_genres(self): raise sqlite3.Error("DB locked")
+            def get_albums_for_artist(self, k): raise sqlite3.Error("DB locked")
+            def remove_item(self, k): pass
+            def refresh(self): raise sqlite3.Error("DB locked")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, SqliteFailingStore(),
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_PLEX_FAILURE for sqlite3.Error; got: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"Expected SCRIPT_RETRY_PROMPT for sqlite3.Error; got: {texts}"
+        assert menu._failure_mode == "plex"
+
+    def test_plex_store_browse_oserror_enters_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_error_queue, tmp_path):
+        """OSError from plex_store.get_artists() → enters failure mode."""
+        from src.menu import SCRIPT_PLEX_FAILURE, SCRIPT_RETRY_PROMPT
+
+        class OsErrorFailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise OSError("Network error")
+            def get_artists(self): raise OSError("Network error")
+            def get_genres(self): raise OSError("Network error")
+            def get_albums_for_artist(self, k): raise OSError("Network error")
+            def remove_item(self, k): pass
+            def refresh(self): raise OSError("Network error")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, OsErrorFailingStore(),
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_PLEX_FAILURE for OSError; got: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"Expected SCRIPT_RETRY_PROMPT for OSError; got: {texts}"
+        assert menu._failure_mode == "plex"
+
+    # -----------------------------------------------------------------------
+    # menu.py — phone_book.lookup_by_phone_number() (line ~802)
+    # -----------------------------------------------------------------------
+
+    def test_phone_book_lookup_sqlite_error_treated_as_not_found(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from phone_book.lookup_by_phone_number() → SCRIPT_NOT_IN_SERVICE."""
+        import sqlite3
+        from src.menu import SCRIPT_NOT_IN_SERVICE
+        from src.phone_book import PhoneBook
+        from unittest.mock import patch
+
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Patch the phone_book to raise sqlite3.Error on lookup
+        def raise_sqlite(*args, **kwargs):
+            raise sqlite3.Error("table locked")
+
+        menu._phone_book.lookup_by_phone_number = raise_sqlite
+
+        mock_tts.calls.clear()
+        # Dial a 7-digit number (not ASSISTANT_NUMBER)
+        for digit in [1, 2, 3, 4, 5, 6, 7]:
+            menu.on_digit(digit, now=15.0 + digit * 0.1)
+        menu.tick(now=20.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE for sqlite3.Error in lookup; got: {texts}"
+
+    # -----------------------------------------------------------------------
+    # menu.py — plex_store.refresh() in _do_assistant_refresh() (line ~1037)
+    # -----------------------------------------------------------------------
+
+    def _enter_assistant(self, menu, mock_plex_store, mock_tts):
+        """Helper: put the menu in ASSISTANT state and clear call records."""
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        assert menu.state == MenuState.ASSISTANT
+        mock_tts.calls.clear()
+
+    def test_assistant_refresh_sqlite_error_speaks_failure(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from plex_store.refresh() in assistant → speaks refresh failure script."""
+        import sqlite3
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_FAILURE
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        self._enter_assistant(menu, mock_plex_store, mock_tts)
+
+        def raise_sqlite():
+            raise sqlite3.Error("DB locked")
+
+        menu._plex_store.refresh = raise_sqlite
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_ASSISTANT_REFRESH_FAILURE for sqlite3.Error; got: {texts}"
+
+    def test_assistant_refresh_oserror_speaks_failure(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """OSError from plex_store.refresh() in assistant → speaks refresh failure script."""
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_FAILURE
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        self._enter_assistant(menu, mock_plex_store, mock_tts)
+
+        def raise_oserror():
+            raise OSError("HTTP connection failed")
+
+        menu._plex_store.refresh = raise_oserror
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_ASSISTANT_REFRESH_FAILURE for OSError; got: {texts}"
