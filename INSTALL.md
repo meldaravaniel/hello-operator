@@ -2,25 +2,54 @@
 
 ## Prerequisites
 
-- Raspberry Pi 4 running Raspberry Pi OS (64-bit recommended)
+- Raspberry Pi 4
 - Plex Media Server running and accessible on the network
 - Hardware wired up per the setup guides in `docs/`:
   - `docs/AMP_SETUP.md` — MAX98357 I2S amplifier
   - `docs/BREAKBEAM_SETUP.md` — IR breakbeam pulse switch
   - `docs/HOOK_SWITCH_SETUP.md` — hook switch
 
+There are two installation paths. Both end up at the same [Configure](#step-configure) step.
+
 ---
 
-## Step 1 — Clone the repository
+## Option A — Flash a pre-built image
+
+The GitHub Actions build workflow produces a ready-to-flash Raspberry Pi OS image with everything pre-installed. This is the fastest way to get started.
+
+### Step A1 — Download the image
+
+Go to the [Releases](../../releases) page and download the latest `hello-operator-*.img.xz`.
+
+Alternatively, download the most recent build artifact from the [Actions](../../actions/workflows/build-image.yml) tab (requires a GitHub account).
+
+### Step A2 — Flash with Raspberry Pi Imager
+
+1. Open [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+2. Under **Device**, choose Raspberry Pi 4.
+3. Under **OS**, choose **Use custom** and select the downloaded `.img.xz` file.
+4. Under **Storage**, choose your microSD card.
+5. Click **Next**. When asked about OS customisation, configure your username, password, and Wi-Fi credentials.
+6. Flash and eject the card.
+
+### Step A3 — Boot and configure
+
+Insert the card, boot the Pi, and SSH in. Then continue at [Configure](#step-configure) below.
+
+---
+
+## Option B — Clone and install on a running Pi
+
+Use this path if you already have Raspberry Pi OS running and want to install hello-operator on top of it.
+
+### Step B1 — Clone the repository
 
 ```bash
 git clone <repo-url> hello-operator
 cd hello-operator
 ```
 
----
-
-## Step 2 — Run the install script
+### Step B2 — Run the install script
 
 ```bash
 sudo ./install.sh
@@ -30,7 +59,7 @@ The script installs system packages, downloads and installs the Piper TTS binary
 
 ---
 
-## Step 3 — Configure
+## Step — Configure
 
 Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.env.example` with comments explaining each variable.
 
@@ -50,6 +79,8 @@ Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.en
 
 These have sensible defaults matching the install script's paths and the hardware wiring guides. Override if your setup differs.
 
+> **Note for pre-built image users:** `PIPER_BINARY`, `PIPER_MODEL`, `TTS_CACHE_DIR`, `HOOK_SWITCH_PIN`, and `PULSE_SWITCH_PIN` are already correct for the baked image and do not need to be changed unless your hardware differs.
+
 | Variable | Default | Description |
 |---|---|---|
 | `PLEX_URL` | `http://localhost:32400` | Plex server URL |
@@ -61,7 +92,7 @@ These have sensible defaults matching the install script's paths and the hardwar
 
 ---
 
-## Step 4 — Configure radio stations (optional)
+## Step — Configure radio stations (optional)
 
 Edit `/etc/hello-operator/radio_stations.json`. The file is pre-populated with example entries from `radio_stations.json.example`. Replace or extend with your local stations:
 
@@ -86,7 +117,7 @@ An RTL-SDR USB dongle (RTL2832U) must be plugged in for radio playback to work.
 
 ---
 
-## Step 5 — Start
+## Step — Start
 
 ```bash
 sudo systemctl start hello-operator
