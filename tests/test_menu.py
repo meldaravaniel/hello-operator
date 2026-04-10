@@ -2535,6 +2535,40 @@ class TestNarrowExceptionHandlers:
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
             f"Expected SCRIPT_NOT_IN_SERVICE for sqlite3.Error in lookup; got: {texts}"
 
+    def test_phone_book_lookup_sqlite_error_logs_to_error_queue(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from phone_book.lookup_by_phone_number() → error_queue.log called."""
+        import sqlite3
+
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Patch the phone_book to raise sqlite3.Error on lookup
+        def raise_sqlite(*args, **kwargs):
+            raise sqlite3.Error("table locked")
+
+        menu._phone_book.lookup_by_phone_number = raise_sqlite
+
+        mock_error_queue.logged_calls.clear()
+        # Dial a 7-digit number (not ASSISTANT_NUMBER)
+        for digit in [1, 2, 3, 4, 5, 6, 7]:
+            menu.on_digit(digit, now=15.0 + digit * 0.1)
+        menu.tick(now=20.0)
+
+        assert len(mock_error_queue.logged_calls) >= 1, \
+            "Expected error_queue.log to be called when phone_book.lookup_by_phone_number raises"
+        source, severity, message = mock_error_queue.logged_calls[0]
+        assert source == "menu", f"Expected source='menu', got {source!r}"
+        assert severity == "error", f"Expected severity='error', got {severity!r}"
+        assert "Phone book lookup failed" in message, \
+            f"Expected 'Phone book lookup failed' in message, got {message!r}"
+
     # -----------------------------------------------------------------------
     # menu.py — plex_store.refresh() in _do_assistant_refresh() (line ~1037)
     # -----------------------------------------------------------------------
