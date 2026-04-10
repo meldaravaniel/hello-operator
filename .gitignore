@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 plex/
 hello-operator.service
+hello-operator-web.service

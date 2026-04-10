@@ -63,6 +63,11 @@ tests/
 scripts/
   build-image-chroot.sh  # Runs inside the ARM chroot during CI image build
 
+web/
+  app.py                # Flask web configuration interface (port 8080)
+  templates/            # Jinja2 HTML templates
+  static/               # CSS
+
 .github/workflows/
   test.yml              # CI: runs unit tests on PRs and main
   build-image.yml       # Builds a flashable Raspberry Pi OS image (.img.xz)

@@ -73,6 +73,7 @@ apt-get install -y \
 echo "==> Creating config directory $CONFIG_DIR..."
 mkdir -p "$CONFIG_DIR"
 chmod 755 "$CONFIG_DIR"
+chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/config.env" ]; then
     echo "==> Copying config.env.example to $CONFIG_DIR/config.env..."
@@ -136,20 +137,33 @@ sudo -u "$INSTALL_USER" python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
+sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
 
 # ---------------------------------------------------------------------------
 # Systemd service
 # ---------------------------------------------------------------------------
 
-echo "==> Generating systemd unit file..."
+echo "==> Generating systemd unit files..."
 sed \
     -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
     -e "s|%%USER%%|$INSTALL_USER|g" \
     "$INSTALL_DIR/hello-operator.service.template" \
     > /etc/systemd/system/hello-operator.service
 
+sed \
+    -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
+    -e "s|%%USER%%|$INSTALL_USER|g" \
+    "$INSTALL_DIR/hello-operator-web.service.template" \
+    > /etc/systemd/system/hello-operator-web.service
+
+echo "==> Allowing web service to restart hello-operator without a password..."
+echo "$INSTALL_USER ALL=(root) NOPASSWD: /bin/systemctl restart hello-operator" \
+    > /etc/sudoers.d/hello-operator-web
+chmod 440 /etc/sudoers.d/hello-operator-web
+
 systemctl daemon-reload
 systemctl enable hello-operator
+systemctl enable hello-operator-web
 
 # ---------------------------------------------------------------------------
 # Done
@@ -165,8 +179,11 @@ echo ""
 echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
 echo "     to add your local FM stations. Requires an RTL-SDR USB dongle."
 echo ""
-echo "  3. When ready, start the service:"
+echo "  3. When ready, start the services:"
 echo "       sudo systemctl start hello-operator"
-echo "       sudo journalctl -u hello-operator -f"
+echo "       sudo systemctl start hello-operator-web"
+echo ""
+echo "  4. Open the web interface in a browser on your local network:"
+echo "       http://$(hostname).local:8080"
 echo ""
 echo "  See INSTALL.md for full configuration reference."

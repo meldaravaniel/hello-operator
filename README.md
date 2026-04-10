@@ -65,14 +65,15 @@ The install script handles system packages, the Piper TTS binary and voice model
 
 ## Configuration
 
-All configuration lives in `/etc/hello-operator/config.env` after installation.
+After installation, open the web interface from any device on the same network:
 
-**Required:**
-- `PLEX_TOKEN` — your Plex authentication token
-- `PLEX_PLAYER_IDENTIFIER` — machine identifier of the Plex player to control
-- `ASSISTANT_NUMBER` — reserved 7-digit number for the diagnostic assistant
+```
+http://<pi-hostname>.local:8080
+```
 
-**Optional:** Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. Defaults match the install script. See [`INSTALL.md`](INSTALL.md) for the full table.
+The default hostname on Raspberry Pi OS is `raspberrypi`, so the address is typically `http://raspberrypi.local:8080`. The web interface lets you configure all settings, browse documentation, and restart the service — no command line needed.
+
+Settings are stored in `/etc/hello-operator/config.env`. **Required:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`, `ASSISTANT_NUMBER`. **Optional:** Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
 
 ---
 

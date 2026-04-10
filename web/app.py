@@ -1,0 +1,418 @@
+"""hello-operator web configuration interface.
+
+Serves project documentation and a configuration editor. Reads/writes
+/etc/hello-operator/config.env and /etc/hello-operator/radio_stations.json,
+then restarts the hello-operator systemd service as needed.
+
+Run via the hello-operator-web systemd service (see install.sh), or directly:
+  WEB_PORT=8080 python web/app.py
+"""
+
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from flask import Flask, jsonify, redirect, render_template, request, url_for
+
+# ---------------------------------------------------------------------------
+# Paths (overridable via environment for local development)
+# ---------------------------------------------------------------------------
+
+_HERE = Path(__file__).parent
+_PROJECT_ROOT = _HERE.parent
+
+CONFIG_ENV_PATH = Path(os.environ.get("CONFIG_ENV_PATH", "/etc/hello-operator/config.env"))
+RADIO_JSON_PATH = Path(os.environ.get("RADIO_JSON_PATH", "/etc/hello-operator/radio_stations.json"))
+DOCS_ROOT = Path(os.environ.get("DOCS_ROOT", str(_PROJECT_ROOT)))
+WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+
+# ---------------------------------------------------------------------------
+# Documentation pages (title, path relative to DOCS_ROOT)
+# ---------------------------------------------------------------------------
+
+DOC_PAGES = [
+    ("Overview",         "README.md"),
+    ("Installation",     "INSTALL.md"),
+    ("Amplifier",        "docs/AMP_SETUP.md"),
+    ("Breakbeam Switch", "docs/BREAKBEAM_SETUP.md"),
+    ("Hook Switch",      "docs/HOOK_SWITCH_SETUP.md"),
+    ("Piper TTS",        "docs/PIPER_SETUP.md"),
+    ("Plex Setup",       "docs/PLEX_SETUP.md"),
+]
+
+# ---------------------------------------------------------------------------
+# Configuration field definitions (drives the config form)
+# ---------------------------------------------------------------------------
+
+CONFIG_FIELDS = [
+    {
+        "section": "Plex",
+        "key": "PLEX_TOKEN",
+        "label": "Plex Token",
+        "type": "password",
+        "required": True,
+        "help": "Your Plex authentication token. "
+                "Find it at: Plex Web → Account → Authorized Devices.",
+    },
+    {
+        "section": "Plex",
+        "key": "PLEX_PLAYER_IDENTIFIER",
+        "label": "Plex Player Identifier",
+        "type": "text",
+        "required": True,
+        "help": "Machine identifier of the Plex player to control. "
+                "Find it in Plex Web → Settings → Troubleshooting.",
+    },
+    {
+        "section": "Plex",
+        "key": "PLEX_URL",
+        "label": "Plex Server URL",
+        "type": "url",
+        "required": False,
+        "default": "http://localhost:32400",
+        "help": "Full URL of your Plex Media Server. "
+                "Change this if your Plex server runs on a different machine.",
+    },
+    {
+        "section": "Phone System",
+        "key": "ASSISTANT_NUMBER",
+        "label": "Assistant Phone Number",
+        "type": "tel",
+        "required": True,
+        "help": "7-digit number reserved for the diagnostic assistant "
+                "(e.g. 5550000). Must not conflict with any auto-assigned media number.",
+    },
+    {
+        "section": "GPIO",
+        "key": "HOOK_SWITCH_PIN",
+        "label": "Hook Switch GPIO Pin",
+        "type": "number",
+        "required": False,
+        "default": "17",
+        "help": "BCM GPIO pin for the hook switch. Default matches the wiring guide.",
+    },
+    {
+        "section": "GPIO",
+        "key": "PULSE_SWITCH_PIN",
+        "label": "Pulse Switch GPIO Pin",
+        "type": "number",
+        "required": False,
+        "default": "27",
+        "help": "BCM GPIO pin for the rotary pulse switch. Default matches the wiring guide.",
+    },
+    {
+        "section": "TTS",
+        "key": "PIPER_BINARY",
+        "label": "Piper Binary Path",
+        "type": "text",
+        "required": False,
+        "default": "/usr/local/bin/piper",
+        "help": "Absolute path to the Piper TTS executable.",
+    },
+    {
+        "section": "TTS",
+        "key": "PIPER_MODEL",
+        "label": "Piper Voice Model",
+        "type": "text",
+        "required": False,
+        "default": "/usr/local/share/piper/en_US-lessac-medium.onnx",
+        "help": "Absolute path to the Piper .onnx voice model file.",
+    },
+    {
+        "section": "TTS",
+        "key": "TTS_CACHE_DIR",
+        "label": "TTS Cache Directory",
+        "type": "text",
+        "required": False,
+        "default": "/var/cache/hello-operator/tts",
+        "help": "Directory where pre-rendered TTS audio files are stored.",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Flask application
+# ---------------------------------------------------------------------------
+
+app = Flask(
+    __name__,
+    template_folder=str(_HERE / "templates"),
+    static_folder=str(_HERE / "static"),
+)
+
+# ---------------------------------------------------------------------------
+# Config I/O helpers
+# ---------------------------------------------------------------------------
+
+
+def read_config_env() -> dict:
+    """Return a dict of KEY → value parsed from config.env.
+
+    Comments and blank lines are ignored. Surrounding quotes are stripped
+    from values (systemd EnvironmentFile allows KEY="value" syntax).
+    """
+    values: dict = {}
+    try:
+        with CONFIG_ENV_PATH.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                values[key.strip()] = value.strip().strip('"')
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def write_config_env(updates: dict) -> None:
+    """Update config.env in-place, preserving comments and structure.
+
+    Existing KEY=value lines are replaced with the new value.
+    Keys not yet present are appended at the end of the file.
+    All values are written as KEY="value" (quoted) so spaces and most
+    special characters are handled correctly by systemd EnvironmentFile.
+    """
+    try:
+        with CONFIG_ENV_PATH.open() as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        lines = []
+
+    written: set = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.partition("=")[0].strip()
+            if key in updates:
+                escaped = updates[key].replace("\\", "\\\\").replace('"', '\\"')
+                new_lines.append(f'{key}="{escaped}"\n')
+                written.add(key)
+                continue
+        new_lines.append(line)
+
+    for key, value in updates.items():
+        if key not in written:
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            new_lines.append(f'{key}="{escaped}"\n')
+
+    with CONFIG_ENV_PATH.open("w") as f:
+        f.writelines(new_lines)
+
+
+def read_radio_stations() -> list:
+    """Return the list of radio station dicts from radio_stations.json."""
+    try:
+        with RADIO_JSON_PATH.open() as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def write_radio_stations(stations: list) -> None:
+    """Write a list of station dicts to radio_stations.json."""
+    with RADIO_JSON_PATH.open("w") as f:
+        json.dump(stations, f, indent=2)
+        f.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# Service management
+# ---------------------------------------------------------------------------
+
+
+def get_service_status() -> str:
+    """Return the systemd active state of hello-operator (e.g. 'active')."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "hello-operator"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def restart_service() -> tuple[bool, str]:
+    """Restart the hello-operator service via sudo systemctl.
+
+    Returns (success, error_message).
+    Requires a sudoers rule allowing the web server's user to run:
+      sudo systemctl restart hello-operator
+    without a password (installed by install.sh / build-image-chroot.sh).
+    """
+    try:
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "hello-operator"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return result.returncode == 0, result.stderr.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Template helpers
+# ---------------------------------------------------------------------------
+
+
+def _doc_list() -> list[tuple[str, str]]:
+    """Return (title, slug) for each doc page that exists on disk."""
+    result = []
+    for title, rel_path in DOC_PAGES:
+        if (DOCS_ROOT / rel_path).exists():
+            slug = rel_path.replace("/", "_").replace(".md", "")
+            result.append((title, slug))
+    return result
+
+
+def _slug_to_path(slug: str) -> str | None:
+    for _, rel_path in DOC_PAGES:
+        if rel_path.replace("/", "_").replace(".md", "") == slug:
+            return rel_path
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/")
+def index():
+    return render_template("index.html", status=get_service_status())
+
+
+@app.route("/docs")
+def docs_index():
+    pages = _doc_list()
+    if pages:
+        return redirect(url_for("docs_page", slug=pages[0][1]))
+    return render_template("docs.html", doc_list=[], content=None, title=None, current_slug=None)
+
+
+@app.route("/docs/<slug>")
+def docs_page(slug: str):
+    rel_path = _slug_to_path(slug)
+    if not rel_path or not (DOCS_ROOT / rel_path).exists():
+        return "Page not found.", 404
+    content = (DOCS_ROOT / rel_path).read_text()
+    title = next(t for t, p in DOC_PAGES if p == rel_path)
+    return render_template(
+        "docs.html",
+        doc_list=_doc_list(),
+        content=content,
+        title=title,
+        current_slug=slug,
+    )
+
+
+@app.route("/config")
+def config_page():
+    return render_template(
+        "config.html",
+        fields=CONFIG_FIELDS,
+        values=read_config_env(),
+        stations=read_radio_stations(),
+        status=get_service_status(),
+    )
+
+
+@app.route("/config/env", methods=["POST"])
+def update_config_env():
+    updates: dict = {}
+    errors: list = []
+
+    for field in CONFIG_FIELDS:
+        key = field["key"]
+        value = request.form.get(key, "").strip()
+        if field["required"] and not value:
+            errors.append(f"{field['label']} is required.")
+        elif value:
+            updates[key] = value
+
+    if errors:
+        return render_template(
+            "config.html",
+            fields=CONFIG_FIELDS,
+            values={**read_config_env(), **{f["key"]: request.form.get(f["key"], "") for f in CONFIG_FIELDS}},
+            stations=read_radio_stations(),
+            status=get_service_status(),
+            errors=errors,
+        )
+
+    write_config_env(updates)
+    ok, err = restart_service()
+    return render_template(
+        "config.html",
+        fields=CONFIG_FIELDS,
+        values=read_config_env(),
+        stations=read_radio_stations(),
+        status=get_service_status(),
+        message="Settings saved and service restarted." if ok else f"Settings saved. Restart failed: {err}",
+        success=ok,
+    )
+
+
+@app.route("/config/radio", methods=["POST"])
+def update_radio():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"ok": False, "error": "Invalid JSON body."}), 400
+
+    stations: list = []
+    errors: list = []
+
+    for i, item in enumerate(payload, start=1):
+        name = str(item.get("name", "")).strip()
+        phone = str(item.get("phone_number", "")).strip()
+        try:
+            freq = float(item.get("frequency_mhz", 0))
+        except (ValueError, TypeError):
+            errors.append(f"Station {i}: frequency must be a number.")
+            continue
+        if not name:
+            errors.append(f"Station {i}: name is required.")
+            continue
+        if not re.fullmatch(r"\d{7}", phone):
+            errors.append(f"Station {i}: phone number must be exactly 7 digits.")
+            continue
+        if freq <= 0:
+            errors.append(f"Station {i}: frequency must be positive.")
+            continue
+        stations.append({"name": name, "frequency_mhz": freq, "phone_number": phone})
+
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 422
+
+    write_radio_stations(stations)
+    ok, err = restart_service()
+    msg = "Radio stations saved and service restarted." if ok else f"Radio stations saved. Restart failed: {err}"
+    return jsonify({"ok": True, "message": msg})
+
+
+@app.route("/api/status")
+def api_status():
+    return jsonify({"status": get_service_status()})
+
+
+@app.route("/service/restart", methods=["POST"])
+def service_restart():
+    ok, err = restart_service()
+    return jsonify({"ok": ok, "error": err if not ok else None, "status": get_service_status()})
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=WEB_PORT, debug=False)
