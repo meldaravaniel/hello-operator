@@ -37,6 +37,7 @@ src/
   tts.py              # PiperTTS
   plex_client.py      # PlexClient
   plex_store.py       # PlexStore
+  radio.py            # RtlFmRadio, MockRadio
   menu.py             # Menu state machine
   session.py          # Session lifecycle
   constants.py        # All configuration constants
@@ -51,6 +52,7 @@ tests/
   test_tts.py
   test_plex_client.py
   test_plex_store.py
+  test_radio.py
   test_menu.py
   test_session.py
 ```
