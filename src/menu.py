@@ -800,7 +800,8 @@ class Menu:
 
         try:
             entry = self._phone_book.lookup_by_phone_number(number)
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            self._error_queue.log("menu", "error", f"Phone book lookup failed: {e}")
             entry = None
 
         if entry is None:
