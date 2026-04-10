@@ -17,11 +17,14 @@ from src.constants import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio=None):
     """Build a Menu with all mocked dependencies."""
     from src.phone_book import PhoneBook
+    from src.radio import MockRadio
     db = str(tmp_path / "phone_book.db")
     phone_book = PhoneBook(db_path=db)
+    if radio is None:
+        radio = MockRadio()
     return Menu(
         audio=mock_audio,
         tts=mock_tts,
@@ -29,6 +32,7 @@ def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue
         plex_store=mock_plex_store,
         phone_book=phone_book,
         error_queue=mock_error_queue,
+        radio=radio,
     )
 
 
@@ -2197,3 +2201,230 @@ class TestDigitBeforeMenu:
         menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU when music playing, got {menu.state}"
+
+
+# ---------------------------------------------------------------------------
+# §9.x Radio menu support
+# ---------------------------------------------------------------------------
+
+SCRIPT_RADIO_CONNECTING_FRAGMENT = "Tuning in to"
+SCRIPT_RADIO_PLAYING_MENU_FRAGMENT = "To disconnect your call, dial three"
+SCRIPT_RADIO_PLAYING_GREETING_FRAGMENT = "currently tuned to"
+
+from src.constants import DIAL_TONE_TIMEOUT_PLAYING
+
+
+def _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR", media_type="radio"):
+    """Seed a radio entry into the phone book and return its phone number."""
+    entry = phone_book.assign_or_get(plex_key=plex_key, media_type=media_type, name=name)
+    return entry["phone_number"]
+
+
+class TestRadioMenu:
+    """Tests for RADIO_PLAYING_MENU state and radio direct-dial flow."""
+
+    def _make_menu_with_radio(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                               mock_error_queue, tmp_path, radio):
+        """Build a menu with handset lifted and idle menu delivered, using provided radio."""
+        from src.phone_book import PhoneBook
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        db = str(tmp_path / "phone_book.db")
+        phone_book = PhoneBook(db_path=db)
+        menu = Menu(
+            audio=mock_audio,
+            tts=mock_tts,
+            plex_client=mock_plex,
+            plex_store=mock_plex_store,
+            phone_book=phone_book,
+            error_queue=mock_error_queue,
+            radio=radio,
+        )
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # past dial tone → idle menu
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu, phone_book
+
+    def test_radio_direct_dial_stops_plex_and_plays_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing a radio number stops Plex, calls radio.play with correct freq, sets state."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU, got {menu.state}"
+        plex_stops = [c for c in mock_plex.calls if c[0] == 'stop']
+        assert len(plex_stops) >= 1, f"Expected plex.stop() called; plex calls: {mock_plex.calls}"
+        radio_plays = [c for c in radio.calls if c[0] == 'play']
+        assert len(radio_plays) >= 1, f"Expected radio.play() called; radio calls: {radio.calls}"
+        assert radio_plays[0][1] == 90300000.0, \
+            f"Expected freq 90300000.0, got {radio_plays[0][1]}"
+
+    def test_radio_dial_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing a radio number speaks SCRIPT_RADIO_CONNECTING with station name."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_RADIO_CONNECTING_FRAGMENT in t for t in texts), \
+            f"Expected '{SCRIPT_RADIO_CONNECTING_FRAGMENT}' in TTS; got: {texts}"
+        assert any("NPR" in t for t in texts), \
+            f"Expected station name 'NPR' in TTS; got: {texts}"
+
+    def test_radio_stops_existing_stream_before_new_dial(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """When radio is already playing, stop() is called before play() on new dial."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        radio.set_playing(True)
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        stop_indices = [i for i, c in enumerate(radio.calls) if c[0] == 'stop']
+        play_indices = [i for i, c in enumerate(radio.calls) if c[0] == 'play']
+        assert stop_indices, f"Expected radio.stop() in calls: {radio.calls}"
+        assert play_indices, f"Expected radio.play() in calls: {radio.calls}"
+        assert stop_indices[0] < play_indices[0], \
+            f"stop() must come before play(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_on_handset_lift(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Lifting handset while radio is playing (Plex idle) → RADIO_PLAYING_MENU after timeout."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        radio.set_playing(True)
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue,
+                         tmp_path, radio=radio)
+        menu.on_handset_lifted(now=_T0)
+        mock_tts.calls.clear()
+        # Tick past DIAL_TONE_TIMEOUT_PLAYING
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
+
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU, got {menu.state}"
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_RADIO_PLAYING_MENU_FRAGMENT in t for t in texts), \
+            f"Expected radio playing menu TTS; got: {texts}"
+
+    def test_radio_playing_menu_digit_3_stops_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 3 → radio.stop(), state → IDLE_MENU."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(3, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit 3; got {menu.state}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) >= 1, f"Expected radio.stop(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_digit_0_stops_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 0 → radio.stop(), state → IDLE_MENU."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(0, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit 0; got {menu.state}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) >= 1, f"Expected radio.stop(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_invalid_digit(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 1 → SCRIPT_NOT_IN_SERVICE, radio not stopped."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) == 0, f"radio.stop() should NOT be called; calls: {radio.calls}"
+
+    def test_hangup_does_not_stop_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Hang-up in RADIO_PLAYING_MENU does NOT call radio.stop()."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        menu.on_handset_on_cradle()
+
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) == 0, \
+            f"Hang-up must not stop radio; calls: {radio.calls}"
+
+    def test_radio_uses_playing_timeout_when_active(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """When radio is active, DIAL_TONE_TIMEOUT_PLAYING applies (shorter timeout)."""
+        from src.radio import MockRadio
+        from src.constants import DIAL_TONE_TIMEOUT_IDLE
+        radio = MockRadio()
+        radio.set_playing(True)
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue,
+                         tmp_path, radio=radio)
+        menu.on_handset_lifted(now=_T0)
+        mock_tts.calls.clear()
+
+        # Just before DIAL_TONE_TIMEOUT_PLAYING — should still be in IDLE_DIAL_TONE
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING - 0.05)
+        assert menu.state == MenuState.IDLE_DIAL_TONE, \
+            f"Expected still IDLE_DIAL_TONE before timeout; got {menu.state}"
+
+        # Just past DIAL_TONE_TIMEOUT_PLAYING — should now be in RADIO_PLAYING_MENU
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU after timeout; got {menu.state}"
