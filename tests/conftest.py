@@ -68,3 +68,10 @@ def mock_error_queue():
     """MockErrorQueue instance for menu/session tests."""
     from src.error_queue import MockErrorQueue
     return MockErrorQueue()
+
+
+@pytest.fixture
+def mock_radio():
+    """MockRadio instance for menu/session tests."""
+    from src.radio import MockRadio
+    return MockRadio()

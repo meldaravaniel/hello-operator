@@ -20,6 +20,7 @@ Reserved digits (all states except DIRECT_DIAL):
     9 → go back one level (or stay at top)
 """
 
+import sqlite3
 import time
 from enum import Enum, auto
 from typing import Optional, List
@@ -29,6 +30,7 @@ from src.interfaces import (
     MediaItem, PlaybackState,
 )
 from src.constants import (
+    ASSISTANT_MESSAGE_PAGE_SIZE,
     DIAL_TONE_FREQUENCIES,
     DIAL_TONE_TIMEOUT_IDLE,
     DIAL_TONE_TIMEOUT_PLAYING,
@@ -113,6 +115,13 @@ SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE = ("That's {page_size}. Shall I go on?
 SCRIPT_ASSISTANT_REFRESH_PROMPT = "To refresh my records from the exchange, dial {n}."
 # Alias used by tests
 SCRIPT_ASSISTANT_CONTINUE_PROMPT = SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE
+
+# Radio scripts
+SCRIPT_RADIO_CONNECTING = (
+    "Thank you for your patience. Tuning in to {name} — {frequency} megahertz. Please stand by."
+)
+SCRIPT_RADIO_PLAYING_GREETING = "You are currently tuned to {name} on {frequency} megahertz."
+SCRIPT_RADIO_PLAYING_MENU = "To disconnect your call, dial three. To reach a new party, dial zero."
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +226,7 @@ class MenuState(Enum):
     DIRECT_DIAL = auto()
     ASSISTANT = auto()
     OFF_HOOK = auto()
+    RADIO_PLAYING_MENU = auto()
 
 
 class Menu:
@@ -236,6 +246,7 @@ class Menu:
         plex_store,   # PlexStore or MockPlexStore
         phone_book,   # PhoneBook
         error_queue: ErrorQueueInterface,
+        radio=None,   # RadioInterface or MockRadio
     ) -> None:
         self._audio = audio
         self._tts = tts
@@ -243,6 +254,11 @@ class Menu:
         self._plex_store = plex_store
         self._phone_book = phone_book
         self._error_queue = error_queue
+        self._radio = radio
+
+        # Current radio station info (set when dialing a radio station)
+        self._current_radio_name: Optional[str] = None
+        self._current_radio_freq_hz: Optional[float] = None
 
         self._state: MenuState = MenuState.IDLE_DIAL_TONE
         self._handset_up: bool = False
@@ -275,6 +291,9 @@ class Menu:
         self._browse_items: List[MediaItem] = []     # current filtered items
         self._browse_listed: List[MediaItem] = []    # currently listed (≤8) options
         self._current_artist: Optional[MediaItem] = None  # selected artist
+
+        # Direct dial: state before entering DIRECT_DIAL (for re-delivery on failure)
+        self._pre_dial_state: Optional[MenuState] = None
 
         # Assistant sub-state
         self._assistant_mode: str = "menu"  # "menu" | "reading" | "refreshed"
@@ -314,6 +333,7 @@ class Menu:
         self._nav_stack.clear()
         self._dial_digits.clear()
         self._pending_digit = None
+        self._pre_dial_state = None
 
     def on_digit(self, digit: int, now: Optional[float] = None) -> None:
         """Called when a digit is decoded."""
@@ -372,7 +392,8 @@ class Menu:
         elapsed = now - self._handset_up_time
         # Determine which timeout applies
         playback = self._plex_client.now_playing()
-        if playback.item is not None:
+        radio_active = self._radio is not None and self._radio.is_playing()
+        if playback.item is not None or radio_active:
             timeout = DIAL_TONE_TIMEOUT_PLAYING
         else:
             timeout = DIAL_TONE_TIMEOUT_IDLE
@@ -381,6 +402,8 @@ class Menu:
             self._audio.stop()
             if playback.item is not None:
                 self._deliver_playing_menu(playback, now)
+            elif radio_active:
+                self._deliver_radio_playing_menu(now)
             else:
                 self._deliver_idle_menu(now)
 
@@ -404,7 +427,7 @@ class Menu:
                 self._plex_store.get_genres()
                 has_genres = self._plex_store.genres_has_content
 
-        except Exception:
+        except (sqlite3.Error, OSError):
             self._failure_mode = "plex"
             self._state = MenuState.IDLE_MENU
             self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
@@ -476,6 +499,32 @@ class Menu:
             else:
                 self._tts.speak_and_play(SCRIPT_PLAYING_MENU_DEFAULT)
 
+    def _deliver_radio_playing_menu(self, now: float) -> None:
+        """Deliver the radio playing state menu prompt."""
+        self._state = MenuState.RADIO_PLAYING_MENU
+        self._last_activity_time = now
+
+        if not self._opener_spoken:
+            self._tts.speak_and_play(SCRIPT_OPERATOR_OPENER)
+            self._opener_spoken = True
+
+        name = self._current_radio_name or ""
+        freq_hz = self._current_radio_freq_hz or 0.0
+        freq_mhz = freq_hz / 1_000_000
+        self._tts.speak_and_play(
+            SCRIPT_RADIO_PLAYING_GREETING.format(name=name, frequency=f"{freq_mhz:.1f}")
+        )
+        self._tts.speak_and_play(SCRIPT_RADIO_PLAYING_MENU)
+
+    def _handle_radio_playing_menu_digit(self, digit: int, now: float) -> None:
+        """Handle digit in RADIO_PLAYING_MENU state."""
+        if digit == 3 or digit == 0:
+            if self._radio is not None:
+                self._radio.stop()
+            self._deliver_idle_menu(now)
+        else:
+            self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
+
     # ------------------------------------------------------------------
     # Digit dispatching
     # ------------------------------------------------------------------
@@ -494,6 +543,11 @@ class Menu:
                 self._deliver_playing_menu(playback, now)
             else:
                 self._deliver_idle_menu(now)
+            return
+
+        # RADIO_PLAYING_MENU handles its own digit routing (before global 0/9 rules)
+        if self._state == MenuState.RADIO_PLAYING_MENU:
+            self._handle_radio_playing_menu_digit(digit, now)
             return
 
         # ASSISTANT state handles its own navigation (0 and 9 are not reserved there)
@@ -720,6 +774,7 @@ class Menu:
 
     def _enter_direct_dial(self, first: int, second: int, now: float) -> None:
         """Enter DIRECT_DIAL mode with the first two digits."""
+        self._pre_dial_state = self._state
         self._state = MenuState.DIRECT_DIAL
         self._dial_digits = []
         self._audio.stop()
@@ -750,22 +805,52 @@ class Menu:
 
         try:
             entry = self._phone_book.lookup_by_phone_number(number)
-        except Exception:
+        except sqlite3.Error as e:
+            self._error_queue.log("menu", "error", f"Phone book lookup failed: {e}")
             entry = None
 
         if entry is None:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
-            self._state = MenuState.IDLE_MENU
+            pre = self._pre_dial_state or MenuState.IDLE_MENU
+            if pre == MenuState.IDLE_DIAL_TONE:
+                # User dialed before any menu was delivered — determine correct top-level menu
+                playback = self._plex_client.now_playing()
+                if playback.item is not None:
+                    self._deliver_playing_menu(playback, now)
+                else:
+                    self._deliver_idle_menu(now)
+            else:
+                self._state = pre
+                self._re_deliver_current_state(now)
             return
 
-        # Speak connecting announcement with digits spoken individually
-        digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
-        name = entry.get("name", number)
-        self._tts.speak_and_play(
-            SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
-        )
-        self._plex_client.play(entry["plex_key"])
-        self._state = MenuState.PLAYING_MENU
+        if entry["media_type"] == "radio":
+            # Stop any active Plex session
+            self._plex_client.stop()
+            # Stop any existing radio stream
+            if self._radio is not None:
+                self._radio.stop()
+            # Parse frequency from plex_key "radio:{frequency_hz}"
+            freq_hz = float(entry["plex_key"].split("radio:", 1)[1])
+            freq_mhz = freq_hz / 1_000_000
+            name = entry.get("name", "")
+            self._current_radio_name = name
+            self._current_radio_freq_hz = freq_hz
+            self._tts.speak_and_play(
+                SCRIPT_RADIO_CONNECTING.format(name=name, frequency=f"{freq_mhz:.1f}")
+            )
+            if self._radio is not None:
+                self._radio.play(freq_hz)
+            self._state = MenuState.RADIO_PLAYING_MENU
+        else:
+            # Speak connecting announcement with digits spoken individually
+            digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
+            name = entry.get("name", number)
+            self._tts.speak_and_play(
+                SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
+            )
+            self._plex_client.play(entry["plex_key"])
+            self._state = MenuState.PLAYING_MENU
 
     # ------------------------------------------------------------------
     # Helpers
@@ -921,7 +1006,6 @@ class Menu:
 
     def _read_assistant_page(self, now: float) -> None:
         """Read the current page of assistant messages."""
-        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
         messages = self._assistant_messages
         offset = self._assistant_page_offset
         page = messages[offset:offset + ASSISTANT_MESSAGE_PAGE_SIZE]
@@ -949,7 +1033,6 @@ class Menu:
 
     def _assistant_continue_or_navigate(self, digit: int, now: float) -> None:
         """Handle digit while reading messages."""
-        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
         if digit == 1:
             # Continue reading
             if self._assistant_page_offset < len(self._assistant_messages):
@@ -968,7 +1051,7 @@ class Menu:
         try:
             self._plex_store.refresh()
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_SUCCESS)
-        except Exception:
+        except (sqlite3.Error, OSError):
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_FAILURE)
         self._tts.speak_and_play(SCRIPT_ASSISTANT_NAVIGATION)
 

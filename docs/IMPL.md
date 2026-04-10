@@ -113,7 +113,7 @@ Each entry is seeded into the phone book at startup via `phone_book.seed(phone_n
 ```sql
 CREATE TABLE phone_book (
     plex_key     TEXT PRIMARY KEY,
-    media_type   TEXT NOT NULL,   -- "playlist"|"artist"|"album"|"genre"|"radio"
+    media_type   TEXT NOT NULL CHECK(media_type IN ('playlist','artist','album','genre','radio')),
     name         TEXT NOT NULL,
     phone_number TEXT NOT NULL UNIQUE
 );
@@ -137,7 +137,7 @@ CREATE TABLE plex_cache (
 CREATE TABLE error_queue (
     source        TEXT NOT NULL,
     message       TEXT NOT NULL,
-    severity      TEXT NOT NULL,
+    severity      TEXT NOT NULL CHECK(severity IN ('warning','error')),
     count         INTEGER NOT NULL DEFAULT 1,
     last_happened TEXT NOT NULL,   -- ISO8601
     PRIMARY KEY (source, message)

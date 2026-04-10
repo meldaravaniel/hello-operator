@@ -27,7 +27,7 @@ class SqliteErrorQueue(ErrorQueueInterface):
                 CREATE TABLE IF NOT EXISTS error_queue (
                     source        TEXT NOT NULL,
                     message       TEXT NOT NULL,
-                    severity      TEXT NOT NULL,
+                    severity      TEXT NOT NULL CHECK(severity IN ('warning','error')),
                     count         INTEGER NOT NULL DEFAULT 1,
                     last_happened TEXT NOT NULL,
                     PRIMARY KEY (source, message)

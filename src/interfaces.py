@@ -9,7 +9,14 @@ from typing import Optional
 class MediaItem:
     plex_key: str
     name: str
-    media_type: str  # "playlist" | "artist" | "album" | "genre"
+    media_type: str  # "playlist" | "artist" | "album" | "genre" | "radio"
+
+
+@dataclass
+class RadioStation:
+    name: str            # Human-readable station name (e.g. "KEXP")
+    frequency_hz: float  # Carrier frequency in Hz (e.g. 90_300_000.0)
+    phone_number: str    # Pre-configured 7-digit direct-dial number
 
 
 @dataclass
@@ -149,3 +156,19 @@ class ErrorQueueInterface(ABC):
     @abstractmethod
     def get_by_severity(self, severity: str) -> list:
         """Return entries filtered by 'warning' or 'error'."""
+
+
+class RadioInterface(ABC):
+    """Abstracts FM radio playback via RTL-SDR dongle."""
+
+    @abstractmethod
+    def play(self, frequency_hz: float) -> None:
+        """Tune to the given frequency and begin streaming audio."""
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Stop radio playback."""
+
+    @abstractmethod
+    def is_playing(self) -> bool:
+        """True if radio is currently streaming."""

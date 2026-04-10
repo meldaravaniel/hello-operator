@@ -17,11 +17,14 @@ from src.constants import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio=None):
     """Build a Menu with all mocked dependencies."""
     from src.phone_book import PhoneBook
+    from src.radio import MockRadio
     db = str(tmp_path / "phone_book.db")
     phone_book = PhoneBook(db_path=db)
+    if radio is None:
+        radio = MockRadio()
     return Menu(
         audio=mock_audio,
         tts=mock_tts,
@@ -29,6 +32,7 @@ def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue
         plex_store=mock_plex_store,
         phone_book=phone_book,
         error_queue=mock_error_queue,
+        radio=radio,
     )
 
 
@@ -348,12 +352,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         menu = make_menu(mock_audio, mock_tts, mock_plex, FailingStore(), mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
@@ -371,12 +375,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -412,12 +416,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -449,12 +453,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -1338,7 +1342,7 @@ class TestDiagnosticAssistant:
         mock_error_queue.entries.clear()
         # Make refresh raise
         def _fail_refresh():
-            raise RuntimeError("Plex unreachable")
+            raise OSError("Plex unreachable")
         mock_plex_store.refresh = _fail_refresh
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()
@@ -2197,3 +2201,625 @@ class TestDigitBeforeMenu:
         menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU when music playing, got {menu.state}"
+
+
+# ---------------------------------------------------------------------------
+# §9.x Radio menu support
+# ---------------------------------------------------------------------------
+
+SCRIPT_RADIO_CONNECTING_FRAGMENT = "Tuning in to"
+SCRIPT_RADIO_PLAYING_MENU_FRAGMENT = "To disconnect your call, dial three"
+SCRIPT_RADIO_PLAYING_GREETING_FRAGMENT = "currently tuned to"
+
+from src.constants import DIAL_TONE_TIMEOUT_PLAYING
+
+
+def _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR", media_type="radio"):
+    """Seed a radio entry into the phone book and return its phone number."""
+    return phone_book.assign_or_get(plex_key=plex_key, media_type=media_type, name=name)
+
+
+class TestRadioMenu:
+    """Tests for RADIO_PLAYING_MENU state and radio direct-dial flow."""
+
+    def _make_menu_with_radio(self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+                               mock_error_queue, tmp_path, radio):
+        """Build a menu with handset lifted and idle menu delivered, using provided radio."""
+        from src.phone_book import PhoneBook
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        db = str(tmp_path / "phone_book.db")
+        phone_book = PhoneBook(db_path=db)
+        menu = Menu(
+            audio=mock_audio,
+            tts=mock_tts,
+            plex_client=mock_plex,
+            plex_store=mock_plex_store,
+            phone_book=phone_book,
+            error_queue=mock_error_queue,
+            radio=radio,
+        )
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # past dial tone → idle menu
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+        return menu, phone_book
+
+    def test_radio_direct_dial_stops_plex_and_plays_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing a radio number stops Plex, calls radio.play with correct freq, sets state."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU, got {menu.state}"
+        plex_stops = [c for c in mock_plex.calls if c[0] == 'stop']
+        assert len(plex_stops) >= 1, f"Expected plex.stop() called; plex calls: {mock_plex.calls}"
+        radio_plays = [c for c in radio.calls if c[0] == 'play']
+        assert len(radio_plays) >= 1, f"Expected radio.play() called; radio calls: {radio.calls}"
+        assert radio_plays[0][1] == 90300000.0, \
+            f"Expected freq 90300000.0, got {radio_plays[0][1]}"
+
+    def test_radio_dial_speaks_connecting_template(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Dialing a radio number speaks SCRIPT_RADIO_CONNECTING with station name."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_RADIO_CONNECTING_FRAGMENT in t for t in texts), \
+            f"Expected '{SCRIPT_RADIO_CONNECTING_FRAGMENT}' in TTS; got: {texts}"
+        assert any("NPR" in t for t in texts), \
+            f"Expected station name 'NPR' in TTS; got: {texts}"
+
+    def test_radio_stops_existing_stream_before_new_dial(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """When radio is already playing, stop() is called before play() on new dial."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        radio.set_playing(True)
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+
+        _dial_number(menu, number, start_time=11.0)
+
+        stop_indices = [i for i, c in enumerate(radio.calls) if c[0] == 'stop']
+        play_indices = [i for i, c in enumerate(radio.calls) if c[0] == 'play']
+        assert stop_indices, f"Expected radio.stop() in calls: {radio.calls}"
+        assert play_indices, f"Expected radio.play() in calls: {radio.calls}"
+        assert stop_indices[0] < play_indices[0], \
+            f"stop() must come before play(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_on_handset_lift(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Lifting handset while radio is playing (Plex idle) → RADIO_PLAYING_MENU after timeout."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        radio.set_playing(True)
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue,
+                         tmp_path, radio=radio)
+        menu.on_handset_lifted(now=_T0)
+        mock_tts.calls.clear()
+        # Tick past DIAL_TONE_TIMEOUT_PLAYING
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
+
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU, got {menu.state}"
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_RADIO_PLAYING_MENU_FRAGMENT in t for t in texts), \
+            f"Expected radio playing menu TTS; got: {texts}"
+
+    def test_radio_playing_menu_digit_3_stops_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 3 → radio.stop(), state → IDLE_MENU."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(3, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit 3; got {menu.state}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) >= 1, f"Expected radio.stop(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_digit_0_stops_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 0 → radio.stop(), state → IDLE_MENU."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(0, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after digit 0; got {menu.state}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) >= 1, f"Expected radio.stop(); calls: {radio.calls}"
+
+    def test_radio_playing_menu_invalid_digit(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """In RADIO_PLAYING_MENU, digit 1 → SCRIPT_NOT_IN_SERVICE, radio not stopped."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=15.0)
+        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) == 0, f"radio.stop() should NOT be called; calls: {radio.calls}"
+
+    def test_hangup_does_not_stop_radio(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Hang-up in RADIO_PLAYING_MENU does NOT call radio.stop()."""
+        from src.radio import MockRadio
+        radio = MockRadio()
+        menu, phone_book = self._make_menu_with_radio(
+            mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
+        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        _dial_number(menu, number, start_time=11.0)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU
+
+        radio.calls.clear()
+        menu.on_handset_on_cradle()
+
+        radio_stops = [c for c in radio.calls if c[0] == 'stop']
+        assert len(radio_stops) == 0, \
+            f"Hang-up must not stop radio; calls: {radio.calls}"
+
+    def test_radio_uses_playing_timeout_when_active(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """When radio is active, DIAL_TONE_TIMEOUT_PLAYING applies (shorter timeout)."""
+        from src.radio import MockRadio
+        from src.constants import DIAL_TONE_TIMEOUT_IDLE
+        radio = MockRadio()
+        radio.set_playing(True)
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue,
+                         tmp_path, radio=radio)
+        menu.on_handset_lifted(now=_T0)
+        mock_tts.calls.clear()
+
+        # Just before DIAL_TONE_TIMEOUT_PLAYING — should still be in IDLE_DIAL_TONE
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING - 0.05)
+        assert menu.state == MenuState.IDLE_DIAL_TONE, \
+            f"Expected still IDLE_DIAL_TONE before timeout; got {menu.state}"
+
+        # Just past DIAL_TONE_TIMEOUT_PLAYING — should now be in RADIO_PLAYING_MENU
+        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
+        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
+            f"Expected RADIO_PLAYING_MENU after timeout; got {menu.state}"
+
+
+# ---------------------------------------------------------------------------
+# F-23: Narrow broad except Exception handlers
+# ---------------------------------------------------------------------------
+
+class TestNarrowExceptionHandlers:
+    """Verify that each narrowed handler triggers correctly on the specific
+    exception types the called code can raise."""
+
+    # -----------------------------------------------------------------------
+    # menu.py — plex_store browse call (line ~425)
+    # -----------------------------------------------------------------------
+
+    def test_plex_store_browse_sqlite_error_enters_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_error_queue, tmp_path):
+        """sqlite3.Error from plex_store.get_playlists() → enters failure mode."""
+        import sqlite3
+        from src.menu import SCRIPT_PLEX_FAILURE, SCRIPT_RETRY_PROMPT
+
+        class SqliteFailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise sqlite3.Error("DB locked")
+            def get_artists(self): raise sqlite3.Error("DB locked")
+            def get_genres(self): raise sqlite3.Error("DB locked")
+            def get_albums_for_artist(self, k): raise sqlite3.Error("DB locked")
+            def remove_item(self, k): pass
+            def refresh(self): raise sqlite3.Error("DB locked")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, SqliteFailingStore(),
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_PLEX_FAILURE for sqlite3.Error; got: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"Expected SCRIPT_RETRY_PROMPT for sqlite3.Error; got: {texts}"
+        assert menu._failure_mode == "plex"
+
+    def test_plex_store_browse_oserror_enters_failure_mode(
+            self, mock_audio, mock_tts, mock_plex, mock_error_queue, tmp_path):
+        """OSError from plex_store.get_artists() → enters failure mode."""
+        from src.menu import SCRIPT_PLEX_FAILURE, SCRIPT_RETRY_PROMPT
+
+        class OsErrorFailingStore:
+            playlists_has_content = False
+            artists_has_content = False
+            genres_has_content = False
+            calls = []
+            def get_playlists(self): raise OSError("Network error")
+            def get_artists(self): raise OSError("Network error")
+            def get_genres(self): raise OSError("Network error")
+            def get_albums_for_artist(self, k): raise OSError("Network error")
+            def remove_item(self, k): pass
+            def refresh(self): raise OSError("Network error")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, OsErrorFailingStore(),
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_PLEX_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_PLEX_FAILURE for OSError; got: {texts}"
+        assert any(SCRIPT_RETRY_PROMPT in t for t in texts), \
+            f"Expected SCRIPT_RETRY_PROMPT for OSError; got: {texts}"
+        assert menu._failure_mode == "plex"
+
+    # -----------------------------------------------------------------------
+    # menu.py — phone_book.lookup_by_phone_number() (line ~802)
+    # -----------------------------------------------------------------------
+
+    def test_phone_book_lookup_sqlite_error_treated_as_not_found(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from phone_book.lookup_by_phone_number() → SCRIPT_NOT_IN_SERVICE."""
+        import sqlite3
+        from src.menu import SCRIPT_NOT_IN_SERVICE
+        from src.phone_book import PhoneBook
+        from unittest.mock import patch
+
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Patch the phone_book to raise sqlite3.Error on lookup
+        def raise_sqlite(*args, **kwargs):
+            raise sqlite3.Error("table locked")
+
+        menu._phone_book.lookup_by_phone_number = raise_sqlite
+
+        mock_tts.calls.clear()
+        # Dial a 7-digit number (not ASSISTANT_NUMBER)
+        for digit in [1, 2, 3, 4, 5, 6, 7]:
+            menu.on_digit(digit, now=15.0 + digit * 0.1)
+        menu.tick(now=20.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE for sqlite3.Error in lookup; got: {texts}"
+
+    def test_phone_book_lookup_sqlite_error_logs_to_error_queue(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from phone_book.lookup_by_phone_number() → error_queue.log called."""
+        import sqlite3
+
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Patch the phone_book to raise sqlite3.Error on lookup
+        def raise_sqlite(*args, **kwargs):
+            raise sqlite3.Error("table locked")
+
+        menu._phone_book.lookup_by_phone_number = raise_sqlite
+
+        mock_error_queue.logged_calls.clear()
+        # Dial a 7-digit number (not ASSISTANT_NUMBER)
+        for digit in [1, 2, 3, 4, 5, 6, 7]:
+            menu.on_digit(digit, now=15.0 + digit * 0.1)
+        menu.tick(now=20.0)
+
+        assert len(mock_error_queue.logged_calls) >= 1, \
+            "Expected error_queue.log to be called when phone_book.lookup_by_phone_number raises"
+        source, severity, message = mock_error_queue.logged_calls[0]
+        assert source == "menu", f"Expected source='menu', got {source!r}"
+        assert severity == "error", f"Expected severity='error', got {severity!r}"
+        assert "Phone book lookup failed" in message, \
+            f"Expected 'Phone book lookup failed' in message, got {message!r}"
+
+    # -----------------------------------------------------------------------
+    # menu.py — plex_store.refresh() in _do_assistant_refresh() (line ~1037)
+    # -----------------------------------------------------------------------
+
+    def _enter_assistant(self, menu, mock_plex_store, mock_tts):
+        """Helper: put the menu in ASSISTANT state and clear call records."""
+        mock_plex_store.set_playlists([])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        assert menu.state == MenuState.ASSISTANT
+        mock_tts.calls.clear()
+
+    def test_assistant_refresh_sqlite_error_speaks_failure(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """sqlite3.Error from plex_store.refresh() in assistant → speaks refresh failure script."""
+        import sqlite3
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_FAILURE
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        self._enter_assistant(menu, mock_plex_store, mock_tts)
+
+        def raise_sqlite():
+            raise sqlite3.Error("DB locked")
+
+        menu._plex_store.refresh = raise_sqlite
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_ASSISTANT_REFRESH_FAILURE for sqlite3.Error; got: {texts}"
+
+    def test_assistant_refresh_oserror_speaks_failure(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """OSError from plex_store.refresh() in assistant → speaks refresh failure script."""
+        from src.menu import SCRIPT_ASSISTANT_REFRESH_FAILURE
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                         mock_error_queue, tmp_path)
+        self._enter_assistant(menu, mock_plex_store, mock_tts)
+
+        def raise_oserror():
+            raise OSError("HTTP connection failed")
+
+        menu._plex_store.refresh = raise_oserror
+        menu.on_digit(1, now=20.0)
+        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
+            f"Expected SCRIPT_ASSISTANT_REFRESH_FAILURE for OSError; got: {texts}"
+
+
+# ---------------------------------------------------------------------------
+# §F-25 Re-deliver the prior menu after a failed direct dial
+# ---------------------------------------------------------------------------
+
+class TestDirectDialFailureReturn:
+    """After a failed direct dial (number not found), the prior menu is re-delivered."""
+
+    def _dial_unknown_number(self, menu, start_time=15.0):
+        """Dial a 7-digit number that won't be in the phone book."""
+        # Use digits 1,2,3,4,5,6,7 — unlikely to be seeded
+        digits = [1, 2, 3, 4, 5, 6, 7]
+        menu.on_digit(digits[0], now=start_time)
+        menu.on_digit(digits[1], now=start_time + 0.05)
+        for i, d in enumerate(digits[2:], start=2):
+            menu.on_digit(d, now=start_time + i * 0.1)
+
+    def test_failed_direct_dial_from_idle_menu_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_MENU → speaks SCRIPT_NOT_IN_SERVICE."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=15.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE after failed dial; got: {texts}"
+
+    def test_failed_direct_dial_from_idle_menu_re_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_MENU → re-delivers idle menu (state = IDLE_MENU)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=15.0)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after failed dial from IDLE_MENU; got {menu.state}"
+        # Idle menu prompt should be re-delivered
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
+            f"Expected idle menu re-delivered after failed dial; texts: {texts}"
+
+    def test_failed_direct_dial_from_browse_artists_re_delivers_browse_prompt(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from BROWSE_ARTISTS → speaks not-in-service then re-delivers browse prompt."""
+        from src.menu import SCRIPT_BROWSE_PROMPT_ARTIST
+        items = [MediaItem("/a/1", "Beatles", "artist")]
+        menu = _make_browse_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                 mock_error_queue, tmp_path, items, category="artist")
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS before dialing; got {menu.state}"
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=20.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # State should be restored to BROWSE_ARTISTS
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS after failed dial; got {menu.state}"
+        # Browse prompt should be re-delivered
+        assert any(SCRIPT_BROWSE_PROMPT_ARTIST in t for t in texts), \
+            f"Expected artist browse prompt re-delivered; texts: {texts}"
+
+    def test_failed_direct_dial_before_any_menu_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_DIAL_TONE (before any menu) → delivers correct top-level menu."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+
+        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        menu.on_digit(1, now=_T0 + 0.1)
+        menu.on_digit(2, now=_T0 + 0.15)
+        assert menu.state == MenuState.DIRECT_DIAL
+        # Dial remaining 5 digits
+        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+            menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # Must deliver a menu, not leave in silence
+        assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU), \
+            f"Expected top-level menu state after early failed dial; got {menu.state}"
+        # Idle menu prompt must be spoken (no music playing)
+        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
+            f"Expected idle menu prompt delivered after early failed dial; texts: {texts}"
+
+    def test_failed_direct_dial_before_any_menu_while_playing_delivers_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_DIAL_TONE while Plex is playing → delivers playing menu."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        playing_item = MediaItem("/t/1", "Some Song", "track")
+        mock_plex.set_now_playing(PlaybackState(item=playing_item, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+
+        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        menu.on_digit(1, now=_T0 + 0.1)
+        menu.on_digit(2, now=_T0 + 0.15)
+        assert menu.state == MenuState.DIRECT_DIAL
+        # Dial remaining 5 digits
+        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+            menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # Must end up in PLAYING_MENU since Plex is playing
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after early failed dial while playing; got {menu.state}"
+
+    def test_successful_direct_dial_unaffected(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Successful direct dial is unaffected — transitions to PLAYING_MENU as before."""
+        from src.phone_book import PhoneBook
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+
+        db = str(tmp_path / "pb_f25.db")
+        phone_book = PhoneBook(db_path=db)
+        # Seed a known entry
+        number = phone_book.assign_or_get("/track/42", "playlist", "Test Track")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        # Replace the phone_book with one containing our entry
+        menu._phone_book = phone_book
+
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # IDLE_MENU
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+
+        # Dial the number
+        digits = [int(c) for c in number]
+        menu.on_digit(digits[0], now=15.0)
+        menu.on_digit(digits[1], now=15.05)
+        for i, d in enumerate(digits[2:], start=2):
+            menu.on_digit(d, now=15.0 + i * 0.1)
+
+        # Should have transitioned to PLAYING_MENU
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after successful dial; got {menu.state}"
+        # Should NOT speak SCRIPT_NOT_IN_SERVICE
+        texts = tts_calls(mock_tts)
+        assert not any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE should not be spoken on success; got: {texts}"
+
+    def test_pre_dial_state_cleared_on_cradle(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """on_handset_on_cradle() clears _pre_dial_state."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Enter direct dial to set _pre_dial_state
+        menu.on_digit(1, now=15.0)
+        menu.on_digit(2, now=15.05)
+        assert menu.state == MenuState.DIRECT_DIAL
+        assert menu._pre_dial_state is not None
+
+        # Hang up — _pre_dial_state should be cleared
+        menu.on_handset_on_cradle()
+        assert menu._pre_dial_state is None, \
+            f"Expected _pre_dial_state=None after cradle; got {menu._pre_dial_state}"

@@ -6,7 +6,7 @@ hang-up. Does not stop Plex playback on hang-up — music continues.
 
 Usage::
 
-    session = Session(audio, tts, plex_client, plex_store, phone_book, error_queue)
+    session = Session(audio, tts, plex_client, plex_store, phone_book, error_queue, radio)
     # In an event loop:
     event = gpio_handler.poll(now=time.monotonic())
     if event is not None:
@@ -33,6 +33,7 @@ class Session:
     plex_store : PlexStore or MockPlexStore
     phone_book : PhoneBook
     error_queue : ErrorQueueInterface
+    radio : RadioInterface
     """
 
     def __init__(
@@ -43,6 +44,7 @@ class Session:
         plex_store,
         phone_book,
         error_queue: ErrorQueueInterface,
+        radio,  # RadioInterface
     ) -> None:
         self._menu = Menu(
             audio=audio,
@@ -51,6 +53,7 @@ class Session:
             plex_store=plex_store,
             phone_book=phone_book,
             error_queue=error_queue,
+            radio=radio,
         )
 
     # ------------------------------------------------------------------

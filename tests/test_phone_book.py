@@ -122,3 +122,76 @@ def test_phone_number_generate_max_attempts_constant_exists():
     """PHONE_NUMBER_GENERATE_MAX_ATTEMPTS is defined in constants."""
     assert isinstance(PHONE_NUMBER_GENERATE_MAX_ATTEMPTS, int)
     assert PHONE_NUMBER_GENERATE_MAX_ATTEMPTS > 0
+
+
+# ---------------------------------------------------------------------------
+# seed() tests
+# ---------------------------------------------------------------------------
+
+def test_seed_inserts_entry(tmp_phone_book):
+    """seed() inserts an entry retrievable by lookup_by_phone_number."""
+    pb = PhoneBook(tmp_phone_book)
+    pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
+    entry = pb.lookup_by_phone_number("5550903")
+    assert entry == {
+        "plex_key": "radio:90300000.0",
+        "media_type": "radio",
+        "name": "KEXP",
+        "phone_number": "5550903",
+    }
+
+
+def test_seed_idempotent(tmp_phone_book):
+    """Calling seed() twice with identical args leaves exactly one entry."""
+    pb = PhoneBook(tmp_phone_book)
+    pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
+    pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
+    all_entries = pb.get_all()
+    assert len(all_entries) == 1
+
+
+def test_seed_skips_if_phone_number_taken(tmp_phone_book):
+    """seed() with a phone number already taken does not overwrite the existing entry."""
+    pb = PhoneBook(tmp_phone_book)
+    pb.seed("5550903", "radio:A", "radio", "Station A")
+    pb.seed("5550903", "radio:B", "radio", "Station B")
+    entry = pb.lookup_by_phone_number("5550903")
+    assert entry["plex_key"] == "radio:A"
+
+
+def test_seed_skips_if_plex_key_already_assigned(tmp_phone_book):
+    """seed() does not raise and does not create a second row when plex_key already has a number."""
+    pb = PhoneBook(tmp_phone_book)
+    pb.assign_or_get("radio:90300000.0", "radio", "KEXP")
+    pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
+    all_entries = pb.get_all()
+    assert len(all_entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# CHECK constraint tests
+# ---------------------------------------------------------------------------
+
+def test_invalid_media_type_rejected(tmp_phone_book):
+    """Inserting a row with an invalid media_type raises sqlite3.IntegrityError."""
+    import sqlite3
+    pb = PhoneBook(tmp_phone_book)
+    with pb._connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                ("/k/1", "track", "Name", "5551234")
+            )
+
+
+def test_valid_media_types_accepted(tmp_phone_book):
+    """Each valid media_type value inserts without error."""
+    import sqlite3
+    pb = PhoneBook(tmp_phone_book)
+    valid_types = ["playlist", "artist", "album", "genre", "radio"]
+    with pb._connect() as conn:
+        for i, media_type in enumerate(valid_types):
+            conn.execute(
+                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                (f"/k/{i}", media_type, f"Name {i}", f"555000{i}")
+            )

@@ -69,6 +69,9 @@ TTS_CACHE_DIR = "/var/cache/hello-operator/tts"  # TODO: adjust path if needed
 HOOK_SWITCH_PIN = 17   # TODO: set to real GPIO pin number for hook switch
 PULSE_SWITCH_PIN = 27  # TODO: set to real GPIO pin number for pulse switch
 
+# Radio configuration
+RADIO_CONFIG_PATH = "/etc/hello-operator/radio_stations.json"
+
 # Digit-to-word mapping used by TTS (speak_digits) and Menu (SCRIPT_CONNECTING_TEMPLATE)
 DIGIT_WORDS = {
     '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',

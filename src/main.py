@@ -4,6 +4,7 @@ Instantiates all concrete implementations, pre-renders fixed TTS scripts,
 wires everything into Session, and starts the event loop.
 """
 
+import json
 import os
 import time
 import logging
@@ -12,6 +13,7 @@ from src.constants import (
     PLEX_URL, PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
+    RADIO_CONFIG_PATH,
 )
 from src.error_queue import SqliteErrorQueue
 from src.phone_book import PhoneBook
@@ -19,7 +21,9 @@ from src.audio import SounddeviceAudio
 from src.tts import PiperTTS
 from src.plex_client import PlexClient
 from src.plex_store import PlexStore
+from src.radio import RtlFmRadio
 from src.gpio_handler import GPIOHandler, GpioEvent
+from src.interfaces import RadioStation
 from src.session import Session
 
 # Import all pre-renderable script strings from menu
@@ -52,6 +56,7 @@ from src.menu import (
     SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     SCRIPT_ASSISTANT_REFRESH_FAILURE,
     SCRIPT_SHUFFLE_CONNECTING,
+    SCRIPT_RADIO_PLAYING_MENU,
 )
 
 logging.basicConfig(
@@ -102,7 +107,42 @@ _PRERENDER_SCRIPTS = {
     "assistant_refresh_success": SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     "assistant_refresh_failure": SCRIPT_ASSISTANT_REFRESH_FAILURE,
     "shuffle_connecting": SCRIPT_SHUFFLE_CONNECTING,
+    "radio_playing_menu": SCRIPT_RADIO_PLAYING_MENU,
 }
+
+
+def load_radio_stations(path: str) -> list:
+    """Load radio stations from a JSON config file.
+
+    Parameters
+    ----------
+    path:
+        Filesystem path to the JSON file. Each entry must have keys:
+        ``name``, ``frequency_mhz``, and ``phone_number``.
+
+    Returns
+    -------
+    list[RadioStation]
+        A list of RadioStation objects with frequency_hz converted from MHz.
+        Returns an empty list if the file does not exist or cannot be parsed.
+    """
+    try:
+        with open(path, "r") as fh:
+            entries = json.load(fh)
+        stations = []
+        for entry in entries:
+            stations.append(RadioStation(
+                name=entry["name"],
+                frequency_hz=entry["frequency_mhz"] * 1_000_000,
+                phone_number=entry["phone_number"],
+            ))
+        return stations
+    except FileNotFoundError:
+        log.warning("Radio config not found at %s — no stations will be seeded", path)
+        return []
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        log.warning("Failed to parse radio config at %s: %s — no stations will be seeded", path, exc)
+        return []
 
 
 def _gpio_cleanup() -> None:
@@ -153,6 +193,16 @@ def run() -> None:
     error_queue = SqliteErrorQueue(db_path=_ERROR_QUEUE_DB)
     phone_book = PhoneBook(db_path=_PHONE_BOOK_DB)
 
+    # Seed phone book with radio stations
+    stations = load_radio_stations(RADIO_CONFIG_PATH)
+    for station in stations:
+        phone_book.seed(
+            phone_number=station.phone_number,
+            plex_key=f"radio:{station.frequency_hz}",
+            media_type="radio",
+            name=station.name,
+        )
+
     # Hardware interfaces
     audio = SounddeviceAudio()
     tts = PiperTTS(
@@ -166,6 +216,9 @@ def run() -> None:
     # Plex
     plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
     plex_store = PlexStore(db_path=_PLEX_STORE_DB, plex_client=plex_client)
+
+    # Radio
+    radio = RtlFmRadio()
 
     # Pre-render all fixed TTS scripts
     log.info("Pre-rendering %d TTS scripts...", len(_PRERENDER_SCRIPTS))
@@ -186,6 +239,7 @@ def run() -> None:
         plex_store=plex_store,
         phone_book=phone_book,
         error_queue=error_queue,
+        radio=radio,
     )
 
     log.info("hello-operator ready — waiting for handset lift")
