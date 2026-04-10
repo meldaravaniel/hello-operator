@@ -2624,3 +2624,201 @@ class TestNarrowExceptionHandlers:
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
             f"Expected SCRIPT_ASSISTANT_REFRESH_FAILURE for OSError; got: {texts}"
+
+
+# ---------------------------------------------------------------------------
+# §F-25 Re-deliver the prior menu after a failed direct dial
+# ---------------------------------------------------------------------------
+
+class TestDirectDialFailureReturn:
+    """After a failed direct dial (number not found), the prior menu is re-delivered."""
+
+    def _dial_unknown_number(self, menu, start_time=15.0):
+        """Dial a 7-digit number that won't be in the phone book."""
+        # Use digits 1,2,3,4,5,6,7 — unlikely to be seeded
+        digits = [1, 2, 3, 4, 5, 6, 7]
+        menu.on_digit(digits[0], now=start_time)
+        menu.on_digit(digits[1], now=start_time + 0.05)
+        for i, d in enumerate(digits[2:], start=2):
+            menu.on_digit(d, now=start_time + i * 0.1)
+
+    def test_failed_direct_dial_from_idle_menu_speaks_not_in_service(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_MENU → speaks SCRIPT_NOT_IN_SERVICE."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=15.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE after failed dial; got: {texts}"
+
+    def test_failed_direct_dial_from_idle_menu_re_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_MENU → re-delivers idle menu (state = IDLE_MENU)."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=15.0)
+
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after failed dial from IDLE_MENU; got {menu.state}"
+        # Idle menu prompt should be re-delivered
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
+            f"Expected idle menu re-delivered after failed dial; texts: {texts}"
+
+    def test_failed_direct_dial_from_browse_artists_re_delivers_browse_prompt(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from BROWSE_ARTISTS → speaks not-in-service then re-delivers browse prompt."""
+        items = [MediaItem("/a/1", "Beatles", "artist")]
+        menu = _make_browse_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                                 mock_error_queue, tmp_path, items, category="artist")
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS before dialing; got {menu.state}"
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=20.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # State should be restored to BROWSE_ARTISTS
+        assert menu.state == MenuState.BROWSE_ARTISTS, \
+            f"Expected BROWSE_ARTISTS after failed dial; got {menu.state}"
+        # Browse prompt should be re-delivered
+        assert any(SCRIPT_BROWSE_PROMPT_ARTIST in t for t in texts), \
+            f"Expected artist browse prompt re-delivered; texts: {texts}"
+
+    def test_failed_direct_dial_before_any_menu_delivers_idle_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_DIAL_TONE (before any menu) → delivers correct top-level menu."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+
+        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        menu.on_digit(1, now=_T0 + 0.1)
+        menu.on_digit(2, now=_T0 + 0.15)
+        assert menu.state == MenuState.DIRECT_DIAL
+        # Dial remaining 5 digits
+        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+            menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # Must deliver a menu, not leave in silence
+        assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU), \
+            f"Expected top-level menu state after early failed dial; got {menu.state}"
+        # Idle menu prompt must be spoken (no music playing)
+        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
+            f"Expected idle menu prompt delivered after early failed dial; texts: {texts}"
+
+    def test_failed_direct_dial_before_any_menu_while_playing_delivers_playing_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Failed direct dial from IDLE_DIAL_TONE while Plex is playing → delivers playing menu."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        playing_item = MediaItem("/t/1", "Some Song", "track")
+        mock_plex.set_now_playing(PlaybackState(item=playing_item, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+
+        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        menu.on_digit(1, now=_T0 + 0.1)
+        menu.on_digit(2, now=_T0 + 0.15)
+        assert menu.state == MenuState.DIRECT_DIAL
+        # Dial remaining 5 digits
+        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+            menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
+        # Must end up in PLAYING_MENU since Plex is playing
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after early failed dial while playing; got {menu.state}"
+
+    def test_successful_direct_dial_unaffected(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """Successful direct dial is unaffected — transitions to PLAYING_MENU as before."""
+        from src.phone_book import PhoneBook
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+
+        db = str(tmp_path / "pb_f25.db")
+        phone_book = PhoneBook(db_path=db)
+        # Seed a known entry
+        number = phone_book.assign_or_get("/track/42", "track", "Test Track")
+
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        # Replace the phone_book with one containing our entry
+        menu._phone_book = phone_book
+
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # IDLE_MENU
+        mock_tts.calls.clear()
+        mock_plex.calls.clear()
+
+        # Dial the number
+        digits = [int(c) for c in number]
+        menu.on_digit(digits[0], now=15.0)
+        menu.on_digit(digits[1], now=15.05)
+        for i, d in enumerate(digits[2:], start=2):
+            menu.on_digit(d, now=15.0 + i * 0.1)
+
+        # Should have transitioned to PLAYING_MENU
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after successful dial; got {menu.state}"
+        # Should NOT speak SCRIPT_NOT_IN_SERVICE
+        texts = tts_calls(mock_tts)
+        assert not any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"SCRIPT_NOT_IN_SERVICE should not be spoken on success; got: {texts}"
+
+    def test_pre_dial_state_cleared_on_cradle(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+        """on_handset_on_cradle() clears _pre_dial_state."""
+        mock_plex_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_plex_store.set_artists([])
+        mock_plex_store.set_genres([])
+        mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+
+        # Enter direct dial to set _pre_dial_state
+        menu.on_digit(1, now=15.0)
+        menu.on_digit(2, now=15.05)
+        assert menu.state == MenuState.DIRECT_DIAL
+        assert menu._pre_dial_state is not None
+
+        # Hang up — _pre_dial_state should be cleared
+        menu.on_handset_on_cradle()
+        assert menu._pre_dial_state is None, \
+            f"Expected _pre_dial_state=None after cradle; got {menu._pre_dial_state}"
