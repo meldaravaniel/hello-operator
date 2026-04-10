@@ -43,7 +43,13 @@ Setup guides for each hardware component are in `docs/`:
 
 ## Installation
 
-See [`INSTALL.md`](INSTALL.md) for the full guide. The short version:
+See [`INSTALL.md`](INSTALL.md) for the full guide.
+
+**Option A — Flash a pre-built image (easiest)**
+
+Download the latest `hello-operator-*.img.xz` from the [Releases](../../releases) page, flash it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/), boot, edit `/etc/hello-operator/config.env`, and start the service. Everything else is pre-installed.
+
+**Option B — Clone and install on a running Pi**
 
 ```bash
 git clone <repo-url> hello-operator

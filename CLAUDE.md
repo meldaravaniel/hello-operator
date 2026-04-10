@@ -23,6 +23,10 @@ python -m pytest -m "not integration"
 
 # Run the application
 python main.py
+
+# Trigger a Pi OS image build (GitHub Actions)
+# Push a tag:  git tag v1.x.x && git push origin v1.x.x
+# Or run manually via the Actions tab → "Build Raspberry Pi Image" → Run workflow
 ```
 
 ## Project Structure
@@ -55,6 +59,13 @@ tests/
   test_radio.py
   test_menu.py
   test_session.py
+
+scripts/
+  build-image-chroot.sh  # Runs inside the ARM chroot during CI image build
+
+.github/workflows/
+  test.yml              # CI: runs unit tests on PRs and main
+  build-image.yml       # Builds a flashable Raspberry Pi OS image (.img.xz)
 ```
 
 ## Conventions
