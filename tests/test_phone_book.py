@@ -166,3 +166,32 @@ def test_seed_skips_if_plex_key_already_assigned(tmp_phone_book):
     pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
     all_entries = pb.get_all()
     assert len(all_entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# CHECK constraint tests
+# ---------------------------------------------------------------------------
+
+def test_invalid_media_type_rejected(tmp_phone_book):
+    """Inserting a row with an invalid media_type raises sqlite3.IntegrityError."""
+    import sqlite3
+    pb = PhoneBook(tmp_phone_book)
+    with pb._connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                ("/k/1", "track", "Name", "5551234")
+            )
+
+
+def test_valid_media_types_accepted(tmp_phone_book):
+    """Each valid media_type value inserts without error."""
+    import sqlite3
+    pb = PhoneBook(tmp_phone_book)
+    valid_types = ["playlist", "artist", "album", "genre", "radio"]
+    with pb._connect() as conn:
+        for i, media_type in enumerate(valid_types):
+            conn.execute(
+                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                (f"/k/{i}", media_type, f"Name {i}", f"555000{i}")
+            )

@@ -116,3 +116,27 @@ def test_dedup_does_not_change_severity(tmp_error_queue):
     entries = q.get_all()
     assert len(entries) == 1
     assert entries[0].severity == "warning"  # severity set on first insert, never updated
+
+
+# ---------------------------------------------------------------------------
+# CHECK constraint tests
+# ---------------------------------------------------------------------------
+
+def test_invalid_severity_rejected(tmp_error_queue):
+    """Inserting a row with an invalid severity raises sqlite3.IntegrityError."""
+    import sqlite3
+    q = SqliteErrorQueue(tmp_error_queue)
+    with q._connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO error_queue (source, message, severity, count, last_happened) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("src", "msg", "critical", 1, "2024-01-01T00:00:00+00:00")
+            )
+
+
+def test_valid_severities_accepted(tmp_error_queue):
+    """Each valid severity value inserts without error."""
+    q = SqliteErrorQueue(tmp_error_queue)
+    q.log("src1", "warning", "warn message")
+    q.log("src2", "error", "error message")
