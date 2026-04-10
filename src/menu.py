@@ -292,6 +292,9 @@ class Menu:
         self._browse_listed: List[MediaItem] = []    # currently listed (≤8) options
         self._current_artist: Optional[MediaItem] = None  # selected artist
 
+        # Direct dial: state before entering DIRECT_DIAL (for re-delivery on failure)
+        self._pre_dial_state: Optional[MenuState] = None
+
         # Assistant sub-state
         self._assistant_mode: str = "menu"  # "menu" | "reading" | "refreshed"
         self._assistant_messages: List = []          # current message list being read
@@ -330,6 +333,7 @@ class Menu:
         self._nav_stack.clear()
         self._dial_digits.clear()
         self._pending_digit = None
+        self._pre_dial_state = None
 
     def on_digit(self, digit: int, now: Optional[float] = None) -> None:
         """Called when a digit is decoded."""
@@ -770,6 +774,7 @@ class Menu:
 
     def _enter_direct_dial(self, first: int, second: int, now: float) -> None:
         """Enter DIRECT_DIAL mode with the first two digits."""
+        self._pre_dial_state = self._state
         self._state = MenuState.DIRECT_DIAL
         self._dial_digits = []
         self._audio.stop()
@@ -806,7 +811,17 @@ class Menu:
 
         if entry is None:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
-            self._state = MenuState.IDLE_MENU
+            pre = self._pre_dial_state or MenuState.IDLE_MENU
+            if pre == MenuState.IDLE_DIAL_TONE:
+                # User dialed before any menu was delivered — determine correct top-level menu
+                playback = self._plex_client.now_playing()
+                if playback.item is not None:
+                    self._deliver_playing_menu(playback, now)
+                else:
+                    self._deliver_idle_menu(now)
+            else:
+                self._state = pre
+                self._re_deliver_current_state(now)
             return
 
         if entry["media_type"] == "radio":

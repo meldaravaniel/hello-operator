@@ -2686,6 +2686,7 @@ class TestDirectDialFailureReturn:
     def test_failed_direct_dial_from_browse_artists_re_delivers_browse_prompt(
             self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
         """Failed direct dial from BROWSE_ARTISTS → speaks not-in-service then re-delivers browse prompt."""
+        from src.menu import SCRIPT_BROWSE_PROMPT_ARTIST
         items = [MediaItem("/a/1", "Beatles", "artist")]
         menu = _make_browse_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
                                  mock_error_queue, tmp_path, items, category="artist")
