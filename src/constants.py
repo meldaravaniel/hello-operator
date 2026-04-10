@@ -49,8 +49,15 @@ PHONE_NUMBER_LENGTH = 7          # Digits in an assigned phone number
 PHONE_NUMBER_GENERATE_MAX_ATTEMPTS = 1000  # Max retries before raising RuntimeError in _generate_unique_number
 ASSISTANT_MESSAGE_PAGE_SIZE = 3  # Messages read aloud per page in assistant
 
-# Reserved phone number for the diagnostic assistant
-ASSISTANT_NUMBER = "5550000"     # TODO: set to the real reserved 7-digit number before deployment
+# Reserved phone number for the diagnostic assistant — required
+_assistant_number = os.environ.get("ASSISTANT_NUMBER")
+if not _assistant_number:
+    raise RuntimeError(
+        "Required environment variable ASSISTANT_NUMBER is not set. "
+        "Choose a 7-digit number not used by any media entry "
+        "(e.g. export ASSISTANT_NUMBER=5550000)."
+    )
+ASSISTANT_NUMBER: str = _assistant_number
 
 # GPIO debounce windows (in seconds)
 HOOK_DEBOUNCE = 0.05             # TODO: tune on hardware — hook switch debounce window
@@ -60,14 +67,14 @@ PULSE_DEBOUNCE = 0.005           # TODO: tune on hardware — pulse switch debou
 CACHE_RETRY_MAX = 3              # TODO: tune — max repopulation attempts for missing TTS cache files
 CACHE_RETRY_BACKOFF = 2.0        # TODO: tune — base backoff interval (seconds) between cache repopulation attempts
 
-# TTS (Piper) configuration
-PIPER_BINARY = "/usr/local/bin/piper"  # TODO: set to real Piper binary path
-PIPER_MODEL = "/usr/local/share/piper/en_US-lessac-medium.onnx"  # TODO: set to real model path
-TTS_CACHE_DIR = "/var/cache/hello-operator/tts"  # TODO: adjust path if needed
+# TTS (Piper) configuration — optional; defaults match install.sh install paths
+PIPER_BINARY = os.environ.get("PIPER_BINARY", "/usr/local/bin/piper")
+PIPER_MODEL = os.environ.get("PIPER_MODEL", "/usr/local/share/piper/en_US-lessac-medium.onnx")
+TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 
-# GPIO pin assignments (BCM numbering)
-HOOK_SWITCH_PIN = 17   # TODO: set to real GPIO pin number for hook switch
-PULSE_SWITCH_PIN = 27  # TODO: set to real GPIO pin number for pulse switch
+# GPIO pin assignments (BCM numbering) — optional; defaults match recommended wiring docs
+HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
+PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
 
 # Radio configuration
 RADIO_CONFIG_PATH = "/etc/hello-operator/radio_stations.json"
