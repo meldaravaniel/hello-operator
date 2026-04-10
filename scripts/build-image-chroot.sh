@@ -51,8 +51,10 @@ getent group plugdev && usermod -aG plugdev "$INSTALL_USER"
 echo "==> Setting up config directory $CONFIG_DIR..."
 mkdir -p "$CONFIG_DIR"
 chmod 755 "$CONFIG_DIR"
-cp "$INSTALL_DIR/config.env.example"        "$CONFIG_DIR/config.env"
+chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
+cp "$INSTALL_DIR/config.env.example"          "$CONFIG_DIR/config.env"
 cp "$INSTALL_DIR/radio_stations.json.example" "$CONFIG_DIR/radio_stations.json"
+chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR/config.env" "$CONFIG_DIR/radio_stations.json"
 
 # ---------------------------------------------------------------------------
 # TTS cache directory
@@ -87,6 +89,7 @@ python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
+"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
 
 # ---------------------------------------------------------------------------
 # Ownership and systemd service
@@ -94,18 +97,30 @@ echo "==> Installing Python dependencies..."
 echo "==> Setting ownership of $INSTALL_DIR..."
 chown -R "$INSTALL_USER:$INSTALL_USER" "$INSTALL_DIR"
 
-echo "==> Installing systemd service..."
+echo "==> Installing systemd services..."
 sed \
     -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
     -e "s|%%USER%%|$INSTALL_USER|g" \
     "$INSTALL_DIR/hello-operator.service.template" \
     > /etc/systemd/system/hello-operator.service
 
-# Enable at boot by creating the standard wants symlink (systemctl not
-# available in a chroot environment without a running init).
+sed \
+    -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
+    -e "s|%%USER%%|$INSTALL_USER|g" \
+    "$INSTALL_DIR/hello-operator-web.service.template" \
+    > /etc/systemd/system/hello-operator-web.service
+
+echo "==> Allowing web service to restart hello-operator without a password..."
+echo "$INSTALL_USER ALL=(root) NOPASSWD: /bin/systemctl restart hello-operator" \
+    > /etc/sudoers.d/hello-operator-web
+chmod 440 /etc/sudoers.d/hello-operator-web
+
+# Enable at boot (systemctl not available in a chroot — create symlinks directly).
 mkdir -p /etc/systemd/system/multi-user.target.wants
 ln -sf /etc/systemd/system/hello-operator.service \
         /etc/systemd/system/multi-user.target.wants/hello-operator.service
+ln -sf /etc/systemd/system/hello-operator-web.service \
+        /etc/systemd/system/multi-user.target.wants/hello-operator-web.service
 
 # ---------------------------------------------------------------------------
 # Clean up to reduce image size

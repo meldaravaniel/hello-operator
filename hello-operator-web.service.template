@@ -1,0 +1,21 @@
+[Unit]
+Description=Hello Operator — web configuration interface
+After=network.target
+
+[Service]
+Type=simple
+User=%%USER%%
+WorkingDirectory=%%INSTALL_DIR%%
+EnvironmentFile=/etc/hello-operator/config.env
+Environment=CONFIG_ENV_PATH=/etc/hello-operator/config.env
+Environment=RADIO_JSON_PATH=/etc/hello-operator/radio_stations.json
+Environment=DOCS_ROOT=%%INSTALL_DIR%%
+ExecStart=%%INSTALL_DIR%%/venv/bin/python web/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hello-operator-web
+
+[Install]
+WantedBy=multi-user.target

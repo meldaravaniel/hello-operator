@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}{% if title %}{{ title }} — {% endif %}Docs — Hello Operator{% endblock %}
+
+{% block content %}
+<div class="row g-0 docs-layout">
+
+  {# Sidebar #}
+  <div class="col-auto docs-sidebar pe-3 me-3 border-end">
+    <div class="docs-sidebar-inner">
+      <div class="small text-muted text-uppercase fw-semibold mb-2 ps-1">Documentation</div>
+      <nav class="nav flex-column">
+        {% for title_item, slug in doc_list %}
+          <a class="nav-link py-1 px-2 rounded {% if slug == current_slug %}active bg-primary text-white{% endif %}"
+             href="/docs/{{ slug }}">{{ title_item }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+  </div>
+
+  {# Content #}
+  <div class="col docs-content">
+    {% if content %}
+      <div id="doc-render" class="markdown-body"></div>
+    {% else %}
+      <p class="text-muted">Select a page from the sidebar.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if content %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"
+        integrity="sha384-hVncn/bkFtoTZNqzFGPBmH1R6J2Td6Ia2Bok/KMf5TxFGjbAdVtpxk01/4caBOD"
+        crossorigin="anonymous"></script>
+<script>
+  const raw = {{ content | tojson }};
+  document.getElementById('doc-render').innerHTML = marked.parse(raw);
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Status — Hello Operator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+
+    <h1 class="h3 mb-4">System Status</h1>
+
+    <div class="card mb-4">
+      <div class="card-body d-flex align-items-center justify-content-between">
+        <div>
+          <div class="text-muted small mb-1">hello-operator service</div>
+          {% if status == "active" %}
+            <span class="badge bg-success fs-6">&#9679; Running</span>
+          {% elif status in ("failed", "error") %}
+            <span class="badge bg-danger fs-6">&#9679; Failed</span>
+          {% elif status == "inactive" %}
+            <span class="badge bg-secondary fs-6">&#9675; Stopped</span>
+          {% else %}
+            <span class="badge bg-warning text-dark fs-6">&#9679; {{ status }}</span>
+          {% endif %}
+        </div>
+        <button class="btn btn-outline-secondary btn-sm" id="restart-btn" onclick="restartService()">
+          Restart service
+        </button>
+      </div>
+    </div>
+
+    <div id="restart-msg" class="alert d-none mb-4"></div>
+
+    <div class="row g-3">
+      <div class="col-sm-6">
+        <a href="/docs" class="card text-decoration-none h-100 card-hover">
+          <div class="card-body">
+            <h5 class="card-title">&#128214; Documentation</h5>
+            <p class="card-text text-muted small">Installation guide, hardware setup, and reference.</p>
+          </div>
+        </a>
+      </div>
+      <div class="col-sm-6">
+        <a href="/config" class="card text-decoration-none h-100 card-hover">
+          <div class="card-body">
+            <h5 class="card-title">&#9881; Configure</h5>
+            <p class="card-text text-muted small">Plex credentials, GPIO pins, radio stations, and more.</p>
+          </div>
+        </a>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function restartService() {
+  const btn = document.getElementById('restart-btn');
+  const msg = document.getElementById('restart-msg');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  msg.className = 'alert d-none mb-4';
+
+  try {
+    const resp = await fetch('/service/restart', { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      msg.className = 'alert alert-success mb-4';
+      msg.textContent = 'Service restarted successfully.';
+    } else {
+      msg.className = 'alert alert-danger mb-4';
+      msg.textContent = 'Restart failed: ' + (data.error || 'unknown error');
+    }
+    // Refresh the status badge after a short delay
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    msg.className = 'alert alert-danger mb-4';
+    msg.textContent = 'Request failed: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Restart service';
+  }
+}
+</script>
+{% endblock %}

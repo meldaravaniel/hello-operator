@@ -121,17 +121,41 @@ An RTL-SDR USB dongle (RTL2832U) must be plugged in for radio playback to work.
 
 ```bash
 sudo systemctl start hello-operator
-sudo systemctl status hello-operator
+sudo systemctl start hello-operator-web
 ```
 
-Pick up the handset. You should hear a dial tone followed by the operator greeting.
+Open a browser on any device on the same Wi-Fi network and navigate to:
+
+```
+http://<pi-hostname>.local:8080
+```
+
+The default hostname on Raspberry Pi OS is `raspberrypi`, so the address is typically `http://raspberrypi.local:8080`. The web interface shows system status, project documentation, and the full configuration editor.
+
+Pick up the handset to confirm the phone system is working. You should hear a dial tone followed by the operator greeting.
+
+---
+
+## Web interface
+
+After both services are running, the web interface is available at `http://<hostname>.local:8080` from any device on the same network. It provides:
+
+- **Status** — service state and a restart button
+- **Docs** — browsable project documentation
+- **Configure** — edit all settings (Plex credentials, GPIO pins, TTS paths, radio stations) and apply them without touching the command line
+
+Configuration changes are saved to `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json` and the phone service is restarted automatically.
 
 ---
 
 ## Viewing logs
 
 ```bash
+# Phone system
 sudo journalctl -u hello-operator -f
+
+# Web interface
+sudo journalctl -u hello-operator-web -f
 ```
 
 ---
@@ -141,6 +165,9 @@ sudo journalctl -u hello-operator -f
 ```bash
 sudo systemctl stop hello-operator
 sudo systemctl restart hello-operator
+
+sudo systemctl stop hello-operator-web
+sudo systemctl restart hello-operator-web
 ```
 
 ---
@@ -153,6 +180,7 @@ sudo systemctl restart hello-operator
 | Dial pulses not detected | `docs/BREAKBEAM_SETUP.md` |
 | Handset lift not detected | `docs/HOOK_SWITCH_SETUP.md` |
 | Service fails to start | `sudo journalctl -u hello-operator -n 50` |
+| Web interface unreachable | Check `sudo systemctl status hello-operator-web`; confirm port 8080 is not blocked |
 | Error about `PLEX_TOKEN` at startup | Check `/etc/hello-operator/config.env` — the variable must be set |
 | Error about `ASSISTANT_NUMBER` at startup | Set `ASSISTANT_NUMBER` in `/etc/hello-operator/config.env` |
 | Radio plays no audio | Confirm RTL-SDR dongle is plugged in; run `rtl_test` to verify it is detected |
