@@ -59,6 +59,7 @@ class TestPlexTokenRequired:
         module = _reimport_constants({
             "PLEX_TOKEN": "my_secret_token",
             "PLEX_PLAYER_IDENTIFIER": "some-player-id",
+            "ASSISTANT_NUMBER": "5550000",
         })
         assert module.PLEX_TOKEN == "my_secret_token"
 
@@ -67,6 +68,7 @@ class TestPlexTokenRequired:
         module = _reimport_constants({
             "PLEX_TOKEN": "test_tok",
             "PLEX_PLAYER_IDENTIFIER": "pid",
+            "ASSISTANT_NUMBER": "5550000",
         })
         assert module.PLEX_TOKEN != "YOUR_PLEX_TOKEN"
 
@@ -84,6 +86,7 @@ class TestPlexPlayerIdentifierRequired:
         module = _reimport_constants({
             "PLEX_TOKEN": "tok",
             "PLEX_PLAYER_IDENTIFIER": "my-player-id",
+            "ASSISTANT_NUMBER": "5550000",
         })
         assert module.PLEX_PLAYER_IDENTIFIER == "my-player-id"
 
@@ -92,6 +95,7 @@ class TestPlexPlayerIdentifierRequired:
         module = _reimport_constants({
             "PLEX_TOKEN": "tok",
             "PLEX_PLAYER_IDENTIFIER": "real-player-id",
+            "ASSISTANT_NUMBER": "5550000",
         })
         assert module.PLEX_PLAYER_IDENTIFIER != "YOUR_PLEX_PLAYER_ID"
 
@@ -104,6 +108,7 @@ class TestPlexUrlOptional:
         module = _reimport_constants({
             "PLEX_TOKEN": "tok",
             "PLEX_PLAYER_IDENTIFIER": "pid",
+            "ASSISTANT_NUMBER": "5550000",
         })
         assert module.PLEX_URL == "http://localhost:32400"
 
@@ -112,6 +117,7 @@ class TestPlexUrlOptional:
         module = _reimport_constants({
             "PLEX_TOKEN": "tok",
             "PLEX_PLAYER_IDENTIFIER": "pid",
+            "ASSISTANT_NUMBER": "5550000",
             "PLEX_URL": "http://192.168.1.100:32400",
         })
         assert module.PLEX_URL == "http://192.168.1.100:32400"
