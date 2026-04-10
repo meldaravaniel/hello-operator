@@ -89,6 +89,22 @@ class PhoneBook:
             return None
         return dict(row)
 
+    def seed(self, phone_number: str, plex_key: str, media_type: str, name: str) -> None:
+        """Insert a pre-configured entry if the phone number is not already present.
+
+        Idempotent: silently skips if phone_number or plex_key already exists.
+        """
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM phone_book WHERE phone_number = ?", (phone_number,)
+            ).fetchone()
+            if not exists:
+                conn.execute(
+                    "INSERT OR IGNORE INTO phone_book "
+                    "(plex_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
+                    (plex_key, media_type, name, phone_number)
+                )
+
     def get_all(self) -> list:
         """Return all entries as a list of dicts."""
         with self._connect() as conn:
