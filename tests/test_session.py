@@ -18,12 +18,14 @@ from src.constants import (
 # ---------------------------------------------------------------------------
 
 def make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
-                 mock_error_queue, tmp_path):
+                 mock_error_queue, tmp_path, mock_radio=None):
     """Build a Session with all mocked dependencies."""
     from src.phone_book import PhoneBook
     from src.session import Session
+    from src.radio import MockRadio
     db = str(tmp_path / "phone_book.db")
     phone_book = PhoneBook(db_path=db)
+    radio = mock_radio if mock_radio is not None else MockRadio()
     return Session(
         audio=mock_audio,
         tts=mock_tts,
@@ -31,6 +33,7 @@ def make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
         plex_store=mock_plex_store,
         phone_book=phone_book,
         error_queue=mock_error_queue,
+        radio=radio,
     )
 
 
@@ -248,3 +251,19 @@ class TestSessionDirectDial:
         not_in_service = [txt for txt in tts_calls(mock_tts) if "not in service" in txt.lower()]
         assert len(play_calls) == 0
         assert len(not_in_service) == 0
+
+
+# ---------------------------------------------------------------------------
+# F-24: Session passes radio to Menu
+# ---------------------------------------------------------------------------
+
+class TestSessionRadio:
+    """Session forwards radio to Menu."""
+
+    def test_session_passes_radio_to_menu(
+            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            mock_error_queue, mock_radio, tmp_path):
+        """Session constructed with mock_radio → session.menu._radio is mock_radio."""
+        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+                               mock_error_queue, tmp_path, mock_radio=mock_radio)
+        assert session.menu._radio is mock_radio

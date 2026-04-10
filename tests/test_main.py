@@ -287,3 +287,60 @@ def test_gpio_cleanup_called_after_audio_stop():
     assert call_order.index("audio.stop") < call_order.index("gpio_cleanup"), (
         "audio.stop must be called before gpio_cleanup"
     )
+
+
+# ---------------------------------------------------------------------------
+# F-24: load_radio_stations helper
+# ---------------------------------------------------------------------------
+
+def test_load_radio_stations_returns_list(tmp_path):
+    """load_radio_stations reads JSON and returns RadioStation list with correct
+    frequency_hz conversion from MHz."""
+    import json
+    from src.main import load_radio_stations
+
+    stations_json = [
+        {"name": "KEXP", "frequency_mhz": 90.3, "phone_number": "5550001"},
+        {"name": "KUOW", "frequency_mhz": 94.9, "phone_number": "5550002"},
+    ]
+    json_file = tmp_path / "radio_stations.json"
+    json_file.write_text(json.dumps(stations_json))
+
+    stations = load_radio_stations(str(json_file))
+
+    assert len(stations) == 2
+    assert stations[0].name == "KEXP"
+    assert stations[0].frequency_hz == pytest.approx(90.3 * 1_000_000)
+    assert stations[0].phone_number == "5550001"
+    assert stations[1].name == "KUOW"
+    assert stations[1].frequency_hz == pytest.approx(94.9 * 1_000_000)
+    assert stations[1].phone_number == "5550002"
+
+
+def test_load_radio_stations_missing_file(tmp_path):
+    """load_radio_stations returns [] without raising when the file does not exist."""
+    from src.main import load_radio_stations
+
+    nonexistent = str(tmp_path / "no_such_file.json")
+    result = load_radio_stations(nonexistent)
+
+    assert result == []
+
+
+def test_load_radio_stations_invalid_json(tmp_path):
+    """load_radio_stations returns [] without raising when the file contains invalid JSON."""
+    from src.main import load_radio_stations
+
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("{ this is not json }")
+
+    result = load_radio_stations(str(bad_file))
+
+    assert result == []
+
+
+def test_radio_playing_menu_script_in_prerender():
+    """_PRERENDER_SCRIPTS must include a 'radio_playing_menu' key."""
+    from src.main import _PRERENDER_SCRIPTS
+
+    assert "radio_playing_menu" in _PRERENDER_SCRIPTS
