@@ -334,9 +334,13 @@ def update_config_env():
     for field in CONFIG_FIELDS:
         key = field["key"]
         value = request.form.get(key, "").strip()
+        # Password fields: blank means "keep current value" — don't update, don't error.
+        if field["type"] == "password" and not value:
+            continue
         if field["required"] and not value:
             errors.append(f"{field['label']} is required.")
-        elif value:
+            continue
+        if value:
             updates[key] = value
 
     if errors:
