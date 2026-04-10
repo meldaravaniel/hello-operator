@@ -139,14 +139,20 @@ main.py
 | `PLEX_URL` | `os.environ.get("PLEX_URL", "http://localhost:32400")` |
 | `PLEX_TOKEN` | `os.environ["PLEX_TOKEN"]` (required; raises `RuntimeError` if absent) |
 | `PLEX_PLAYER_IDENTIFIER` | `os.environ["PLEX_PLAYER_IDENTIFIER"]` (required; raises `RuntimeError` if absent) |
+| `ASSISTANT_NUMBER` | `os.environ["ASSISTANT_NUMBER"]` (required; raises `RuntimeError` if absent) |
+| `HOOK_SWITCH_PIN` | `int(os.environ.get("HOOK_SWITCH_PIN", "17"))` — BCM pin; non-integer value raises `ValueError` at import |
+| `PULSE_SWITCH_PIN` | `int(os.environ.get("PULSE_SWITCH_PIN", "27"))` — BCM pin; non-integer value raises `ValueError` at import |
+| `PIPER_BINARY` | `os.environ.get("PIPER_BINARY", "/usr/local/bin/piper")` |
+| `PIPER_MODEL` | `os.environ.get("PIPER_MODEL", "/usr/local/share/piper/en_US-lessac-medium.onnx")` |
+| `TTS_CACHE_DIR` | `os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")` |
 | `PHONE_NUMBER_GENERATE_MAX_ATTEMPTS` | `1000` — max retries in `_generate_unique_number`; exceeding this raises `RuntimeError("Phone book number space exhausted")` |
 | `RADIO_CONFIG_PATH` | `"/etc/hello-operator/radio_stations.json"` — path to JSON file seeding radio stations into phone book at startup |
 
 ### Secrets and environment variables
 
-- **No hardcoded secrets** — `PLEX_TOKEN` and `PLEX_PLAYER_IDENTIFIER` are read from the environment at import time; the app raises `RuntimeError` immediately if either is absent
-- **`.env.example`** at the repo root documents all three Plex variables with placeholder values; never commit a real `.env` file
-- **Tests that import `src.constants`** must set `PLEX_TOKEN` and `PLEX_PLAYER_IDENTIFIER` in the environment (or use `_reimport_constants()` helper from `test_constants.py`); the CI/test runner command should include these: `PLEX_TOKEN=tok PLEX_PLAYER_IDENTIFIER=pid python -m pytest`
+- **No hardcoded secrets** — `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`, and `ASSISTANT_NUMBER` are read from the environment at import time; the app raises `RuntimeError` immediately if any is absent
+- **`config.env.example`** at the repo root documents all environment variables accepted by `constants.py` with placeholder or default values; copy it to `/etc/hello-operator/config.env` for deployment; never commit a real `.env` file
+- **Tests that import `src.constants`** must set `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`, and `ASSISTANT_NUMBER` in the environment (or use `_reimport_constants()` helper from `test_constants.py`); the CI/test runner command should include these: `PLEX_TOKEN=tok PLEX_PLAYER_IDENTIFIER=pid ASSISTANT_NUMBER=5550000 python -m pytest`
 
 ## Development Process
 
