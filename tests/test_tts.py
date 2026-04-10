@@ -699,6 +699,29 @@ class TestLiveDirCleanup:
 
 
 # ---------------------------------------------------------------------------
+# F-22: hash file context manager
+# ---------------------------------------------------------------------------
+
+class TestHashFileContextManager:
+    """The hash file in prerender() must be read inside a `with` block."""
+
+    def test_prerender_reads_hash_with_context_manager(self):
+        """Verify that tts.py uses `with open(...)` to read the hash file."""
+        import inspect
+        from src.tts import PiperTTS
+        source = inspect.getsource(PiperTTS.prerender)
+        # The bare `open(hash_path)` call must not appear
+        assert "stored_hash = open(" not in source, (
+            "prerender() reads the hash file without a context manager "
+            "(bare open() call found); use `with open(...) as f:` instead"
+        )
+        # A context-manager read must be present
+        assert "with open(" in source, (
+            "prerender() does not use `with open(...)` to read the hash file"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MockTTS
 # ---------------------------------------------------------------------------
 
