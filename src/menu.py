@@ -29,6 +29,7 @@ from src.interfaces import (
     MediaItem, PlaybackState,
 )
 from src.constants import (
+    ASSISTANT_MESSAGE_PAGE_SIZE,
     DIAL_TONE_FREQUENCIES,
     DIAL_TONE_TIMEOUT_IDLE,
     DIAL_TONE_TIMEOUT_PLAYING,
@@ -921,7 +922,6 @@ class Menu:
 
     def _read_assistant_page(self, now: float) -> None:
         """Read the current page of assistant messages."""
-        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
         messages = self._assistant_messages
         offset = self._assistant_page_offset
         page = messages[offset:offset + ASSISTANT_MESSAGE_PAGE_SIZE]
@@ -949,7 +949,6 @@ class Menu:
 
     def _assistant_continue_or_navigate(self, digit: int, now: float) -> None:
         """Handle digit while reading messages."""
-        from src.constants import ASSISTANT_MESSAGE_PAGE_SIZE
         if digit == 1:
             # Continue reading
             if self._assistant_page_offset < len(self._assistant_messages):
