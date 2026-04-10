@@ -2216,8 +2216,7 @@ from src.constants import DIAL_TONE_TIMEOUT_PLAYING
 
 def _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR", media_type="radio"):
     """Seed a radio entry into the phone book and return its phone number."""
-    entry = phone_book.assign_or_get(plex_key=plex_key, media_type=media_type, name=name)
-    return entry["phone_number"]
+    return phone_book.assign_or_get(plex_key=plex_key, media_type=media_type, name=name)
 
 
 class TestRadioMenu:
