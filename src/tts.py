@@ -167,7 +167,7 @@ class PiperTTS(TTSInterface):
             )
             _stdout, _stderr = proc.communicate(input=text.encode())
             return proc.returncode == 0 and os.path.exists(output_path)
-        except Exception:
+        except OSError:
             return False
 
     def _synthesize(self, text: str) -> Optional[str]:

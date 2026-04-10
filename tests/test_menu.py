@@ -352,12 +352,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         menu = make_menu(mock_audio, mock_tts, mock_plex, FailingStore(), mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
@@ -375,12 +375,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -416,12 +416,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -453,12 +453,12 @@ class TestIdleMenu:
             artists_has_content = False
             genres_has_content = False
             calls = []
-            def get_playlists(self): raise RuntimeError("Plex down")
-            def get_artists(self): raise RuntimeError("Plex down")
-            def get_genres(self): raise RuntimeError("Plex down")
-            def get_albums_for_artist(self, k): raise RuntimeError("Plex down")
+            def get_playlists(self): raise OSError("Plex down")
+            def get_artists(self): raise OSError("Plex down")
+            def get_genres(self): raise OSError("Plex down")
+            def get_albums_for_artist(self, k): raise OSError("Plex down")
             def remove_item(self, k): pass
-            def refresh(self): raise RuntimeError("Plex down")
+            def refresh(self): raise OSError("Plex down")
 
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_plex, failing, mock_error_queue, tmp_path)
@@ -1342,7 +1342,7 @@ class TestDiagnosticAssistant:
         mock_error_queue.entries.clear()
         # Make refresh raise
         def _fail_refresh():
-            raise RuntimeError("Plex unreachable")
+            raise OSError("Plex unreachable")
         mock_plex_store.refresh = _fail_refresh
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()

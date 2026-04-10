@@ -20,6 +20,7 @@ Reserved digits (all states except DIRECT_DIAL):
     9 → go back one level (or stay at top)
 """
 
+import sqlite3
 import time
 from enum import Enum, auto
 from typing import Optional, List
@@ -422,7 +423,7 @@ class Menu:
                 self._plex_store.get_genres()
                 has_genres = self._plex_store.genres_has_content
 
-        except Exception:
+        except (sqlite3.Error, OSError):
             self._failure_mode = "plex"
             self._state = MenuState.IDLE_MENU
             self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
@@ -799,7 +800,7 @@ class Menu:
 
         try:
             entry = self._phone_book.lookup_by_phone_number(number)
-        except Exception:
+        except sqlite3.Error:
             entry = None
 
         if entry is None:
@@ -1034,7 +1035,7 @@ class Menu:
         try:
             self._plex_store.refresh()
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_SUCCESS)
-        except Exception:
+        except (sqlite3.Error, OSError):
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_FAILURE)
         self._tts.speak_and_play(SCRIPT_ASSISTANT_NAVIGATION)
 
