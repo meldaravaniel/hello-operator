@@ -122,7 +122,8 @@ class PiperTTS(TTSInterface):
 
             # Check if we can skip
             if os.path.exists(wav_path) and os.path.exists(hash_path):
-                stored_hash = open(hash_path).read().strip()
+                with open(hash_path, 'r') as f:
+                    stored_hash = f.read().strip()
                 if stored_hash == current_hash:
                     # Up to date — register and skip
                     self._text_to_script[text] = script_name
