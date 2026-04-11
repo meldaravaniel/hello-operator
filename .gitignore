@@ -6,3 +6,4 @@ __pycache__/
 plex/
 hello-operator.service
 hello-operator-web.service
+venv/

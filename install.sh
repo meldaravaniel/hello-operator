@@ -14,7 +14,7 @@ set -e
 PIPER_VERSION="2023.11.14-2"
 PIPER_ARCH="aarch64"  # Raspberry Pi 4 (64-bit OS)
 PIPER_TARBALL="piper_${PIPER_ARCH}.tar.gz"
-PIPER_URL="https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/${PIPER_TARBALL}"
+PIPER_URL="https://github.com/OHF-Voice/piper1-gpl/releases/download/${PIPER_VERSION}/${PIPER_TARBALL}"
 
 PIPER_MODEL_NAME="en_US-lessac-medium"
 PIPER_MODEL_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/${PIPER_MODEL_NAME}.onnx"

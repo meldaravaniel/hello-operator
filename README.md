@@ -80,6 +80,11 @@ Settings are stored in `/etc/hello-operator/config.env`. **Required:** `PLEX_TOK
 ## Development
 
 ```bash
+# Create and activate a virtual environment (required on Debian/Ubuntu/Pi OS,
+# which block pip from installing into the system Python). When done, type `deactivate`.
+python3 -m venv venv
+source venv/bin/activate
+
 # Install dev dependencies (no RPi.GPIO — not needed for tests)
 pip install -r requirements-dev.txt
 
@@ -91,9 +96,16 @@ python -m pytest -m integration -v
 
 # Run the app
 python main.py
+
+# Run the web interface locally (config editor + docs, port 8080)
+cp config.env.example config.env.local
+cp radio_stations.json.example radio_stations.json.local
+CONFIG_ENV_PATH=config.env.local RADIO_JSON_PATH=radio_stations.json.local python web/app.py
 ```
 
 Tests use dependency injection via Python ABCs — no hardware or network required. GPIO, audio, TTS, and Plex are all mockable at the seam without patching.
+
+When running the web UI locally, `DOCS_ROOT` defaults to the project root so documentation pages work automatically. The service status and restart buttons will fail gracefully since `systemctl` is not available outside a Pi.
 
 On a Raspberry Pi, install with `requirements-pi.txt` instead (adds `RPi.GPIO`).
 
