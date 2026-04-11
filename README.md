@@ -81,7 +81,7 @@ Settings are stored in `/etc/hello-operator/config.env`. **Required:** `PLEX_TOK
 
 ```bash
 # Create and activate a virtual environment (required on Debian/Ubuntu/Pi OS,
-# which block pip from installing into the system Python)
+# which block pip from installing into the system Python). When done, type `deactivate`.
 python3 -m venv venv
 source venv/bin/activate
 
