@@ -1,0 +1,12 @@
+[
+  {
+    "name": "KEXP",
+    "frequency_mhz": 90.3,
+    "phone_number": "5550903"
+  },
+  {
+    "name": "KNKX",
+    "frequency_mhz": 88.5,
+    "phone_number": "5550885"
+  }
+]

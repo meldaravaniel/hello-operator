@@ -32,12 +32,29 @@
 
 {% block scripts %}
 {% if content %}
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"
-        integrity="sha384-hVncn/bkFtoTZNqzFGPBmH1R6J2Td6Ia2Bok/KMf5TxFGjbAdVtpxk01/4caBOD"
-        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script>
   const raw = {{ content | tojson }};
   document.getElementById('doc-render').innerHTML = marked.parse(raw);
+
+  // marked v5+ no longer adds IDs to headings. Post-process the rendered HTML
+  // to add GitHub-style IDs so in-page anchor links work.
+  document.querySelectorAll('#doc-render h1,h2,h3,h4,h5,h6').forEach(el => {
+    if (!el.id) {
+      el.id = el.textContent
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-');
+    }
+  });
+
+  // Scroll to the anchor after content is in the DOM (handles both direct
+  // navigation to a hashed URL and clicks on in-page links).
+  if (window.location.hash) {
+    const el = document.getElementById(window.location.hash.slice(1));
+    if (el) el.scrollIntoView();
+  }
 </script>
 {% endif %}
 {% endblock %}
