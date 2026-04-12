@@ -46,7 +46,7 @@ jobs:
           cache-dependency-path: web/angular/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Run Jest tests with coverage
         run: npm run test:coverage
