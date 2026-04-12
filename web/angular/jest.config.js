@@ -1,6 +1,5 @@
-import type { Config } from 'jest';
-
-const config: Config = {
+/** @type {import('jest').Config} */
+const config = {
   preset: 'jest-preset-angular',
   setupFilesAfterEnv: ['<rootDir>/setup-jest.ts'],
   testEnvironment: 'jsdom',
@@ -21,4 +20,4 @@ const config: Config = {
   collectCoverageFrom: ['src/app/**/*.ts', '!src/app/**/*.spec.ts'],
 };
 
-export default config;
+module.exports = config;
