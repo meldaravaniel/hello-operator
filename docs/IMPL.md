@@ -17,7 +17,7 @@ suggested development order.
 | FM radio | `rtl_fm` subprocess (from `rtl-sdr` package) piped to `aplay` |
 | Persistence | SQLite (three separate DB files) |
 | Web backend | Flask 3 — pure JSON REST API, no templates |
-| Web frontend | Angular 19 SPA — standalone components, `marked` for Markdown rendering |
+| Web frontend | Angular 21 SPA — standalone components, `marked` for Markdown rendering |
 
 ---
 
@@ -160,11 +160,11 @@ No templates. All routes return JSON. Key paths:
 - `restart_service()` — `sudo systemctl restart hello-operator` via subprocess; requires sudoers rule from `install.sh`
 - SPA catch-all — serves `ANGULAR_DIST/index.html` for all non-API routes; serves static Angular assets by path; 404s for unknown `/api/` paths
 
-`ANGULAR_DIST` defaults to `web/angular/dist/hello-operator/browser/` (Angular 19 `application` builder output). Override with the `ANGULAR_DIST` environment variable for testing or alternative builds.
+`ANGULAR_DIST` defaults to `web/angular/dist/hello-operator/browser/` (Angular 21 `application` builder output). Override with the `ANGULAR_DIST` environment variable for testing or alternative builds.
 
 ### Angular SPA (`web/angular/`)
 
-Built with Angular 19 standalone components (no NgModules). Key files:
+Built with Angular 21 standalone components (no NgModules). Key files:
 
 | File | Purpose |
 |---|---|

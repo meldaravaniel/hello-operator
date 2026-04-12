@@ -145,7 +145,7 @@ src/
 
 web/
   app.py           # Flask REST API (port 8080)
-  angular/         # Angular 19 SPA (StatusComponent, DocsComponent, ConfigComponent)
+  angular/         # Angular 21 SPA (StatusComponent, DocsComponent, ConfigComponent)
 
 docs/
   DESIGN.md        # architecture and interface reference

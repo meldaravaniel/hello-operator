@@ -75,7 +75,7 @@ scripts/
 
 web/
   app.py                # Flask REST API (port 8080) — no templates
-  angular/              # Angular 19 SPA
+  angular/              # Angular 21 SPA
     src/app/            # AppComponent (nav), StatusComponent, DocsComponent, ConfigComponent
     proxy.config.json   # Dev proxy: forwards /api and /service/* to Flask on :8080
     dist/               # Production build output — served by Flask; excluded from git

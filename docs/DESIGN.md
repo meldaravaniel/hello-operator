@@ -588,7 +588,7 @@ A browser-based configuration panel served at port 8080 by the `hello-operator-w
 The web layer follows a strict client/server split:
 
 - **Backend:** Flask (`web/app.py`) exposes a pure JSON REST API. It reads and writes `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json`, and triggers `sudo systemctl restart hello-operator` after saves. It serves the compiled Angular application for all non-API routes.
-- **Frontend:** An Angular 19 SPA (`web/angular/`) compiled to `web/angular/dist/`. All UI rendering happens client-side; the backend never generates HTML.
+- **Frontend:** An Angular 21 SPA (`web/angular/`) compiled to `web/angular/dist/`. All UI rendering happens client-side; the backend never generates HTML.
 
 ### REST API
 
