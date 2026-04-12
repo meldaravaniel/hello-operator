@@ -87,6 +87,16 @@ def client(patch_paths, mock_service_ok):
     return wa.app.test_client()
 
 
+@pytest.fixture
+def pw_client(patch_paths, mock_service_ok, monkeypatch):
+    """Flask test client with ADMIN_PASSWORD auth enabled."""
+    wa.app.config["TESTING"] = True
+    wa.app.config["SECRET_KEY"] = "test-secret-key"
+    wa.app.secret_key = "test-secret-key"
+    monkeypatch.setattr(wa, "ADMIN_PASSWORD", "correcthorse")
+    return wa.app.test_client()
+
+
 # ---------------------------------------------------------------------------
 # read_config_env
 # ---------------------------------------------------------------------------
@@ -623,3 +633,65 @@ class TestRouteApiConfigRadio:
         assert resp.status_code == 200
         assert data["ok"] is True
         assert "Restart failed" in data["message"]
+
+
+# ---------------------------------------------------------------------------
+# Auth — /api/auth/*
+# ---------------------------------------------------------------------------
+
+
+class TestAuth:
+    def test_login_correct_password_returns_200(self, pw_client):
+        resp = pw_client.post("/api/auth/login", json={"password": "correcthorse"})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_login_wrong_password_returns_401(self, pw_client):
+        resp = pw_client.post("/api/auth/login", json={"password": "wrong"})
+        assert resp.status_code == 401
+        assert resp.get_json()["ok"] is False
+
+    def test_auth_status_unauthenticated(self, pw_client):
+        data = pw_client.get("/api/auth/status").get_json()
+        assert data["authenticated"] is False
+        assert data["required"] is True
+
+    def test_auth_status_after_login(self, pw_client):
+        pw_client.post("/api/auth/login", json={"password": "correcthorse"})
+        data = pw_client.get("/api/auth/status").get_json()
+        assert data["authenticated"] is True
+
+    def test_protected_config_without_auth_returns_401(self, pw_client):
+        assert pw_client.get("/api/config").status_code == 401
+
+    def test_protected_restart_without_auth_returns_401(self, pw_client):
+        assert pw_client.post("/service/restart").status_code == 401
+
+    def test_protected_config_env_without_auth_returns_401(self, pw_client):
+        assert pw_client.post("/api/config/env", json={}).status_code == 401
+
+    def test_protected_config_radio_without_auth_returns_401(self, pw_client):
+        assert pw_client.post("/api/config/radio", json=[]).status_code == 401
+
+    def test_protected_config_accessible_after_login(self, pw_client):
+        pw_client.post("/api/auth/login", json={"password": "correcthorse"})
+        assert pw_client.get("/api/config").status_code == 200
+
+    def test_logout_clears_session(self, pw_client):
+        pw_client.post("/api/auth/login", json={"password": "correcthorse"})
+        pw_client.post("/api/auth/logout")
+        assert pw_client.get("/api/config").status_code == 401
+
+    def test_public_status_accessible_without_auth(self, pw_client):
+        assert pw_client.get("/api/status").status_code == 200
+
+    def test_public_docs_accessible_without_auth(self, pw_client):
+        assert pw_client.get("/api/docs").status_code == 200
+
+    def test_no_password_configured_auth_status_shows_not_required(self, client):
+        data = client.get("/api/auth/status").get_json()
+        assert data["authenticated"] is True
+        assert data["required"] is False
+
+    def test_no_password_configured_allows_config_access(self, client):
+        assert client.get("/api/config").status_code == 200

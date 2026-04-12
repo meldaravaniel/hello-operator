@@ -10,13 +10,15 @@ Run via the hello-operator-web systemd service (see install.sh), or directly:
   WEB_PORT=8080 python web/app.py
 """
 
+import functools
 import json
 import os
 import re
+import secrets
 import subprocess
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory, session
 
 # ---------------------------------------------------------------------------
 # Paths (overridable via environment for local development)
@@ -30,6 +32,11 @@ RADIO_JSON_PATH = Path(os.environ.get("RADIO_JSON_PATH", "/etc/hello-operator/ra
 DOCS_ROOT = Path(os.environ.get("DOCS_ROOT", str(_PROJECT_ROOT)))
 ANGULAR_DIST = Path(os.environ.get("ANGULAR_DIST", str(_HERE / "angular" / "dist" / "hello-operator" / "browser")))
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+
+# Auth — set ADMIN_PASSWORD in config.env to enable password protection.
+# Leave empty (the default) to disable auth for local/trusted-network use.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
 # ---------------------------------------------------------------------------
 # Documentation pages (title, path relative to DOCS_ROOT)
@@ -139,6 +146,22 @@ CONFIG_FIELDS = [
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
+app.secret_key = SECRET_KEY
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+
+def require_auth(f):
+    """Decorator: reject with 401 when ADMIN_PASSWORD is set and session is unauthenticated."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if ADMIN_PASSWORD and not session.get("authenticated"):
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 
 # ---------------------------------------------------------------------------
 # Config I/O helpers
@@ -285,12 +308,38 @@ def _slug_to_path(slug: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+@app.route("/api/auth/status")
+def api_auth_status():
+    if not ADMIN_PASSWORD:
+        return jsonify({"authenticated": True, "required": False})
+    return jsonify({"authenticated": bool(session.get("authenticated")), "required": True})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    if not ADMIN_PASSWORD:
+        return jsonify({"ok": True})
+    payload = request.get_json(silent=True) or {}
+    password = str(payload.get("password", ""))
+    if secrets.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
+        session["authenticated"] = True
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Incorrect password"}), 401
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/status")
 def api_status():
     return jsonify({"status": get_service_status()})
 
 
 @app.route("/service/restart", methods=["POST"])
+@require_auth
 def service_restart():
     ok, err = restart_service()
     return jsonify({"ok": ok, "error": err if not ok else None, "status": get_service_status()})
@@ -313,6 +362,7 @@ def api_docs_page(slug: str):
 
 
 @app.route("/api/config")
+@require_auth
 def api_config_get():
     all_values = read_config_env()
     # Omit password field values from the response
@@ -326,6 +376,7 @@ def api_config_get():
 
 
 @app.route("/api/config/env", methods=["POST"])
+@require_auth
 def api_config_env():
     payload = request.get_json(silent=True)
     if payload is None:
@@ -356,6 +407,7 @@ def api_config_env():
 
 
 @app.route("/api/config/radio", methods=["POST"])
+@require_auth
 def api_config_radio():
     payload = request.get_json(silent=True)
     if payload is None:
