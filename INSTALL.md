@@ -55,7 +55,13 @@ cd hello-operator
 sudo ./install.sh
 ```
 
-The script installs system packages, downloads and installs the Piper TTS binary and voice model, creates a Python virtual environment, installs pip dependencies, creates `/etc/hello-operator/` with example config files, generates and installs the systemd unit file, and enables the service for auto-start on boot.
+The script installs system packages, downloads the Piper TTS binary and voice model, creates a Python virtual environment, installs pip dependencies, creates `/etc/hello-operator/` with example config files, and generates and enables both systemd unit files.
+
+If Node.js (`npm`) is available on the machine, `install.sh` also builds the Angular frontend so the web interface is fully operational at `http://<hostname>.local:8080` immediately after starting the service. If Node.js is not present, the API works but the browser UI shows a "not built" message; build it manually:
+
+```bash
+cd web/angular && npm install && npm run build
+```
 
 ---
 
@@ -138,13 +144,29 @@ Pick up the handset to confirm the phone system is working. You should hear a di
 
 ## Web interface
 
-After both services are running, the web interface is available at `http://<hostname>.local:8080` from any device on the same network. It provides:
+After both services are running, the web interface is available at `http://<hostname>.local:8080` from any device on the same network. It is a single-page Angular application backed by a Flask REST API.
 
-- **Status** — service state and a restart button
-- **Docs** — browsable project documentation
-- **Configure** — edit all settings (Plex credentials, GPIO pins, TTS paths, radio stations) and apply them without touching the command line
+Three views are available via the top navigation bar:
 
-Configuration changes are saved to `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json` and the phone service is restarted automatically.
+| View | Path | Purpose |
+|---|---|---|
+| **Status** | `/` | Service state badge and one-click restart |
+| **Docs** | `/docs` | Browsable project documentation rendered from Markdown |
+| **Configure** | `/config` | Edit all settings and radio stations without touching the command line |
+
+Configuration changes written through the UI are saved to `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json`. The phone service is restarted automatically after each save.
+
+**REST API** — the backend exposes the following JSON endpoints (useful for scripting or diagnostics):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/status` | GET | Current systemd active state |
+| `/service/restart` | POST | Restart hello-operator |
+| `/api/docs` | GET | List of available documentation pages |
+| `/api/docs/<slug>` | GET | Raw Markdown content for a single page |
+| `/api/config` | GET | Config field definitions, current values, and radio stations |
+| `/api/config/env` | POST | Save environment variable updates (JSON body) |
+| `/api/config/radio` | POST | Save radio station list (JSON body) |
 
 ---
 

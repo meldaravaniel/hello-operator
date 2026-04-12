@@ -140,6 +140,20 @@ sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
 
 # ---------------------------------------------------------------------------
+# Angular frontend
+# ---------------------------------------------------------------------------
+
+if command -v npm >/dev/null 2>&1; then
+    echo "==> Building Angular frontend..."
+    (cd "$INSTALL_DIR/web/angular" && npm ci --quiet && npx ng build)
+    echo "==> Angular frontend built."
+else
+    echo "==> Node.js/npm not found — skipping Angular build."
+    echo "    The web UI will show a 'not built' page until you run:"
+    echo "      cd $INSTALL_DIR/web/angular && npm install && npm run build"
+fi
+
+# ---------------------------------------------------------------------------
 # Systemd service
 # ---------------------------------------------------------------------------
 

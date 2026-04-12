@@ -1,0 +1,31 @@
+<div class="docs-layout">
+  <nav class="docs-sidebar">
+    <mat-nav-list>
+      <a
+        mat-list-item
+        *ngFor="let page of pages"
+        [routerLink]="['/docs', page.slug]"
+        [activated]="page.slug === currentSlug"
+      >{{ page.title }}</a>
+      <p *ngIf="pages.length === 0" class="empty-state">No pages found.</p>
+    </mat-nav-list>
+  </nav>
+
+  <mat-divider vertical></mat-divider>
+
+  <div class="docs-main">
+    <div *ngIf="loading" class="loading-container">
+      <mat-spinner diameter="40"></mat-spinner>
+    </div>
+    <p *ngIf="error" class="feedback-message feedback-error">{{ error }}</p>
+    <div
+      *ngIf="!loading && !error && renderedHtml"
+      id="doc-render"
+      class="markdown-body"
+      [innerHTML]="renderedHtml"
+    ></div>
+    <p *ngIf="!loading && !error && !renderedHtml" class="empty-state">
+      Select a page from the sidebar.
+    </p>
+  </div>
+</div>

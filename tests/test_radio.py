@@ -1,5 +1,8 @@
 """Tests for RadioInterface, RtlFmRadio, and MockRadio."""
 
+import subprocess
+from unittest.mock import MagicMock
+
 import pytest
 
 

@@ -96,16 +96,32 @@ python -m pytest -m integration -v
 
 # Run the app
 python main.py
+```
 
-# Run the web interface locally (config editor + docs, port 8080)
+**Web interface local development** — two processes, one terminal each:
+
+```bash
+# Terminal 1 — Flask REST API on :8080
 cp config.env.example config.env.local
 cp radio_stations.json.example radio_stations.json.local
 CONFIG_ENV_PATH=config.env.local RADIO_JSON_PATH=radio_stations.json.local python web/app.py
+
+# Terminal 2 — Angular dev server on :4200 (proxies /api and /service to :8080)
+cd web/angular
+npm install          # first time only
+npm start            # then open http://localhost:4200
+```
+
+To build the Angular app for production (output served by Flask directly at :8080):
+
+```bash
+cd web/angular && npm run build
+# Flask at :8080 now serves the full SPA
 ```
 
 Tests use dependency injection via Python ABCs — no hardware or network required. GPIO, audio, TTS, and Plex are all mockable at the seam without patching.
 
-When running the web UI locally, `DOCS_ROOT` defaults to the project root so documentation pages work automatically. The service status and restart buttons will fail gracefully since `systemctl` is not available outside a Pi.
+`DOCS_ROOT` defaults to the project root, so the documentation pages work without any extra configuration. The service status and restart buttons will fail gracefully since `systemctl` is not available outside a Pi.
 
 On a Raspberry Pi, install with `requirements-pi.txt` instead (adds `RPi.GPIO`).
 
@@ -126,6 +142,10 @@ src/
   tts.py           # Piper TTS
   interfaces.py    # all ABCs and data types
   constants.py     # all configuration constants
+
+web/
+  app.py           # Flask REST API (port 8080)
+  angular/         # Angular 21 SPA (StatusComponent, DocsComponent, ConfigComponent)
 
 docs/
   DESIGN.md        # architecture and interface reference

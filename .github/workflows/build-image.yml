@@ -18,6 +18,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/angular/package-lock.json
+
+      - name: Build Angular frontend
+        working-directory: web/angular
+        run: |
+          npm ci
+          npx ng build
+
       - name: Build image
         id: build
         uses: pguyot/arm-runner-action@v2

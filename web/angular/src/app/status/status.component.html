@@ -1,0 +1,27 @@
+<h1 class="page-title">Service Status</h1>
+
+<mat-card>
+  <mat-card-header>
+    <mat-card-title>hello-operator</mat-card-title>
+  </mat-card-header>
+
+  <mat-card-content>
+    <div class="status-row">
+      <span class="status-badge" [ngClass]="badgeClass">
+        <span class="status-dot" [ngClass]="'status-' + status"></span>
+        {{ statusLabel }}
+      </span>
+    </div>
+
+    <p *ngIf="message" class="feedback-message" [ngClass]="'feedback-' + messageType">
+      {{ message }}
+    </p>
+  </mat-card-content>
+
+  <mat-card-actions>
+    <button mat-flat-button (click)="restart()" [disabled]="restarting">
+      <mat-spinner *ngIf="restarting" diameter="18"></mat-spinner>
+      {{ restarting ? 'Restarting…' : 'Restart Service' }}
+    </button>
+  </mat-card-actions>
+</mat-card>

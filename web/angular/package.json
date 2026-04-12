@@ -1,0 +1,44 @@
+{
+  "name": "hello-operator-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve --proxy-config proxy.config.json",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "@angular/animations": "^21.2.8",
+    "@angular/cdk": "^21.2.6",
+    "@angular/cli": "^21.2.7",
+    "@angular/common": "^21.2.8",
+    "@angular/compiler": "^21.2.8",
+    "@angular/core": "^21.2.8",
+    "@angular/forms": "^21.2.8",
+    "@angular/material": "^21.2.6",
+    "@angular/platform-browser": "^21.2.8",
+    "@angular/platform-browser-dynamic": "^21.2.8",
+    "@angular/router": "^21.2.8",
+    "marked": "^12.0.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.2.7",
+    "@angular/compiler-cli": "^21.2.8",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
+    "jest-preset-angular": "^16.1.4",
+    "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "babel-plugin-istanbul": "^8.0.0",
+    "test-exclude": "^8.0.0",
+    "glob": "^13.0.0"
+  }
+}

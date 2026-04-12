@@ -55,6 +55,17 @@ def docs_dir(tmp_path):
 
 
 @pytest.fixture
+def dist_dir(tmp_path, monkeypatch):
+    """Minimal Angular dist directory for SPA serving tests."""
+    d = tmp_path / "dist"
+    d.mkdir()
+    (d / "index.html").write_text("<html><body><app-root></app-root></body></html>")
+    (d / "main.js").write_text("// angular bundle")
+    monkeypatch.setattr(wa, "ANGULAR_DIST", d)
+    return d
+
+
+@pytest.fixture
 def patch_paths(monkeypatch, tmp_path, config_file, radio_file):
     """Redirect all file-path constants in web.app to tmp_path locations."""
     monkeypatch.setattr(wa, "CONFIG_ENV_PATH", config_file)
@@ -275,247 +286,36 @@ class TestRestartService:
 
 
 # ---------------------------------------------------------------------------
-# GET /
+# Angular SPA catch-all  (GET /)
 # ---------------------------------------------------------------------------
 
 
-class TestRouteIndex:
-    def test_returns_200(self, client):
-        assert client.get("/").status_code == 200
+class TestRouteSpa:
+    def test_serves_index_html_when_dist_exists(self, client, dist_dir):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"app-root" in resp.data
 
-    def test_shows_running_badge_when_active(self, client, monkeypatch):
-        monkeypatch.setattr(wa, "get_service_status", lambda: "active")
-        assert b"Running" in client.get("/").data
+    def test_returns_200_fallback_when_dist_missing(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(wa, "ANGULAR_DIST", tmp_path / "nonexistent")
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"not built" in resp.data.lower()
 
-    def test_shows_stopped_badge_when_inactive(self, client, monkeypatch):
-        monkeypatch.setattr(wa, "get_service_status", lambda: "inactive")
-        assert b"Stopped" in client.get("/").data
-
-    def test_shows_failed_badge_on_failure(self, client, monkeypatch):
-        monkeypatch.setattr(wa, "get_service_status", lambda: "failed")
-        assert b"Failed" in client.get("/").data
-
-
-# ---------------------------------------------------------------------------
-# GET /docs  and  GET /docs/<slug>
-# ---------------------------------------------------------------------------
-
-
-class TestRouteDocs:
-    def test_docs_index_redirects_to_first_available_page(self, client, docs_dir):
-        resp = client.get("/docs")
-        assert resp.status_code == 302
-        assert "/docs/" in resp.headers["Location"]
-
-    def test_docs_index_with_no_files_returns_200(self, client):
-        # No docs created under tmp_path — should render empty list, not crash
-        resp = client.get("/docs")
+    def test_serves_static_file_from_dist(self, client, dist_dir):
+        resp = client.get("/main.js")
         assert resp.status_code == 200
 
-    def test_docs_page_returns_200(self, client, docs_dir):
-        resp = client.get("/docs/README")
+    def test_spa_route_returns_index_html(self, client, dist_dir):
+        # SPA route that doesn't correspond to a real file should serve index.html
+        resp = client.get("/docs/some-page")
         assert resp.status_code == 200
+        assert b"app-root" in resp.data
 
-    def test_docs_page_embeds_raw_markdown_for_rendering(self, client, docs_dir):
-        resp = client.get("/docs/README")
-        # Raw markdown is JSON-encoded into the page for client-side rendering
-        assert b"Hello Operator" in resp.data
-
-    def test_docs_page_unknown_slug_returns_404(self, client):
-        assert client.get("/docs/completely_unknown").status_code == 404
-
-    def test_docs_page_known_slug_but_missing_file_returns_404(self, client):
-        # README is in DOC_PAGES but the file was not created in tmp_path
-        assert client.get("/docs/README").status_code == 404
-
-    def test_docs_page_renders_sidebar_links(self, client, docs_dir):
-        resp = client.get("/docs/README")
-        assert b"/docs/" in resp.data
-
-
-# ---------------------------------------------------------------------------
-# GET /config
-# ---------------------------------------------------------------------------
-
-
-class TestRouteConfigGet:
-    def test_returns_200(self, client):
-        assert client.get("/config").status_code == 200
-
-    def test_shows_field_labels(self, client):
-        data = client.get("/config").data
-        assert b"Plex Token" in data
-        assert b"Plex Player Identifier" in data
-        assert b"Assistant Phone Number" in data
-        assert b"Radio Stations" in data
-
-    def test_prepopulates_non_password_fields(self, client):
-        # PLEX_PLAYER_IDENTIFIER="abc123" in config_file fixture
-        assert b"abc123" in client.get("/config").data
-
-    def test_does_not_expose_token_in_html(self, client):
-        # PLEX_TOKEN is a password field; its value must not appear in the HTML
-        assert b"existingtoken" not in client.get("/config").data
-
-    def test_shows_existing_radio_stations(self, client):
-        data = client.get("/config").data
-        assert b"KEXP" in data
-        assert b"5550903" in data
-
-
-# ---------------------------------------------------------------------------
-# POST /config/env
-# ---------------------------------------------------------------------------
-
-
-class TestRouteUpdateConfigEnv:
-    """Tests for the settings form submission."""
-
-    # Minimal valid form: required non-password fields filled, password blank.
-    _base = {
-        "PLEX_TOKEN": "",           # blank = keep existing
-        "PLEX_PLAYER_IDENTIFIER": "player-xyz",
-        "PLEX_URL": "http://localhost:32400",
-        "ASSISTANT_NUMBER": "5550001",
-        "HOOK_SWITCH_PIN": "17",
-        "PULSE_SWITCH_PIN": "27",
-        "PIPER_BINARY": "/usr/local/bin/piper",
-        "PIPER_MODEL": "/usr/local/share/piper/en_US-lessac-medium.onnx",
-        "TTS_CACHE_DIR": "/var/cache/hello-operator/tts",
-    }
-
-    def _form(self, **overrides):
-        return {**self._base, **overrides}
-
-    def test_valid_submission_returns_200(self, client):
-        assert client.post("/config/env", data=self._form()).status_code == 200
-
-    def test_blank_password_field_does_not_produce_error(self, client):
-        resp = client.post("/config/env", data=self._form(PLEX_TOKEN=""))
-        # The error banner only appears on validation failures
-        assert b"Please fix the following" not in resp.data
-
-    def test_provided_password_is_written_to_file(self, client, config_file):
-        client.post("/config/env", data=self._form(PLEX_TOKEN="brandnewtoken"))
-        assert "brandnewtoken" in config_file.read_text()
-
-    def test_missing_required_non_password_field_shows_error(self, client):
-        resp = client.post("/config/env", data=self._form(ASSISTANT_NUMBER=""))
-        # The error message format is "<Label> is required."
-        assert b"is required" in resp.data
-
-    def test_missing_required_field_does_not_write_file(self, client, config_file):
-        original = config_file.read_text()
-        client.post("/config/env", data=self._form(ASSISTANT_NUMBER=""))
-        assert config_file.read_text() == original
-
-    def test_missing_required_field_does_not_call_restart(self, client, monkeypatch):
-        restart = Mock(return_value=(True, ""))
-        monkeypatch.setattr(wa, "restart_service", restart)
-        client.post("/config/env", data=self._form(ASSISTANT_NUMBER=""))
-        restart.assert_not_called()
-
-    def test_valid_submission_updates_config_file(self, client, config_file):
-        client.post("/config/env", data=self._form(PLEX_URL="http://192.168.1.5:32400"))
-        assert "192.168.1.5" in config_file.read_text()
-
-    def test_valid_submission_calls_restart(self, client, monkeypatch):
-        restart = Mock(return_value=(True, ""))
-        monkeypatch.setattr(wa, "restart_service", restart)
-        client.post("/config/env", data=self._form())
-        restart.assert_called_once()
-
-    def test_success_message_shown_after_restart(self, client):
-        resp = client.post("/config/env", data=self._form())
-        assert b"restarted" in resp.data.lower()
-
-    def test_restart_failure_shows_warning_not_error_page(self, client, monkeypatch):
-        monkeypatch.setattr(wa, "restart_service", lambda: (False, "unit not found"))
-        resp = client.post("/config/env", data=self._form())
-        assert resp.status_code == 200
-        assert b"restart failed" in resp.data.lower()
-
-
-# ---------------------------------------------------------------------------
-# POST /config/radio
-# ---------------------------------------------------------------------------
-
-
-class TestRouteUpdateRadio:
-    _valid = [{"name": "KEXP", "frequency_mhz": 90.3, "phone_number": "5550903"}]
-
-    def test_valid_stations_returns_200_ok(self, client):
-        resp = client.post("/config/radio", json=self._valid)
-        assert resp.status_code == 200
-        assert resp.get_json()["ok"] is True
-
-    def test_valid_stations_written_to_file(self, client, radio_file):
-        new = [{"name": "KNKX", "frequency_mhz": 88.5, "phone_number": "5550885"}]
-        client.post("/config/radio", json=new)
-        assert json.loads(radio_file.read_text())[0]["name"] == "KNKX"
-
-    def test_empty_list_saves_ok(self, client, radio_file):
-        resp = client.post("/config/radio", json=[])
-        assert resp.status_code == 200
-        assert json.loads(radio_file.read_text()) == []
-
-    def test_valid_submission_calls_restart(self, client, monkeypatch):
-        restart = Mock(return_value=(True, ""))
-        monkeypatch.setattr(wa, "restart_service", restart)
-        client.post("/config/radio", json=self._valid)
-        restart.assert_called_once()
-
-    def test_phone_number_too_short_returns_422(self, client):
-        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "123"}]
-        resp = client.post("/config/radio", json=bad)
-        assert resp.status_code == 422
-        assert resp.get_json()["ok"] is False
-
-    def test_phone_number_too_long_returns_422(self, client):
-        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "12345678"}]
-        assert client.post("/config/radio", json=bad).status_code == 422
-
-    def test_non_digit_phone_number_returns_422(self, client):
-        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "555-090"}]
-        assert client.post("/config/radio", json=bad).status_code == 422
-
-    def test_empty_name_returns_422(self, client):
-        bad = [{"name": "", "frequency_mhz": 90.3, "phone_number": "5550903"}]
-        assert client.post("/config/radio", json=bad).status_code == 422
-
-    def test_non_numeric_frequency_returns_422(self, client):
-        bad = [{"name": "X", "frequency_mhz": "fast", "phone_number": "5550903"}]
-        assert client.post("/config/radio", json=bad).status_code == 422
-
-    def test_negative_frequency_returns_422(self, client):
-        bad = [{"name": "X", "frequency_mhz": -1.0, "phone_number": "5550903"}]
-        assert client.post("/config/radio", json=bad).status_code == 422
-
-    def test_non_json_body_returns_400(self, client):
-        resp = client.post("/config/radio", data="not json", content_type="text/plain")
-        assert resp.status_code == 400
-
-    def test_validation_errors_do_not_write_file(self, client, radio_file):
-        original = radio_file.read_text()
-        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "123"}]
-        client.post("/config/radio", json=bad)
-        assert radio_file.read_text() == original
-
-    def test_error_message_identifies_station_number(self, client):
-        payload = [
-            {"name": "Good", "frequency_mhz": 90.3, "phone_number": "5550903"},
-            {"name": "Bad",  "frequency_mhz": 88.5, "phone_number": "123"},
-        ]
-        data = client.post("/config/radio", json=payload).get_json()
-        assert any("Station 2" in e for e in data["errors"])
-
-    def test_restart_failure_still_reports_ok_true(self, client, monkeypatch):
-        monkeypatch.setattr(wa, "restart_service", lambda: (False, "failed"))
-        resp = client.post("/config/radio", json=self._valid)
-        data = resp.get_json()
-        assert resp.status_code == 200
-        assert data["ok"] is True
-        assert "Restart failed" in data["message"]
+    def test_api_prefix_not_caught_by_spa(self, client):
+        # Unknown /api/ path should 404, not serve the SPA
+        resp = client.get("/api/nonexistent-route")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -557,3 +357,269 @@ class TestRouteServiceRestart:
     def test_response_includes_current_status(self, client):
         data = client.post("/service/restart").get_json()
         assert "status" in data
+
+
+# ---------------------------------------------------------------------------
+# GET /api/docs
+# ---------------------------------------------------------------------------
+
+
+class TestRouteApiDocs:
+    def test_returns_200_with_json(self, client):
+        resp = client.get("/api/docs")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("application/json")
+
+    def test_returns_pages_array(self, client):
+        data = client.get("/api/docs").get_json()
+        assert "pages" in data
+        assert isinstance(data["pages"], list)
+
+    def test_only_includes_existing_files(self, client):
+        # No docs created in tmp_path — all entries in DOC_PAGES are missing
+        pages = client.get("/api/docs").get_json()["pages"]
+        assert len(pages) == 0
+
+    def test_includes_existing_doc_pages(self, client, docs_dir):
+        pages = client.get("/api/docs").get_json()["pages"]
+        titles = [p["title"] for p in pages]
+        assert "Overview" in titles
+
+    def test_page_entry_has_title_and_slug(self, client, docs_dir):
+        page = client.get("/api/docs").get_json()["pages"][0]
+        assert "title" in page
+        assert "slug" in page
+
+
+# ---------------------------------------------------------------------------
+# GET /api/docs/<slug>
+# ---------------------------------------------------------------------------
+
+
+class TestRouteApiDocsPage:
+    def test_returns_200_with_json(self, client, docs_dir):
+        resp = client.get("/api/docs/README")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("application/json")
+
+    def test_returns_title_content_slug(self, client, docs_dir):
+        data = client.get("/api/docs/README").get_json()
+        assert data["title"] == "Overview"
+        assert "Hello Operator" in data["content"]
+        assert data["slug"] == "README"
+
+    def test_unknown_slug_returns_404(self, client):
+        assert client.get("/api/docs/completely_unknown").status_code == 404
+
+    def test_known_slug_but_missing_file_returns_404(self, client):
+        # README is in DOC_PAGES but no file was created in tmp_path
+        assert client.get("/api/docs/README").status_code == 404
+
+    def test_returns_raw_markdown_in_content(self, client, docs_dir):
+        content = client.get("/api/docs/README").get_json()["content"]
+        # Raw markdown, not rendered HTML
+        assert content.startswith("#")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/config
+# ---------------------------------------------------------------------------
+
+
+class TestRouteApiConfig:
+    def test_returns_200_with_json(self, client):
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("application/json")
+
+    def test_response_has_required_keys(self, client):
+        data = client.get("/api/config").get_json()
+        assert "fields" in data
+        assert "values" in data
+        assert "stations" in data
+
+    def test_fields_includes_all_config_fields(self, client):
+        fields = client.get("/api/config").get_json()["fields"]
+        keys = [f["key"] for f in fields]
+        assert "PLEX_TOKEN" in keys
+        assert "ASSISTANT_NUMBER" in keys
+        assert "PIPER_BINARY" in keys
+
+    def test_values_includes_non_password_fields(self, client):
+        values = client.get("/api/config").get_json()["values"]
+        assert values.get("PLEX_PLAYER_IDENTIFIER") == "abc123"
+
+    def test_values_excludes_password_fields(self, client):
+        values = client.get("/api/config").get_json()["values"]
+        assert "PLEX_TOKEN" not in values
+
+    def test_stations_reflects_radio_file(self, client):
+        stations = client.get("/api/config").get_json()["stations"]
+        assert stations[0]["name"] == "KEXP"
+        assert stations[0]["phone_number"] == "5550903"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/config/env
+# ---------------------------------------------------------------------------
+
+
+class TestRouteApiConfigEnv:
+    _base = {
+        "PLEX_TOKEN": "",           # blank = keep existing
+        "PLEX_PLAYER_IDENTIFIER": "player-xyz",
+        "PLEX_URL": "http://localhost:32400",
+        "ASSISTANT_NUMBER": "5550001",
+        "HOOK_SWITCH_PIN": "17",
+        "PULSE_SWITCH_PIN": "27",
+        "PIPER_BINARY": "/usr/local/bin/piper",
+        "PIPER_MODEL": "/usr/local/share/piper/en_US-lessac-medium.onnx",
+        "TTS_CACHE_DIR": "/var/cache/hello-operator/tts",
+    }
+
+    def _payload(self, **overrides):
+        return {**self._base, **overrides}
+
+    def test_valid_submission_returns_200_ok(self, client):
+        resp = client.post("/api/config/env", json=self._payload())
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_blank_password_does_not_produce_error(self, client):
+        resp = client.post("/api/config/env", json=self._payload(PLEX_TOKEN=""))
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert not data.get("errors")
+
+    def test_provided_password_written_to_file(self, client, config_file):
+        client.post("/api/config/env", json=self._payload(PLEX_TOKEN="brandnewtoken"))
+        assert "brandnewtoken" in config_file.read_text()
+
+    def test_missing_required_field_returns_422(self, client):
+        resp = client.post("/api/config/env", json=self._payload(ASSISTANT_NUMBER=""))
+        assert resp.status_code == 422
+        assert resp.get_json()["ok"] is False
+
+    def test_missing_required_field_error_names_field(self, client):
+        data = client.post("/api/config/env", json=self._payload(ASSISTANT_NUMBER="")).get_json()
+        assert any("is required" in e for e in data["errors"])
+
+    def test_missing_required_field_does_not_write_file(self, client, config_file):
+        original = config_file.read_text()
+        client.post("/api/config/env", json=self._payload(ASSISTANT_NUMBER=""))
+        assert config_file.read_text() == original
+
+    def test_missing_required_field_does_not_call_restart(self, client, monkeypatch):
+        restart = Mock(return_value=(True, ""))
+        monkeypatch.setattr(wa, "restart_service", restart)
+        client.post("/api/config/env", json=self._payload(ASSISTANT_NUMBER=""))
+        restart.assert_not_called()
+
+    def test_valid_submission_updates_config_file(self, client, config_file):
+        client.post("/api/config/env", json=self._payload(PLEX_URL="http://192.168.1.5:32400"))
+        assert "192.168.1.5" in config_file.read_text()
+
+    def test_valid_submission_calls_restart(self, client, monkeypatch):
+        restart = Mock(return_value=(True, ""))
+        monkeypatch.setattr(wa, "restart_service", restart)
+        client.post("/api/config/env", json=self._payload())
+        restart.assert_called_once()
+
+    def test_success_response_includes_message(self, client):
+        data = client.post("/api/config/env", json=self._payload()).get_json()
+        assert "message" in data
+        assert "restarted" in data["message"].lower()
+
+    def test_restart_failure_still_200_with_ok_true(self, client, monkeypatch):
+        monkeypatch.setattr(wa, "restart_service", lambda: (False, "unit not found"))
+        resp = client.post("/api/config/env", json=self._payload())
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert "restart failed" in data["message"].lower()
+
+    def test_non_json_body_returns_400(self, client):
+        resp = client.post("/api/config/env", data="not json", content_type="text/plain")
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/config/radio
+# ---------------------------------------------------------------------------
+
+
+class TestRouteApiConfigRadio:
+    _valid = [{"name": "KEXP", "frequency_mhz": 90.3, "phone_number": "5550903"}]
+
+    def test_valid_stations_returns_200_ok(self, client):
+        resp = client.post("/api/config/radio", json=self._valid)
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_valid_stations_written_to_file(self, client, radio_file):
+        new = [{"name": "KNKX", "frequency_mhz": 88.5, "phone_number": "5550885"}]
+        client.post("/api/config/radio", json=new)
+        assert json.loads(radio_file.read_text())[0]["name"] == "KNKX"
+
+    def test_empty_list_saves_ok(self, client, radio_file):
+        resp = client.post("/api/config/radio", json=[])
+        assert resp.status_code == 200
+        assert json.loads(radio_file.read_text()) == []
+
+    def test_valid_submission_calls_restart(self, client, monkeypatch):
+        restart = Mock(return_value=(True, ""))
+        monkeypatch.setattr(wa, "restart_service", restart)
+        client.post("/api/config/radio", json=self._valid)
+        restart.assert_called_once()
+
+    def test_phone_number_too_short_returns_422(self, client):
+        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "123"}]
+        resp = client.post("/api/config/radio", json=bad)
+        assert resp.status_code == 422
+        assert resp.get_json()["ok"] is False
+
+    def test_phone_number_too_long_returns_422(self, client):
+        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "12345678"}]
+        assert client.post("/api/config/radio", json=bad).status_code == 422
+
+    def test_non_digit_phone_number_returns_422(self, client):
+        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "555-090"}]
+        assert client.post("/api/config/radio", json=bad).status_code == 422
+
+    def test_empty_name_returns_422(self, client):
+        bad = [{"name": "", "frequency_mhz": 90.3, "phone_number": "5550903"}]
+        assert client.post("/api/config/radio", json=bad).status_code == 422
+
+    def test_non_numeric_frequency_returns_422(self, client):
+        bad = [{"name": "X", "frequency_mhz": "fast", "phone_number": "5550903"}]
+        assert client.post("/api/config/radio", json=bad).status_code == 422
+
+    def test_negative_frequency_returns_422(self, client):
+        bad = [{"name": "X", "frequency_mhz": -1.0, "phone_number": "5550903"}]
+        assert client.post("/api/config/radio", json=bad).status_code == 422
+
+    def test_non_json_body_returns_400(self, client):
+        resp = client.post("/api/config/radio", data="not json", content_type="text/plain")
+        assert resp.status_code == 400
+
+    def test_validation_errors_do_not_write_file(self, client, radio_file):
+        original = radio_file.read_text()
+        bad = [{"name": "X", "frequency_mhz": 90.3, "phone_number": "123"}]
+        client.post("/api/config/radio", json=bad)
+        assert radio_file.read_text() == original
+
+    def test_error_message_identifies_station_number(self, client):
+        payload = [
+            {"name": "Good", "frequency_mhz": 90.3, "phone_number": "5550903"},
+            {"name": "Bad",  "frequency_mhz": 88.5, "phone_number": "123"},
+        ]
+        data = client.post("/api/config/radio", json=payload).get_json()
+        assert any("Station 2" in e for e in data["errors"])
+
+    def test_restart_failure_still_reports_ok_true(self, client, monkeypatch):
+        monkeypatch.setattr(wa, "restart_service", lambda: (False, "failed"))
+        resp = client.post("/api/config/radio", json=self._valid)
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert "Restart failed" in data["message"]

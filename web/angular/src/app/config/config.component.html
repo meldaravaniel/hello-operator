@@ -1,0 +1,85 @@
+<h1 class="page-title">Configuration</h1>
+
+<p *ngIf="saveMessage" class="feedback-message" [class.feedback-success]="saveSuccess" [class.feedback-error]="!saveSuccess">
+  {{ saveMessage }}
+</p>
+<div *ngIf="saveErrors.length" class="feedback-message feedback-error">
+  <strong>Please fix the following:</strong>
+  <ul>
+    <li *ngFor="let e of saveErrors">{{ e }}</li>
+  </ul>
+</div>
+
+<mat-card *ngFor="let section of sections" class="section-card">
+  <mat-card-header>
+    <mat-card-title>{{ section }}</mat-card-title>
+  </mat-card-header>
+  <mat-card-content>
+    <mat-form-field *ngFor="let field of fieldsForSection(section)" appearance="outline" class="full-width">
+      <mat-label>{{ field.label }}<span *ngIf="field.required"> *</span></mat-label>
+      <input
+        matInput
+        [id]="field.key"
+        [name]="field.key"
+        [type]="field.type"
+        [placeholder]="field.default ?? ''"
+        [(ngModel)]="values[field.key]"
+      />
+      <mat-hint>{{ field.help }}</mat-hint>
+    </mat-form-field>
+  </mat-card-content>
+</mat-card>
+
+<mat-card class="section-card">
+  <mat-card-header>
+    <mat-card-title>Radio Stations</mat-card-title>
+  </mat-card-header>
+
+  <mat-card-content>
+    <p *ngIf="radioMessage" class="feedback-message" [class.feedback-success]="radioSuccess" [class.feedback-error]="!radioSuccess">
+      {{ radioMessage }}
+    </p>
+    <div *ngIf="radioErrors.length" class="feedback-message feedback-error">
+      <ul>
+        <li *ngFor="let e of radioErrors">{{ e }}</li>
+      </ul>
+    </div>
+
+    <div *ngFor="let s of stations; let i = index" class="station-row">
+      <mat-form-field appearance="outline">
+        <mat-label>Name</mat-label>
+        <input matInput type="text" [(ngModel)]="s.name" [name]="'name_'+i" placeholder="Station name" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="freq-field">
+        <mat-label>Frequency (MHz)</mat-label>
+        <input matInput type="number" [(ngModel)]="s.frequency_mhz" [name]="'freq_'+i" placeholder="90.3" step="0.1" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Phone Number</mat-label>
+        <input matInput type="tel" [(ngModel)]="s.phone_number" [name]="'phone_'+i" placeholder="5550903" />
+      </mat-form-field>
+      <button mat-icon-button color="warn" (click)="removeStation(i)" type="button" aria-label="Remove station">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+
+    <p *ngIf="!stations.length" class="empty-state">No radio stations configured.</p>
+  </mat-card-content>
+
+  <mat-card-actions>
+    <button mat-stroked-button (click)="addStation()" type="button">
+      <mat-icon>add</mat-icon> Add Station
+    </button>
+    <button mat-flat-button (click)="saveRadio()" [disabled]="radioSaving" type="button">
+      <mat-spinner *ngIf="radioSaving" diameter="18"></mat-spinner>
+      {{ radioSaving ? 'Saving…' : 'Save Stations' }}
+    </button>
+  </mat-card-actions>
+</mat-card>
+
+<div class="save-actions">
+  <button mat-flat-button (click)="saveEnv()" [disabled]="saving">
+    <mat-spinner *ngIf="saving" diameter="18"></mat-spinner>
+    {{ saving ? 'Saving…' : 'Save Settings' }}
+  </button>
+</div>

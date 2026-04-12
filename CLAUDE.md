@@ -21,6 +21,15 @@ python -m pytest -m integration
 # Run all tests except integration
 python -m pytest -m "not integration"
 
+# Run Angular Jest tests
+cd web/angular && npm test
+
+# Run Angular Jest tests with coverage
+cd web/angular && npm run test:coverage
+
+# Run a single Angular spec file
+cd web/angular && npx jest src/app/api.service.spec.ts
+
 # Run the application
 python main.py
 
@@ -59,14 +68,17 @@ tests/
   test_radio.py
   test_menu.py
   test_session.py
+  test_web.py         # Flask REST API tests (78 tests; no systemd/sudo required)
 
 scripts/
   build-image-chroot.sh  # Runs inside the ARM chroot during CI image build
 
 web/
-  app.py                # Flask web configuration interface (port 8080)
-  templates/            # Jinja2 HTML templates
-  static/               # CSS
+  app.py                # Flask REST API (port 8080) — no templates
+  angular/              # Angular 21 SPA
+    src/app/            # AppComponent (nav), StatusComponent, DocsComponent, ConfigComponent
+    proxy.config.json   # Dev proxy: forwards /api and /service/* to Flask on :8080
+    dist/               # Production build output — served by Flask; excluded from git
 
 .github/workflows/
   test.yml              # CI: runs unit tests on PRs and main
