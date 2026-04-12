@@ -73,7 +73,7 @@ http://<pi-hostname>.local:8080
 
 The default hostname on Raspberry Pi OS is `raspberrypi`, so the address is typically `http://raspberrypi.local:8080`. The web interface lets you configure all settings, browse documentation, and restart the service — no command line needed.
 
-Settings are stored in `/etc/hello-operator/config.env`. **Required:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`, `ASSISTANT_NUMBER`. **Optional:** Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
+Settings are stored in `/etc/hello-operator/config.env` (owned by the `hello-operator` service account — use `sudo nano` to edit from the command line, or use the web UI). **Required:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`, `ASSISTANT_NUMBER`. **Optional:** Plex URL, GPIO pin assignments, Piper paths, TTS cache directory, `ADMIN_PASSWORD` (password-protect the web UI). See [`INSTALL.md`](INSTALL.md) for the full table.
 
 ---
 
