@@ -1,4 +1,20 @@
 services:
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    environment:
+      CONFIG_ENV_PATH: /app/dev/config.env
+      RADIO_JSON_PATH: /app/dev/radio_stations.json
+      DOCS_ROOT: /app
+      WEB_PORT: "8080"
+    # touch ensures the config file exists so writes don't fail on first save
+    command: >
+      sh -c "touch /app/dev/config.env &&
+             flask run --host=0.0.0.0 --port=8080 --reload"
+
   plex:
     image: plexinc/pms-docker
     container_name: plex
