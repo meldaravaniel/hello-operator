@@ -9,6 +9,7 @@ const config = {
       {
         tsconfig: '<rootDir>/tsconfig.spec.json',
         stringifyContentPathRegex: '\\.html$',
+        useESM: true
       },
     ],
   },
