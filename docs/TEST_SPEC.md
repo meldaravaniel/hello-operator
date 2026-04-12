@@ -658,6 +658,249 @@ Ties hardware events to the menu state machine.
 
 ---
 
+### 11. `web` — REST API and Angular SPA
+
+Flask REST API (`web/app.py`) serving config I/O, documentation, and service management. All file I/O is redirected via `monkeypatch`; no systemd or sudo required. Angular frontend is not exercised here — only the JSON API surface.
+
+#### Config file I/O helpers
+
+- `test_read_empty_file_returns_empty_dict`: empty `config.env` → `{}`
+- `test_read_parses_bare_key_value_pairs`: `FOO=bar` → `{"FOO": "bar"}`
+- `test_read_strips_surrounding_double_quotes`: `TOKEN="mytoken"` → value without quotes
+- `test_read_ignores_comment_lines`: lines starting with `#` → not included in result
+- `test_read_ignores_blank_lines`: blank lines → not included
+- `test_read_file_not_found_returns_empty_dict`: missing file → `{}`
+- `test_write_updates_existing_key_in_place`: existing key updated; other keys preserved
+- `test_write_preserves_comment_lines`: comment lines survive a write
+- `test_write_preserves_unrelated_keys`: keys not in `updates` dict survive unchanged
+- `test_write_appends_key_not_in_file`: new key added at end of file
+- `test_write_creates_file_if_missing`: non-existent file created on write
+- `test_write_quotes_values_with_spaces`: values with spaces wrapped in double quotes
+- `test_write_escapes_embedded_double_quotes`: `"` in value escaped as `\"`
+- `test_write_roundtrip_survives_read_write_read`: write then re-read returns correct value
+
+#### Radio station I/O
+
+- `test_radio_read_returns_list_of_dicts`: valid JSON file → list of station dicts
+- `test_radio_read_file_not_found_returns_empty_list`: missing file → `[]`
+- `test_radio_read_invalid_json_returns_empty_list`: malformed JSON → `[]`
+- `test_radio_write_produces_valid_json_file`: written file is parseable JSON
+- `test_radio_roundtrip`: write then read returns identical data
+
+#### Service management
+
+- `test_get_status_returns_active`: `systemctl is-active` stdout `"active"` → `"active"`
+- `test_get_status_returns_inactive`: stdout `"inactive"` → `"inactive"`
+- `test_get_status_returns_unknown_on_exception`: subprocess raises → `"unknown"`
+- `test_restart_success`: returncode 0 → `(True, "")`
+- `test_restart_non_zero_exit`: returncode 1 → `(False, stderr)`
+- `test_restart_exception`: subprocess raises → `(False, str(exc))`
+
+#### `GET /` and SPA catch-all
+
+- `test_spa_serves_index_html_when_dist_exists`: Angular dist present → 200 with `<app-root>`
+- `test_spa_returns_fallback_when_dist_missing`: dist absent → 200 with "not built" message
+- `test_spa_serves_static_file_from_dist`: request for a bundled JS file → 200
+- `test_spa_route_returns_index_html`: SPA path with no matching file → `index.html`
+- `test_api_prefix_not_caught_by_spa`: `GET /api/nonexistent-route` → 404
+
+#### `GET /api/status`
+
+- `test_api_status_returns_200_json`: 200 with `application/json` content type
+- `test_api_status_returns_status_field`: body contains `{"status": "active"}`
+- `test_api_status_reflects_current_state`: stubbed status → reflected in response
+
+#### `POST /service/restart`
+
+- `test_restart_success_returns_ok_true`: `{"ok": true, "error": null}`
+- `test_restart_failure_returns_ok_false_with_error`: error text in `"error"` field
+- `test_restart_response_includes_status`: current service state in response
+
+#### `GET /api/docs`
+
+- `test_docs_list_returns_200_json`: 200 with JSON content type
+- `test_docs_list_returns_pages_array`: body has `{"pages": [...]}`
+- `test_docs_list_only_includes_existing_files`: files not present on disk excluded
+- `test_docs_list_includes_present_files`: files present → title and slug in list
+- `test_docs_list_page_has_title_and_slug`: each entry has both fields
+
+#### `GET /api/docs/<slug>`
+
+- `test_docs_page_returns_200_json`: known slug with file on disk → 200 JSON
+- `test_docs_page_returns_title_content_slug`: all three fields present; content is raw Markdown
+- `test_docs_page_unknown_slug_returns_404`: slug not in `DOC_PAGES` → 404
+- `test_docs_page_missing_file_returns_404`: slug valid but file absent → 404
+- `test_docs_page_content_is_raw_markdown`: content starts with `#`, not rendered HTML
+
+#### `GET /api/config`
+
+- `test_api_config_returns_200_json`: 200 with JSON content type
+- `test_api_config_has_required_keys`: body contains `"fields"`, `"values"`, `"stations"`
+- `test_api_config_fields_includes_all_config_fields`: all `CONFIG_FIELDS` keys present
+- `test_api_config_values_includes_non_password_fields`: non-password values from file included
+- `test_api_config_values_excludes_password_fields`: password field values omitted
+- `test_api_config_stations_reflects_radio_file`: stations match `radio_stations.json`
+
+#### `POST /api/config/env`
+
+- `test_env_valid_returns_200_ok`: all required fields present → `{"ok": true}`
+- `test_env_blank_password_no_error`: blank password field → treated as "keep existing"; no error
+- `test_env_provided_password_written`: non-blank password → persisted to file
+- `test_env_missing_required_returns_422`: required non-password field empty → 422 with errors list
+- `test_env_error_names_field`: error message includes field label and "is required"
+- `test_env_missing_required_does_not_write`: validation failure → file unchanged
+- `test_env_missing_required_no_restart`: validation failure → `restart_service` not called
+- `test_env_valid_writes_to_file`: valid submission → updated value in file
+- `test_env_valid_calls_restart`: valid submission → `restart_service` called once
+- `test_env_success_message_mentions_restart`: response `"message"` contains "restarted"
+- `test_env_restart_failure_still_ok_true`: restart fails → `ok=true`, message notes failure
+- `test_env_non_json_returns_400`: non-JSON body → 400
+
+#### `POST /api/config/radio`
+
+- `test_radio_valid_returns_200_ok`: valid list → `{"ok": true}`
+- `test_radio_valid_writes_to_file`: updated stations in file
+- `test_radio_empty_list_saves_ok`: `[]` accepted and written
+- `test_radio_valid_calls_restart`: valid submission → restart called
+- `test_radio_phone_too_short_returns_422`: `"123"` → 422
+- `test_radio_phone_too_long_returns_422`: `"12345678"` → 422
+- `test_radio_non_digit_phone_returns_422`: `"555-090"` → 422
+- `test_radio_empty_name_returns_422`: blank name → 422
+- `test_radio_non_numeric_freq_returns_422`: string frequency → 422
+- `test_radio_negative_freq_returns_422`: negative frequency → 422
+- `test_radio_non_json_returns_400`: non-JSON body → 400
+- `test_radio_validation_errors_no_write`: invalid input → file unchanged
+- `test_radio_error_identifies_station_number`: error message names the offending station
+- `test_radio_restart_failure_still_ok_true`: restart fails → `ok=true`, message notes failure
+
+---
+
+### 12. Angular SPA — Jest unit tests (`web/angular/`)
+
+Framework: **Jest 30 + jest-preset-angular 16**. Runner: `npm test` inside `web/angular/`. No browser required; components render in jsdom. No Flask server required; HTTP is intercepted by `HttpTestingController` or mocked at the service level.
+
+#### Test infrastructure
+
+- `jest.config.ts` — preset, jsdom env, `marked` CJS alias via `moduleNameMapper`
+- `tsconfig.spec.json` — `module: CommonJS`, `moduleResolution: node` (Jest-compatible overrides)
+- `setup-jest.ts` — calls `setupZoneTestEnv()` from `jest-preset-angular/setup-env/zone`
+
+Patterns used across all specs:
+- Service tests: `provideHttpClient()` + `provideHttpClientTesting()` + `HttpTestingController`
+- Component tests: standalone component imported directly; service dependencies injected as jest mock objects
+- Router-dependent components: `provideRouter([])` for real router infrastructure; `ActivatedRoute` overridden via providers; `router.navigate` spied on with `jest.spyOn`
+
+#### `ApiService` (`api.service.spec.ts`)
+
+- `status$ starts as "unknown"`: initial emission is `'unknown'`
+- `refreshStatus() makes GET /api/status`: correct method and URL
+- `refreshStatus() updates status$ to returned value`: BehaviorSubject emits new status
+- `refreshStatus() sets status$ to "unknown" on network error`: error handler resets to unknown
+- `getDocs() makes GET /api/docs`: correct method and URL
+- `getDocs() returns the pages array`: response pages passed through
+- `getDoc(slug) makes GET /api/docs/{slug}`: URL interpolated from slug
+- `getDoc(slug) interpolates the slug correctly`: underscores and uppercase preserved
+- `getDoc(slug) returns title, slug, and content`: all three fields in response
+- `getConfig() makes GET /api/config`: correct method and URL
+- `getConfig() returns fields, values, and stations`: all three top-level keys present
+- `saveConfigEnv(values) makes POST /api/config/env`: correct method and URL
+- `saveConfigEnv(values) sends the values dict as the request body`: body matches input
+- `saveConfigEnv(values) returns the API result`: `ok` and `message` passed through
+- `saveRadio(stations) makes POST /api/config/radio`: correct method and URL
+- `saveRadio(stations) sends the stations array as the request body`: body matches input
+- `restart() makes POST /service/restart`: correct method and URL
+- `restart() updates status$ to the status returned in the response`: BehaviorSubject updated
+- `restart() does not update status$ when response has no status field`: existing value preserved
+
+#### `AppComponent` (`app.component.spec.ts`)
+
+- `calls refreshStatus() on init`: `api.refreshStatus` called once in `ngOnInit`
+- `renders the brand name`: "Hello Operator" in DOM
+- `renders the brand icon`: `.brand-icon` element present
+- `renders three nav links`: exactly three `.nav-link` elements
+- `nav links point to /, /docs, /config`: href values match expected routes
+- `status dot gets "status-unknown" class by default`: initial class includes `status-unknown`
+- `status dot reflects active status`: class includes `status-active` when status$ emits `'active'`
+- `status dot reflects inactive status`: class includes `status-inactive`
+- `status dot updates when status changes`: re-render picks up new emission
+- `displays the current status text`: status string rendered in `.nav-status`
+
+#### `StatusComponent` (`status/status.component.spec.ts`)
+
+- `calls refreshStatus() on init`: `api.refreshStatus` called in `ngOnInit`
+- `subscribes to status$ and tracks the current status`: `component.status` updated on emission
+- `starts with status "unknown"`: initial value before any subscription
+- `badgeClass returns badge-active for active`
+- `badgeClass returns badge-inactive for inactive`
+- `badgeClass returns badge-failed for failed`
+- `badgeClass returns badge-unknown for unknown status`
+- `badgeClass returns badge-unknown for unrecognized status`
+- `statusLabel returns "Running" for active`
+- `statusLabel returns "Stopped" for inactive`
+- `statusLabel returns "Failed" for failed`
+- `statusLabel echoes the raw status string for unrecognized values`
+- `statusLabel returns "Unknown" for empty status`
+- `statusLabel echoes arbitrary unrecognized status strings`
+- `restart() calls api.restart()`
+- `restart() sets restarting = false and success message on ok response`
+- `restart() sets restarting = false and error message when ok is false`
+- `restart() sets restarting = false and error message on HTTP error`
+- `restart() clears any previous message before restarting`
+- `restart() sets restarting = true while the request is in flight`
+
+#### `DocsComponent` (`docs/docs.component.spec.ts`)
+
+- `calls getDocs() on init`
+- `populates pages from the getDocs response`
+- `navigates to the first page slug` (when no slug in snapshot)
+- `does not navigate when pages list is empty`
+- `does not navigate away since the page is already identified` (when slug present in snapshot)
+- `calls loadPage() when a slug appears in paramMap`
+- `does not call loadPage() for paramMap emissions without a slug`
+- `loadPage() sets currentSlug`
+- `loadPage() sets currentTitle from the response`
+- `loadPage() sets renderedHtml (truthy SafeHtml) on success`
+- `loadPage() sets loading = false after success`
+- `loadPage() clears any previous error on a successful load`
+- `loadPage() calls getDoc with the provided slug`
+- `loadPage() sets error when getDoc fails`
+- `loadPage() sets loading = false after an error`
+- `loadPage() stamps heading ids asynchronously via setTimeout` (verified with `fakeAsync`/`tick`)
+
+#### `ConfigComponent` (`config/config.component.spec.ts`)
+
+- `calls getConfig() on init`
+- `populates fields from the response`
+- `populates values from the response`
+- `populates stations from the response`
+- `deduplicates sections while preserving order`
+- `makes a deep copy of values so mutations do not affect the original`
+- `makes a deep copy of stations so mutations do not affect the original`
+- `fieldsForSection() returns only fields belonging to the given section`
+- `fieldsForSection() returns an empty array for an unknown section`
+- `addStation() appends a new empty station row`
+- `addStation() new station has empty name and phone_number`
+- `addStation() new station has frequency_mhz of 0`
+- `removeStation(i) removes the station at the given index`
+- `removeStation(i) removes the last station`
+- `removeStation(i) results in empty array when the only station is removed`
+- `saveEnv() calls saveConfigEnv with the current values`
+- `saveEnv() sets saveMessage and saveSuccess = true on success`
+- `saveEnv() uses "Saved." as fallback message when API returns no message`
+- `saveEnv() sets saving = false after success`
+- `saveEnv() sets saveErrors and saveSuccess = false on HTTP error`
+- `saveEnv() sets a generic error message when HTTP error has no errors array`
+- `saveEnv() sets saving = false after an error`
+- `saveRadio() calls api.saveRadio with the current stations`
+- `saveRadio() sets radioMessage and radioSuccess = true on success`
+- `saveRadio() uses "Saved." as fallback when API returns no message`
+- `saveRadio() sets radioSaving = false after success`
+- `saveRadio() sets radioErrors and radioSuccess = false on HTTP error`
+- `saveRadio() sets a generic error when HTTP error has no errors array`
+- `saveRadio() sets radioSaving = false after an error`
+
+---
+
 ## Test Infrastructure
 
 ### Fixtures / shared mocks

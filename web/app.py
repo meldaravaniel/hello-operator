@@ -1,8 +1,10 @@
 """hello-operator web configuration interface.
 
-Serves project documentation and a configuration editor. Reads/writes
-/etc/hello-operator/config.env and /etc/hello-operator/radio_stations.json,
-then restarts the hello-operator systemd service as needed.
+Pure REST API backend. Reads/writes /etc/hello-operator/config.env and
+/etc/hello-operator/radio_stations.json, then restarts the hello-operator
+systemd service as needed.
+
+All UI is served by the Angular SPA built into web/angular/dist/.
 
 Run via the hello-operator-web systemd service (see install.sh), or directly:
   WEB_PORT=8080 python web/app.py
@@ -14,7 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 # ---------------------------------------------------------------------------
 # Paths (overridable via environment for local development)
@@ -26,6 +28,7 @@ _PROJECT_ROOT = _HERE.parent
 CONFIG_ENV_PATH = Path(os.environ.get("CONFIG_ENV_PATH", "/etc/hello-operator/config.env"))
 RADIO_JSON_PATH = Path(os.environ.get("RADIO_JSON_PATH", "/etc/hello-operator/radio_stations.json"))
 DOCS_ROOT = Path(os.environ.get("DOCS_ROOT", str(_PROJECT_ROOT)))
+ANGULAR_DIST = Path(os.environ.get("ANGULAR_DIST", str(_HERE / "angular" / "dist" / "hello-operator" / "browser")))
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 
 # ---------------------------------------------------------------------------
@@ -43,7 +46,7 @@ DOC_PAGES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Configuration field definitions (drives the config form)
+# Configuration field definitions
 # ---------------------------------------------------------------------------
 
 CONFIG_FIELDS = [
@@ -135,11 +138,7 @@ CONFIG_FIELDS = [
 # Flask application
 # ---------------------------------------------------------------------------
 
-app = Flask(
-    __name__,
-    template_folder=str(_HERE / "templates"),
-    static_folder=str(_HERE / "static"),
-)
+app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
 # Config I/O helpers
@@ -260,7 +259,7 @@ def restart_service() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Template helpers
+# Doc helpers
 # ---------------------------------------------------------------------------
 
 
@@ -282,59 +281,63 @@ def _slug_to_path(slug: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# API routes
 # ---------------------------------------------------------------------------
 
 
-@app.route("/")
-def index():
-    return render_template("index.html", status=get_service_status())
+@app.route("/api/status")
+def api_status():
+    return jsonify({"status": get_service_status()})
 
 
-@app.route("/docs")
-def docs_index():
-    pages = _doc_list()
-    if pages:
-        return redirect(url_for("docs_page", slug=pages[0][1]))
-    return render_template("docs.html", doc_list=[], content=None, title=None, current_slug=None)
+@app.route("/service/restart", methods=["POST"])
+def service_restart():
+    ok, err = restart_service()
+    return jsonify({"ok": ok, "error": err if not ok else None, "status": get_service_status()})
 
 
-@app.route("/docs/<slug>")
-def docs_page(slug: str):
+@app.route("/api/docs")
+def api_docs_list():
+    pages = [{"title": t, "slug": s} for t, s in _doc_list()]
+    return jsonify({"pages": pages})
+
+
+@app.route("/api/docs/<slug>")
+def api_docs_page(slug: str):
     rel_path = _slug_to_path(slug)
     if not rel_path or not (DOCS_ROOT / rel_path).exists():
-        return "Page not found.", 404
+        return jsonify({"error": "Page not found"}), 404
     content = (DOCS_ROOT / rel_path).read_text()
     title = next(t for t, p in DOC_PAGES if p == rel_path)
-    return render_template(
-        "docs.html",
-        doc_list=_doc_list(),
-        content=content,
-        title=title,
-        current_slug=slug,
-    )
+    return jsonify({"title": title, "slug": slug, "content": content})
 
 
-@app.route("/config")
-def config_page():
-    return render_template(
-        "config.html",
-        fields=CONFIG_FIELDS,
-        values=read_config_env(),
-        stations=read_radio_stations(),
-        status=get_service_status(),
-    )
+@app.route("/api/config")
+def api_config_get():
+    all_values = read_config_env()
+    # Omit password field values from the response
+    password_keys = {f["key"] for f in CONFIG_FIELDS if f["type"] == "password"}
+    values = {k: v for k, v in all_values.items() if k not in password_keys}
+    return jsonify({
+        "fields": CONFIG_FIELDS,
+        "values": values,
+        "stations": read_radio_stations(),
+    })
 
 
-@app.route("/config/env", methods=["POST"])
-def update_config_env():
+@app.route("/api/config/env", methods=["POST"])
+def api_config_env():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"ok": False, "errors": ["Invalid JSON body."]}), 400
+
     updates: dict = {}
     errors: list = []
 
     for field in CONFIG_FIELDS:
         key = field["key"]
-        value = request.form.get(key, "").strip()
-        # Password fields: blank means "keep current value" — don't update, don't error.
+        value = str(payload.get(key, "")).strip()
+        # Password fields: blank means "keep current value"
         if field["type"] == "password" and not value:
             continue
         if field["required"] and not value:
@@ -344,33 +347,19 @@ def update_config_env():
             updates[key] = value
 
     if errors:
-        return render_template(
-            "config.html",
-            fields=CONFIG_FIELDS,
-            values={**read_config_env(), **{f["key"]: request.form.get(f["key"], "") for f in CONFIG_FIELDS}},
-            stations=read_radio_stations(),
-            status=get_service_status(),
-            errors=errors,
-        )
+        return jsonify({"ok": False, "errors": errors}), 422
 
     write_config_env(updates)
     ok, err = restart_service()
-    return render_template(
-        "config.html",
-        fields=CONFIG_FIELDS,
-        values=read_config_env(),
-        stations=read_radio_stations(),
-        status=get_service_status(),
-        message="Settings saved and service restarted." if ok else f"Settings saved. Restart failed: {err}",
-        success=ok,
-    )
+    msg = "Settings saved and service restarted." if ok else f"Settings saved. Restart failed: {err}"
+    return jsonify({"ok": True, "message": msg})
 
 
-@app.route("/config/radio", methods=["POST"])
-def update_radio():
+@app.route("/api/config/radio", methods=["POST"])
+def api_config_radio():
     payload = request.get_json(silent=True)
     if payload is None:
-        return jsonify({"ok": False, "error": "Invalid JSON body."}), 400
+        return jsonify({"ok": False, "errors": ["Invalid JSON body."]}), 400
 
     stations: list = []
     errors: list = []
@@ -403,15 +392,31 @@ def update_radio():
     return jsonify({"ok": True, "message": msg})
 
 
-@app.route("/api/status")
-def api_status():
-    return jsonify({"status": get_service_status()})
+# ---------------------------------------------------------------------------
+# Angular SPA catch-all
+# ---------------------------------------------------------------------------
 
 
-@app.route("/service/restart", methods=["POST"])
-def service_restart():
-    ok, err = restart_service()
-    return jsonify({"ok": ok, "error": err if not ok else None, "status": get_service_status()})
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_spa(path: str):
+    # Let defined API routes handle their own 404s
+    if path.startswith(("api/", "service/", "config/")):
+        abort(404)
+
+    if ANGULAR_DIST.is_dir():
+        target = ANGULAR_DIST / path
+        if path and target.is_file():
+            return send_from_directory(str(ANGULAR_DIST), path)
+        index = ANGULAR_DIST / "index.html"
+        if index.exists():
+            return send_from_directory(str(ANGULAR_DIST), "index.html")
+
+    return (
+        "<html><body><h1>Frontend not built</h1>"
+        "<p>Run: <code>cd web/angular &amp;&amp; npm install &amp;&amp; ng build</code></p>"
+        "</body></html>"
+    ), 200
 
 
 # ---------------------------------------------------------------------------

@@ -28,3 +28,25 @@ jobs:
           PLEX_PLAYER_IDENTIFIER: ci-placeholder
           ASSISTANT_NUMBER: "5550000"
         run: python -m pytest -m "not integration" -v
+
+  test-angular:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web/angular
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/angular/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run Jest tests
+        run: npm test

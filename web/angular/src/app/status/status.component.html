@@ -1,0 +1,23 @@
+<div class="status-page">
+  <h1 class="page-title">Service Status</h1>
+
+  <div class="card">
+    <div class="card-title">hello-operator</div>
+
+    <div class="status-row">
+      <span class="status-badge" [ngClass]="badgeClass">
+        <span class="status-dot" [ngClass]="'status-' + status"></span>
+        {{ statusLabel }}
+      </span>
+    </div>
+
+    <div *ngIf="message" class="alert" [ngClass]="'alert-' + messageType">
+      {{ message }}
+    </div>
+
+    <button class="btn btn-primary" (click)="restart()" [disabled]="restarting">
+      <span *ngIf="restarting" class="spinner"></span>
+      {{ restarting ? 'Restarting…' : 'Restart Service' }}
+    </button>
+  </div>
+</div>

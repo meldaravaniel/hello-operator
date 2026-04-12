@@ -579,6 +579,49 @@ Response:
 
 ---
 
+## Web Interface
+
+A browser-based configuration panel served at port 8080 by the `hello-operator-web` systemd service.
+
+### Architecture
+
+The web layer follows a strict client/server split:
+
+- **Backend:** Flask (`web/app.py`) exposes a pure JSON REST API. It reads and writes `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json`, and triggers `sudo systemctl restart hello-operator` after saves. It serves the compiled Angular application for all non-API routes.
+- **Frontend:** An Angular 19 SPA (`web/angular/`) compiled to `web/angular/dist/`. All UI rendering happens client-side; the backend never generates HTML.
+
+### REST API
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/status` | GET | Current systemd active state (`"active"`, `"inactive"`, `"failed"`, …) |
+| `/service/restart` | POST | Restart hello-operator; returns `{ok, error, status}` |
+| `/api/docs` | GET | List available documentation pages: `{pages: [{title, slug}]}` |
+| `/api/docs/<slug>` | GET | Raw Markdown content for a page: `{title, slug, content}` |
+| `/api/config` | GET | Field definitions, non-password values, and radio stations |
+| `/api/config/env` | POST | Save env var updates; restarts service on success |
+| `/api/config/radio` | POST | Save radio station list; restarts service on success |
+
+Password-type fields (`PLEX_TOKEN`) are never returned by `GET /api/config`. A blank value in a `POST /api/config/env` body means "keep the existing value".
+
+### Angular SPA
+
+Three routed components:
+
+| Component | Route | Purpose |
+|---|---|---|
+| `StatusComponent` | `/` | Service badge, restart button; shares status state via `ApiService` |
+| `DocsComponent` | `/docs/:slug` | Sidebar nav, client-side Markdown rendering, anchor scrolling |
+| `ConfigComponent` | `/config` | Grouped config fields, radio station table with add/remove rows |
+
+A shared `ApiService` (Angular singleton) owns the status `BehaviorSubject` so the nav bar and status page stay in sync without duplicate requests.
+
+### Service management
+
+`restart_service()` runs `sudo systemctl restart hello-operator` via subprocess. A passwordless sudoers rule for this command is installed by `install.sh` and `build-image-chroot.sh`. The web service user must be in the sudoers file for restarts to work.
+
+---
+
 ## Testing Strategy
 
 All unit tests run without hardware, network, or audio output. The four

@@ -1,0 +1,85 @@
+<div class="config-page">
+  <h1 class="page-title">Configuration</h1>
+
+  <!-- Env save feedback -->
+  <div *ngIf="saveMessage" class="alert" [class.alert-success]="saveSuccess" [class.alert-error]="!saveSuccess">
+    {{ saveMessage }}
+  </div>
+  <div *ngIf="saveErrors.length" class="alert alert-error">
+    <strong>Please fix the following:</strong>
+    <ul>
+      <li *ngFor="let e of saveErrors">{{ e }}</li>
+    </ul>
+  </div>
+
+  <!-- Config field sections -->
+  <div *ngFor="let section of sections" class="card">
+    <div class="card-title">{{ section }}</div>
+    <div *ngFor="let field of fieldsForSection(section)" class="form-group">
+      <label [for]="field.key">
+        {{ field.label }}<span *ngIf="field.required" class="required-mark">*</span>
+      </label>
+      <input
+        [id]="field.key"
+        [name]="field.key"
+        [type]="field.type"
+        [placeholder]="field.default ?? ''"
+        [(ngModel)]="values[field.key]"
+      />
+      <div class="field-help">{{ field.help }}</div>
+    </div>
+  </div>
+
+  <!-- Radio stations -->
+  <div class="card">
+    <div class="card-title">Radio Stations</div>
+
+    <div *ngIf="radioMessage" class="alert" [class.alert-success]="radioSuccess" [class.alert-error]="!radioSuccess">
+      {{ radioMessage }}
+    </div>
+    <div *ngIf="radioErrors.length" class="alert alert-error">
+      <ul>
+        <li *ngFor="let e of radioErrors">{{ e }}</li>
+      </ul>
+    </div>
+
+    <table *ngIf="stations.length" class="radio-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Frequency (MHz)</th>
+          <th>Phone Number</th>
+          <th class="col-actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let s of stations; let i = index">
+          <td><input type="text"   [(ngModel)]="s.name"          [name]="'name_'+i"  placeholder="Station name" /></td>
+          <td><input type="number" [(ngModel)]="s.frequency_mhz" [name]="'freq_'+i"  placeholder="90.3" step="0.1" /></td>
+          <td><input type="tel"    [(ngModel)]="s.phone_number"   [name]="'phone_'+i" placeholder="5550903" /></td>
+          <td class="col-actions">
+            <button class="btn btn-sm btn-danger" (click)="removeStation(i)" type="button">✕</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p *ngIf="!stations.length" class="empty-state">No radio stations configured.</p>
+
+    <div style="display:flex;gap:0.6rem;margin-top:0.75rem;">
+      <button class="btn btn-sm"         (click)="addStation()"  type="button">+ Add Station</button>
+      <button class="btn btn-sm btn-primary" (click)="saveRadio()" [disabled]="radioSaving" type="button">
+        <span *ngIf="radioSaving" class="spinner"></span>
+        {{ radioSaving ? 'Saving…' : 'Save Stations' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- Save settings -->
+  <div style="margin-top:0.5rem;">
+    <button class="btn btn-primary" (click)="saveEnv()" [disabled]="saving">
+      <span *ngIf="saving" class="spinner"></span>
+      {{ saving ? 'Saving…' : 'Save Settings' }}
+    </button>
+  </div>
+</div>

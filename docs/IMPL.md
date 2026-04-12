@@ -16,6 +16,8 @@ suggested development order.
 | Plex integration | Plex HTTP API (server URL + auth token) |
 | FM radio | `rtl_fm` subprocess (from `rtl-sdr` package) piped to `aplay` |
 | Persistence | SQLite (three separate DB files) |
+| Web backend | Flask 3 — pure JSON REST API, no templates |
+| Web frontend | Angular 19 SPA — standalone components, `marked` for Markdown rendering |
 
 ---
 
@@ -146,6 +148,60 @@ CREATE TABLE error_queue (
 
 ---
 
+## Web Implementation (`web/app.py` + `web/angular/`)
+
+### Flask REST API (`web/app.py`)
+
+No templates. All routes return JSON. Key paths:
+
+- `read_config_env()` / `write_config_env(updates)` — parse and update `config.env` in-place, preserving comments
+- `read_radio_stations()` / `write_radio_stations(stations)` — JSON file I/O
+- `get_service_status()` — `systemctl is-active hello-operator` via subprocess
+- `restart_service()` — `sudo systemctl restart hello-operator` via subprocess; requires sudoers rule from `install.sh`
+- SPA catch-all — serves `ANGULAR_DIST/index.html` for all non-API routes; serves static Angular assets by path; 404s for unknown `/api/` paths
+
+`ANGULAR_DIST` defaults to `web/angular/dist/hello-operator/browser/` (Angular 19 `application` builder output). Override with the `ANGULAR_DIST` environment variable for testing or alternative builds.
+
+### Angular SPA (`web/angular/`)
+
+Built with Angular 19 standalone components (no NgModules). Key files:
+
+| File | Purpose |
+|---|---|
+| `src/main.ts` | Bootstrap with `provideRouter` and `provideHttpClient` |
+| `src/app/app.routes.ts` | Routes: `/` → Status, `/docs/:slug` → Docs, `/config` → Config |
+| `src/app/api.service.ts` | Shared `HttpClient` wrapper; owns service-status `BehaviorSubject` |
+| `src/app/status/` | Service badge + restart button |
+| `src/app/docs/` | Sidebar nav, `marked.parse()` rendering, heading-ID post-processing |
+| `src/app/config/` | Config field form (grouped by section) + radio station table |
+| `src/styles.css` | Global styles — vintage operator aesthetic (Special Elite + IBM Plex Mono) |
+| `proxy.config.json` | Dev proxy: `/api` and `/service` → `http://localhost:8080` |
+
+**Local dev workflow:**
+1. `WEB_PORT=8080 CONFIG_ENV_PATH=… python web/app.py` — Flask API
+2. `cd web/angular && npm start` — Angular dev server at `:4200` (proxies API to `:8080`)
+
+**Production build:** `cd web/angular && npm run build` — output at `dist/hello-operator/browser/`.
+
+**Angular test setup:**
+
+| File | Purpose |
+|---|---|
+| `jest.config.ts` | Jest config: `jest-preset-angular` preset, `jsdom` env, `marked` CJS alias |
+| `tsconfig.spec.json` | Compiler overrides for Jest: `module: CommonJS`, `moduleResolution: node` |
+| `setup-jest.ts` | Calls `setupZoneTestEnv()` from `jest-preset-angular/setup-env/zone` |
+
+Key test patterns:
+- Service tests use `provideHttpClient()` + `provideHttpClientTesting()` with `HttpTestingController`
+- Component tests import the standalone component under test; dependencies are provided as jest mock objects via `{ provide: ServiceClass, useValue: fakeService }`
+- Components that use `RouterLink` in their template require `provideRouter([])` so the directive has a real `Router.events` observable; the `navigate` method is then spied on with `jest.spyOn`
+- `ActivatedRoute` is provided as a plain object with a `BehaviorSubject`-backed `paramMap` observable for full control over route params
+- `marked` is an ES module; `moduleNameMapper` in `jest.config.ts` redirects the import to `lib/marked.cjs`
+
+Run tests: `cd web/angular && npm test` (or `npm run test:coverage`).
+
+---
+
 ## Development Order
 
 Suggested implementation sequence, each layer building on the last:
@@ -162,3 +218,4 @@ Suggested implementation sequence, each layer building on the last:
 10. **`menu`** — state machine; uses mocks for everything including `plex_store` and `radio`
 11. **`session`** — wires GPIO events to menu; uses mocks
 12. **`main`** — wires concrete implementations together; loads radio config; smoke test on real hardware
+13. **`web`** — Flask REST API + Angular SPA; tested via Flask test client (no Angular build required)

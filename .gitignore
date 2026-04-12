@@ -7,3 +7,8 @@ plex/
 hello-operator.service
 hello-operator-web.service
 venv/
+
+# Angular
+web/angular/node_modules/
+web/angular/dist/
+web/angular/.angular/
