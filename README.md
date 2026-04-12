@@ -101,15 +101,27 @@ python main.py
 **Web interface local development** — two processes, one terminal each:
 
 ```bash
-# Terminal 1 — Flask REST API on :8080
-cp config.env.example config.env.local
-cp radio_stations.json.example radio_stations.json.local
-CONFIG_ENV_PATH=config.env.local RADIO_JSON_PATH=radio_stations.json.local python web/app.py
+# Terminal 1 — Flask REST API on :8080 (Docker, recommended)
+docker compose build web   # first time only, or after changing requirements-web.txt
+docker compose up web
 
 # Terminal 2 — Angular dev server on :4200 (proxies /api and /service to :8080)
 cd web/angular
 npm install          # first time only
 npm start            # then open http://localhost:4200
+```
+
+The Flask container mounts the project root so doc pages are served live. Config is read from and written to `dev/config.env` (gitignored). To pre-populate it, copy the example:
+
+```bash
+cp config.env.example dev/config.env   # then fill in your values
+```
+
+**Without Docker** — run Flask directly instead of `docker compose up web`:
+
+```bash
+cp config.env.example dev/config.env
+CONFIG_ENV_PATH=dev/config.env RADIO_JSON_PATH=dev/radio_stations.json python web/app.py
 ```
 
 To build the Angular app for production (output served by Flask directly at :8080):
