@@ -35,3 +35,157 @@ body {
   margin: 0;
   height: 100%;
 }
+
+// ── App shell ────────────────────────────────────────────────────────────────
+
+.toolbar-spacer { flex: 1 1 auto; }
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  margin-left: 16px;
+  font-size: 0.8rem;
+  opacity: 0.9;
+}
+
+.main-content {
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.page-title {
+  font: var(--mat-sys-headline-small);
+  margin: 0 0 20px;
+}
+
+// ── Status indicator dot ─────────────────────────────────────────────────────
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: var(--mat-sys-outline);
+
+  &.status-active   { background: #4caf50; }
+  &.status-failed   { background: var(--mat-sys-error); }
+}
+
+// ── Feedback messages ────────────────────────────────────────────────────────
+
+.feedback-message {
+  padding: 10px 14px;
+  border-radius: 4px;
+  margin: 8px 0 16px;
+  background: var(--mat-sys-surface-variant);
+  color: var(--mat-sys-on-surface-variant);
+
+  &.feedback-success { background: color-mix(in srgb, #4caf50 15%, transparent); color: #1b5e20; }
+  &.feedback-error   { background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent); color: var(--mat-sys-error); }
+}
+
+// ── Card layout ──────────────────────────��───────────────────────���────────────
+
+.section-card { margin-bottom: 20px; }
+
+.full-width {
+  width: 100%;
+  display: block;
+}
+
+.save-actions { margin-top: 8px; }
+
+// ── Radio station rows ───────────────────────────────────���────────────────────
+
+.station-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+
+  .freq-field { max-width: 180px; }
+}
+
+// ── Docs layout ──────────────────────────────────────────────────────────────
+
+.docs-layout {
+  display: flex;
+  height: calc(100vh - 120px);
+  gap: 0;
+}
+
+.docs-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.docs-main {
+  flex: 1;
+  padding: 0 24px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.loading-container {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}
+
+// ── Markdown content ──────────────────────────────────────────────────────────
+
+.markdown-body {
+  line-height: 1.7;
+
+  h1, h2, h3, h4 { margin-top: 1.5em; margin-bottom: 0.4em; }
+  h1 { font: var(--mat-sys-headline-medium); }
+  h2 { font: var(--mat-sys-headline-small); }
+  h3 { font: var(--mat-sys-title-large); }
+
+  a { color: var(--mat-sys-primary); }
+
+  code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.88em;
+    background: var(--mat-sys-surface-variant);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+
+  pre {
+    background: var(--mat-sys-surface-variant);
+    padding: 1em 1.2em;
+    border-radius: 6px;
+    overflow-x: auto;
+
+    code { background: none; padding: 0; }
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+
+    th, td {
+      padding: 8px 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      text-align: left;
+    }
+
+    th { background: var(--mat-sys-surface-variant); }
+  }
+}
+
+.empty-state { color: var(--mat-sys-outline); font-style: italic; }

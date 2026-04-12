@@ -1,9 +1,11 @@
-<div class="status-page">
-  <h1 class="page-title">Service Status</h1>
+<h1 class="page-title">Service Status</h1>
 
-  <div class="card">
-    <div class="card-title">hello-operator</div>
+<mat-card>
+  <mat-card-header>
+    <mat-card-title>hello-operator</mat-card-title>
+  </mat-card-header>
 
+  <mat-card-content>
     <div class="status-row">
       <span class="status-badge" [ngClass]="badgeClass">
         <span class="status-dot" [ngClass]="'status-' + status"></span>
@@ -11,13 +13,15 @@
       </span>
     </div>
 
-    <div *ngIf="message" class="alert" [ngClass]="'alert-' + messageType">
+    <p *ngIf="message" class="feedback-message" [ngClass]="'feedback-' + messageType">
       {{ message }}
-    </div>
+    </p>
+  </mat-card-content>
 
-    <button class="btn btn-primary" (click)="restart()" [disabled]="restarting">
-      <span *ngIf="restarting" class="spinner"></span>
+  <mat-card-actions>
+    <button mat-flat-button (click)="restart()" [disabled]="restarting">
+      <mat-spinner *ngIf="restarting" diameter="18"></mat-spinner>
       {{ restarting ? 'Restarting…' : 'Restart Service' }}
     </button>
-  </div>
-</div>
+  </mat-card-actions>
+</mat-card>

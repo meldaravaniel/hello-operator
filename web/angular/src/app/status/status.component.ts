@@ -1,11 +1,14 @@
 import { Component, OnInit } from '@angular/core';
 import { NgClass, NgIf } from '@angular/common';
+import { MatCardModule } from '@angular/material/card';
+import { MatButtonModule } from '@angular/material/button';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { ApiService } from '../api.service';
 
 @Component({
   selector: 'app-status',
   standalone: true,
-  imports: [NgClass, NgIf],
+  imports: [NgClass, NgIf, MatCardModule, MatButtonModule, MatProgressSpinnerModule],
   templateUrl: './status.component.html',
 })
 export class StatusComponent implements OnInit {

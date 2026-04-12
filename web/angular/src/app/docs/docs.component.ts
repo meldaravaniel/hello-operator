@@ -3,12 +3,15 @@ import { NgFor, NgIf } from '@angular/common';
 import { RouterLink, ActivatedRoute, Router } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
+import { MatListModule } from '@angular/material/list';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatDividerModule } from '@angular/material/divider';
 import { ApiService, DocPage } from '../api.service';
 
 @Component({
   selector: 'app-docs',
   standalone: true,
-  imports: [NgFor, NgIf, RouterLink],
+  imports: [NgFor, NgIf, RouterLink, MatListModule, MatProgressSpinnerModule, MatDividerModule],
   templateUrl: './docs.component.html',
 })
 export class DocsComponent implements OnInit {

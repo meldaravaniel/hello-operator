@@ -1,20 +1,20 @@
-<nav class="top-nav">
-  <a routerLink="/" class="nav-brand">
+<mat-toolbar color="primary">
+  <a routerLink="/" class="nav-brand" mat-button>
     <span class="brand-icon">☏</span>
     <span>Hello Operator</span>
   </a>
 
-  <div class="nav-links">
-    <a routerLink="/"       routerLinkActive="active" [routerLinkActiveOptions]="{exact:true}" class="nav-link">Status</a>
-    <a routerLink="/docs"   routerLinkActive="active" class="nav-link">Docs</a>
-    <a routerLink="/config" routerLinkActive="active" class="nav-link">Configure</a>
-  </div>
+  <span class="toolbar-spacer"></span>
+
+  <a routerLink="/"       routerLinkActive="active" [routerLinkActiveOptions]="{exact:true}" class="nav-link" mat-button>Status</a>
+  <a routerLink="/docs"   routerLinkActive="active" class="nav-link" mat-button>Docs</a>
+  <a routerLink="/config" routerLinkActive="active" class="nav-link" mat-button>Configure</a>
 
   <div class="nav-status">
     <span class="status-dot" [ngClass]="'status-' + (api.status$ | async)"></span>
     <span>{{ api.status$ | async }}</span>
   </div>
-</nav>
+</mat-toolbar>
 
 <main class="main-content">
   <router-outlet />

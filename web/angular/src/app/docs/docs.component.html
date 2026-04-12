@@ -1,22 +1,23 @@
 <div class="docs-layout">
   <nav class="docs-sidebar">
-    <div class="sidebar-label">Documentation</div>
-    <a
-      *ngFor="let page of pages"
-      [routerLink]="['/docs', page.slug]"
-      class="sidebar-link"
-      [class.active-link]="page.slug === currentSlug"
-    >{{ page.title }}</a>
-    <p *ngIf="pages.length === 0" class="empty-state" style="text-align:left;padding:0.5rem 0.7rem;">
-      No pages found.
-    </p>
+    <mat-nav-list>
+      <a
+        mat-list-item
+        *ngFor="let page of pages"
+        [routerLink]="['/docs', page.slug]"
+        [activated]="page.slug === currentSlug"
+      >{{ page.title }}</a>
+      <p *ngIf="pages.length === 0" class="empty-state">No pages found.</p>
+    </mat-nav-list>
   </nav>
 
+  <mat-divider vertical></mat-divider>
+
   <div class="docs-main">
-    <div *ngIf="loading" class="loading">
-      <span class="spinner"></span> Loading…
+    <div *ngIf="loading" class="loading-container">
+      <mat-spinner diameter="40"></mat-spinner>
     </div>
-    <div *ngIf="error" class="alert alert-error">{{ error }}</div>
+    <p *ngIf="error" class="feedback-message feedback-error">{{ error }}</p>
     <div
       *ngIf="!loading && !error && renderedHtml"
       id="doc-render"
