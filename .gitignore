@@ -12,4 +12,4 @@ venv/
 web/angular/node_modules/
 web/angular/dist/
 web/angular/.angular/
-web/angular/converage/
+web/angular/coverage/
