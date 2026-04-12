@@ -33,5 +33,10 @@
     "jest-environment-jsdom": "^30.3.0",
     "jest-preset-angular": "^16.1.4",
     "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "babel-plugin-istanbul": "^8.0.0",
+    "test-exclude": "^8.0.0",
+    "glob": "^13.0.0"
   }
 }
