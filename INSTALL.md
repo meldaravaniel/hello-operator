@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Raspberry Pi 4
-- A supported media player: **Plex Media Server** or **MPD (Music Player Daemon)** running and accessible on the network
+- A supported media player: **Plex Media Server**, **MPD (Music Player Daemon)**, or **Mopidy** running and accessible on the network
 - Hardware wired up per the setup guides in `docs/`:
   - `docs/AMP_SETUP.md` — MAX98357 I2S amplifier
   - `docs/BREAKBEAM_SETUP.md` — IR breakbeam pulse switch
@@ -75,7 +75,7 @@ Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.en
 |---|---|
 | `ASSISTANT_NUMBER` | 7-digit reserved number for the diagnostic assistant (must not conflict with any media entry) |
 
-### Required for Plex (`MEDIA_BACKEND=plex`)
+### Required for Plex (`MEDIA_BACKEND=plex`, default)
 
 | Variable | Description |
 |---|---|
@@ -86,6 +86,15 @@ Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.en
 
 **Finding your `PLEX_PLAYER_IDENTIFIER`:** In Plex Web → Settings → Troubleshooting, copy the Machine Identifier shown at the top of the page.
 
+### MPD and Mopidy backends
+
+Set `MEDIA_BACKEND=mpd` to connect to a Music Player Daemon instance, or `MEDIA_BACKEND=mopidy` to connect to a Mopidy server. Both use the same `MPD_HOST` and `MPD_PORT` variables — Mopidy implements the MPD wire protocol via its `mopidy-mpd` extension.
+
+**Mopidy setup notes:**
+- Install the MPD frontend extension: `sudo pip install mopidy-mpd`
+- In `/etc/mopidy/mopidy.conf`, enable the MPD extension and set `hostname = ::` (or `0.0.0.0`) so hello-operator can reach it over the network
+- Mopidy's MPD frontend defaults to port 6600, matching the `MPD_PORT` default
+
 ### Optional
 
 These have sensible defaults matching the install script's paths and the hardware wiring guides. Override if your setup differs.
@@ -94,10 +103,10 @@ These have sensible defaults matching the install script's paths and the hardwar
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEDIA_BACKEND` | `plex` | Media player backend: `plex` or `mpd` |
+| `MEDIA_BACKEND` | `plex` | Media player backend: `plex`, `mpd`, or `mopidy` |
 | `PLEX_URL` | `http://localhost:32400` | Plex server URL (Plex backend only) |
-| `MPD_HOST` | `localhost` | MPD server hostname or IP (MPD backend only) |
-| `MPD_PORT` | `6600` | MPD TCP port (MPD backend only) |
+| `MPD_HOST` | `localhost` | MPD/Mopidy server hostname or IP (MPD and Mopidy backends) |
+| `MPD_PORT` | `6600` | MPD/Mopidy TCP port (MPD and Mopidy backends) |
 | `HOOK_SWITCH_PIN` | `17` | BCM GPIO pin for hook switch |
 | `PULSE_SWITCH_PIN` | `27` | BCM GPIO pin for pulse switch |
 | `PIPER_BINARY` | `/usr/local/bin/piper` | Path to Piper binary |
@@ -215,3 +224,4 @@ sudo systemctl restart hello-operator-web
 | Error about `ASSISTANT_NUMBER` at startup | Set `ASSISTANT_NUMBER` in `/etc/hello-operator/config.env` |
 | Radio plays no audio | Confirm RTL-SDR dongle is plugged in; run `rtl_test` to verify it is detected |
 | MPD connection refused | Confirm MPD is running (`systemctl status mpd`) and `MPD_HOST`/`MPD_PORT` match |
+| Mopidy connection refused | Confirm Mopidy is running (`systemctl status mopidy`) and the MPD extension is enabled (`mopidy-mpd`); check `MPD_HOST`/`MPD_PORT` match Mopidy's MPD frontend (default port 6600) |

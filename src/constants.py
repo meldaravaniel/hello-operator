@@ -14,7 +14,7 @@ import os
 # Media backend selection
 # ---------------------------------------------------------------------------
 
-MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "plex")  # "plex" | "mpd"
+MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "plex")  # "plex" | "mpd" | "mopidy"
 
 # ---------------------------------------------------------------------------
 # Plex — only required when MEDIA_BACKEND=plex
@@ -44,7 +44,7 @@ else:
     PLEX_PLAYER_IDENTIFIER = os.environ.get("PLEX_PLAYER_IDENTIFIER", "")
 
 # ---------------------------------------------------------------------------
-# MPD — only used when MEDIA_BACKEND=mpd
+# MPD / Mopidy — only used when MEDIA_BACKEND=mpd or MEDIA_BACKEND=mopidy
 # ---------------------------------------------------------------------------
 
 MPD_HOST = os.environ.get("MPD_HOST", "localhost")

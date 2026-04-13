@@ -149,9 +149,12 @@ def load_radio_stations(path: str) -> list:
 
 
 def build_media_client() -> MediaClientInterface:
-    """Construct the configured media client (Plex or MPD)."""
+    """Construct the configured media client (Plex, MPD, or Mopidy)."""
     if MEDIA_BACKEND == "mpd":
         log.info("Media backend: MPD (%s:%d)", MPD_HOST, MPD_PORT)
+        return MPDClient(host=MPD_HOST, port=MPD_PORT)
+    elif MEDIA_BACKEND == "mopidy":
+        log.info("Media backend: Mopidy (%s:%d)", MPD_HOST, MPD_PORT)
         return MPDClient(host=MPD_HOST, port=MPD_PORT)
     else:
         log.info("Media backend: Plex (%s)", PLEX_URL)

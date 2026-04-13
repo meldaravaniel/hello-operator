@@ -1,6 +1,6 @@
 # Hello Operator
 
-A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interface for a media player. Picking up the handset triggers an interactive voice menu — styled as a telephone operator experience — where you browse and play playlists, artists, albums, and genres by dialing. Supports **Plex** and **MPD** (Music Player Daemon) as backends.
+A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interface for a media player. Picking up the handset triggers an interactive voice menu — styled as a telephone operator experience — where you browse and play playlists, artists, albums, and genres by dialing. Supports **Plex**, **MPD** (Music Player Daemon), and **Mopidy** as backends.
 
 ---
 
@@ -73,7 +73,7 @@ http://<pi-hostname>.local:8080
 
 The default hostname on Raspberry Pi OS is `raspberrypi`, so the address is typically `http://raspberrypi.local:8080`. The web interface lets you configure all settings, browse documentation, and restart the service — no command line needed.
 
-Settings are stored in `/etc/hello-operator/config.env`. **Always required:** `ASSISTANT_NUMBER`. **Required for Plex:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`. **Optional:** `MEDIA_BACKEND` (default: `plex`), MPD host/port, Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
+Settings are stored in `/etc/hello-operator/config.env`. **Always required:** `ASSISTANT_NUMBER`. **Required for Plex:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`. **Optional:** `MEDIA_BACKEND` (default: `plex`; also accepts `mpd` or `mopidy`), MPD/Mopidy host/port, Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
 
 ---
 

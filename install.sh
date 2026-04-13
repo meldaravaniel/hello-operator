@@ -65,7 +65,8 @@ apt-get install -y \
     portaudio19-dev \
     alsa-utils \
     rtl-sdr \
-    mpd
+    mpd \
+    mopidy
 
 # ---------------------------------------------------------------------------
 # Config directory and files
@@ -198,6 +199,12 @@ echo "     If using MPD (MEDIA_BACKEND=mpd):"
 echo "       MPD_HOST, MPD_PORT  — defaults: localhost, 6600"
 echo "       Configure MPD itself in /etc/mpd.conf, then:"
 echo "         sudo systemctl enable mpd && sudo systemctl start mpd"
+echo ""
+echo "     If using Mopidy (MEDIA_BACKEND=mopidy):"
+echo "       MPD_HOST, MPD_PORT  — defaults: localhost, 6600"
+echo "       Configure Mopidy in /etc/mopidy/mopidy.conf, enable the"
+echo "       mopidy-mpd extension, then:"
+echo "         sudo systemctl enable mopidy && sudo systemctl start mopidy"
 echo ""
 echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
 echo "     to add your local FM stations. Requires an RTL-SDR USB dongle."

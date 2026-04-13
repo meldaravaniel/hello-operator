@@ -55,12 +55,13 @@ CONFIG_FIELDS = [
         "key": "MEDIA_BACKEND",
         "label": "Media Backend",
         "type": "select",
-        "options": ["plex", "mpd"],
+        "options": ["plex", "mpd", "mopidy"],
         "required": False,
         "default": "plex",
         "help": "Which media player backend to use. "
                 "'plex' connects to a Plex Media Server; "
-                "'mpd' connects to a local Music Player Daemon.",
+                "'mpd' connects to a Music Player Daemon; "
+                "'mopidy' connects to a Mopidy server via its MPD interface.",
     },
     {
         "section": "Plex",

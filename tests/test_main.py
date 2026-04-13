@@ -344,3 +344,48 @@ def test_radio_playing_menu_script_in_prerender():
     from src.main import _PRERENDER_SCRIPTS
 
     assert "radio_playing_menu" in _PRERENDER_SCRIPTS
+
+
+# ---------------------------------------------------------------------------
+# build_media_client() — backend selection
+# ---------------------------------------------------------------------------
+
+def test_build_media_client_plex():
+    """MEDIA_BACKEND=plex → PlexClient is instantiated."""
+    import src.main as main_mod
+    plex_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "plex"), \
+         patch("src.main.PlexClient", plex_mock):
+        main_mod.build_media_client()
+    plex_mock.assert_called_once()
+
+
+def test_build_media_client_mpd():
+    """MEDIA_BACKEND=mpd → MPDClient is instantiated."""
+    import src.main as main_mod
+    mpd_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mpd"), \
+         patch("src.main.MPDClient", mpd_mock):
+        main_mod.build_media_client()
+    mpd_mock.assert_called_once()
+
+
+def test_build_media_client_mopidy():
+    """MEDIA_BACKEND=mopidy → MPDClient is instantiated (Mopidy speaks MPD protocol)."""
+    import src.main as main_mod
+    mpd_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mopidy"), \
+         patch("src.main.MPDClient", mpd_mock):
+        main_mod.build_media_client()
+    mpd_mock.assert_called_once()
+
+
+def test_build_media_client_mopidy_not_plex():
+    """MEDIA_BACKEND=mopidy must not instantiate PlexClient."""
+    import src.main as main_mod
+    plex_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mopidy"), \
+         patch("src.main.MPDClient", MagicMock()), \
+         patch("src.main.PlexClient", plex_mock):
+        main_mod.build_media_client()
+    plex_mock.assert_not_called()

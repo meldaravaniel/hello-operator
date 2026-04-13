@@ -22,13 +22,13 @@ python -m pytest -m integration
 python -m pytest -m "not integration"
 
 # Run Angular Jest tests
-cd web/angular && npm test
+cd web/angular && nvm use && npm test
 
 # Run Angular Jest tests with coverage
-cd web/angular && npm run test:coverage
+cd web/angular && nvm use && npm run test:coverage
 
 # Run a single Angular spec file
-cd web/angular && npx jest src/app/api.service.spec.ts
+cd web/angular && nvm use && npx jest src/app/api.service.spec.ts
 
 # Run the application
 python main.py
