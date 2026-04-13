@@ -1,7 +1,7 @@
 """Plex API client for hello-operator.
 
 PlexClient     — concrete implementation using the Plex HTTP API.
-MockPlexClient — configurable mock for unit tests; records all calls.
+MockMediaClient — configurable mock for unit tests; records all calls.
 
 PlexClient raises exceptions on API failures; callers decide whether to log.
 """
@@ -9,10 +9,10 @@ PlexClient raises exceptions on API failures; callers decide whether to log.
 import requests
 from typing import Optional
 
-from src.interfaces import MediaItem, PlaybackState, PlexClientInterface
+from src.interfaces import MediaItem, PlaybackState, MediaClientInterface
 
 
-class PlexClient(PlexClientInterface):
+class PlexClient(MediaClientInterface):
     """Concrete Plex API client using requests + Plex HTTP API."""
 
     def __init__(self, url: str, token: str, player_identifier: str = "") -> None:
@@ -54,7 +54,7 @@ class PlexClient(PlexClientInterface):
         items = data.get("MediaContainer", {}).get("Metadata", []) or []
         return [
             MediaItem(
-                plex_key=item["ratingKey"],
+                media_key=item["ratingKey"],
                 name=item["title"],
                 media_type="playlist",
             )
@@ -71,7 +71,7 @@ class PlexClient(PlexClientInterface):
             section_data = self._get(f"/library/sections/{section_id}/all")
             for item in section_data.get("MediaContainer", {}).get("Metadata", []) or []:
                 artists.append(MediaItem(
-                    plex_key=item["ratingKey"],
+                    media_key=item["ratingKey"],
                     name=item["title"],
                     media_type="artist",
                 ))
@@ -88,27 +88,26 @@ class PlexClient(PlexClientInterface):
             for item in genre_data.get("MediaContainer", {}).get("Directory", []) or []:
                 genre_key = item.get("key", item.get("title", ""))
                 genres.append(MediaItem(
-                    plex_key=f"section:{section_id}/genre:{genre_key}",
+                    media_key=f"section:{section_id}/genre:{genre_key}",
                     name=item["title"],
                     media_type="genre",
                 ))
         return genres
 
-    def get_albums_for_artist(self, artist_key: str) -> list:
-        data = self._get(f"/library/metadata/{artist_key}/children")
+    def get_albums_for_artist(self, artist_media_key: str) -> list:
+        data = self._get(f"/library/metadata/{artist_media_key}/children")
         items = data.get("MediaContainer", {}).get("Metadata", []) or []
         return [
             MediaItem(
-                plex_key=item["ratingKey"],
+                media_key=item["ratingKey"],
                 name=item["title"],
                 media_type="album",
             )
             for item in items
         ]
 
-    def play(self, plex_key: str) -> None:
-        # Use Plex playback API on the server
-        params = {"key": plex_key, "commandID": self._next_command_id()}
+    def play(self, media_key: str) -> None:
+        params = {"key": media_key, "commandID": self._next_command_id()}
         resp = requests.get(
             f"{self._url}/player/playback/playMedia",
             params=params,
@@ -174,7 +173,7 @@ class PlexClient(PlexClientInterface):
             return PlaybackState(item=None, is_paused=False)
         session = sessions[0]
         item = MediaItem(
-            plex_key=session.get("ratingKey", ""),
+            media_key=session.get("ratingKey", ""),
             name=session.get("title", ""),
             media_type=session.get("type", ""),
         )
@@ -188,8 +187,13 @@ class PlexClient(PlexClientInterface):
         total = container.get("size", 0)
         return (current, total)
 
-    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
-        """Return list of track ratingKey values for a genre filter path."""
+    def get_tracks_for_genre(self, genre_media_key: str) -> list:
+        """Return list of track ratingKey values for a genre.
+
+        genre_media_key format: "section:{section_id}/genre:{genre_key}"
+        """
+        section_part, genre_key = genre_media_key.split("/genre:", 1)
+        section_id = section_part.split("section:", 1)[1]
         params = {"genre": genre_key}
         resp = requests.get(
             f"{self._url}/library/sections/{section_id}/all",
@@ -204,7 +208,6 @@ class PlexClient(PlexClientInterface):
 
     def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
         """Create a Plex play queue from track keys and start playback."""
-        # Build the uri as a comma-joined list of library metadata items
         uri = "library://plex/directory//library/metadata/" + ",".join(str(k) for k in track_keys)
         post_params = {
             "uri": uri,
@@ -220,7 +223,6 @@ class PlexClient(PlexClientInterface):
         resp.raise_for_status()
         queue_data = resp.json()
         queue_id = queue_data.get("MediaContainer", {}).get("playQueueID", "")
-        # Now start playback of the queue
         play_params = {
             "playQueueID": queue_id,
             "commandID": self._next_command_id(),
@@ -234,7 +236,7 @@ class PlexClient(PlexClientInterface):
         play_resp.raise_for_status()
 
 
-class MockPlexClient(PlexClientInterface):
+class MockMediaClient(MediaClientInterface):
     """Configurable mock for unit tests; records all calls."""
 
     def __init__(self) -> None:
@@ -242,10 +244,10 @@ class MockPlexClient(PlexClientInterface):
         self._playlists: list = []
         self._artists: list = []
         self._genres: list = []
-        self._albums: dict = {}  # artist_key -> list
+        self._albums: dict = {}  # artist_media_key -> list
         self._now_playing: PlaybackState = PlaybackState(item=None, is_paused=False)
         self._queue_position: tuple = (0, 0)
-        self._tracks_for_genre: dict = {}  # (section_id, genre_key) -> list of ratingKeys
+        self._tracks_for_genre: dict = {}  # genre_media_key -> list of track keys
 
     # -- Configuration methods (test-only) ------------------------------------
 
@@ -258,11 +260,11 @@ class MockPlexClient(PlexClientInterface):
     def set_genres(self, genres: list) -> None:
         self._genres = genres
 
-    def set_albums_for_artist(self, artist_key: str, albums: list) -> None:
-        self._albums[artist_key] = albums
+    def set_albums_for_artist(self, artist_media_key: str, albums: list) -> None:
+        self._albums[artist_media_key] = albums
 
-    def set_tracks_for_genre(self, section_id: str, genre_key: str, tracks: list) -> None:
-        self._tracks_for_genre[(section_id, genre_key)] = tracks
+    def set_tracks_for_genre(self, genre_media_key: str, tracks: list) -> None:
+        self._tracks_for_genre[genre_media_key] = tracks
 
     def set_now_playing(self, state: PlaybackState) -> None:
         self._now_playing = state
@@ -270,7 +272,7 @@ class MockPlexClient(PlexClientInterface):
     def set_queue_position(self, current: int, total: int) -> None:
         self._queue_position = (current, total)
 
-    # -- PlexClientInterface --------------------------------------------------
+    # -- MediaClientInterface --------------------------------------------------
 
     def get_playlists(self) -> list:
         self.calls.append(('get_playlists',))
@@ -284,12 +286,12 @@ class MockPlexClient(PlexClientInterface):
         self.calls.append(('get_genres',))
         return list(self._genres)
 
-    def get_albums_for_artist(self, artist_key: str) -> list:
-        self.calls.append(('get_albums_for_artist', artist_key))
-        return list(self._albums.get(artist_key, []))
+    def get_albums_for_artist(self, artist_media_key: str) -> list:
+        self.calls.append(('get_albums_for_artist', artist_media_key))
+        return list(self._albums.get(artist_media_key, []))
 
-    def play(self, plex_key: str) -> None:
-        self.calls.append(('play', plex_key))
+    def play(self, media_key: str) -> None:
+        self.calls.append(('play', media_key))
 
     def shuffle_all(self) -> None:
         self.calls.append(('shuffle_all',))
@@ -314,9 +316,13 @@ class MockPlexClient(PlexClientInterface):
         self.calls.append(('get_queue_position',))
         return self._queue_position
 
-    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
-        self.calls.append(('get_tracks_for_genre', section_id, genre_key))
-        return list(self._tracks_for_genre.get((section_id, genre_key), []))
+    def get_tracks_for_genre(self, genre_media_key: str) -> list:
+        self.calls.append(('get_tracks_for_genre', genre_media_key))
+        return list(self._tracks_for_genre.get(genre_media_key, []))
 
     def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
         self.calls.append(('play_tracks', track_keys, shuffle))
+
+
+# Backward-compat alias — use MockMediaClient in new code
+MockPlexClient = MockMediaClient

@@ -13,6 +13,7 @@ export interface ConfigField {
   key: string;
   label: string;
   type: string;
+  options?: string[];
   required: boolean;
   default?: string;
   help: string;

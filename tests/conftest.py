@@ -16,6 +16,12 @@ _sd_mock.wait = MagicMock()
 _sd_mock.OutputStream = MagicMock()
 sys.modules.setdefault('sounddevice', _sd_mock)
 
+# ---------------------------------------------------------------------------
+# Mock mpd (python-mpd2) so tests work without a running MPD daemon
+# ---------------------------------------------------------------------------
+_mpd_mock = MagicMock()
+sys.modules.setdefault('mpd', _mpd_mock)
+
 
 @pytest.fixture
 def tmp_error_queue(tmp_path):
@@ -30,9 +36,15 @@ def tmp_phone_book(tmp_path):
 
 
 @pytest.fixture
+def tmp_media_store(tmp_path):
+    """Temporary SQLite DB file for media_store tests."""
+    return str(tmp_path / "media_cache.db")
+
+
+# Backward-compat alias
+@pytest.fixture
 def tmp_plex_store(tmp_path):
-    """Temporary SQLite DB file for plex_store tests."""
-    return str(tmp_path / "plex_cache.db")
+    return str(tmp_path / "media_cache.db")
 
 
 @pytest.fixture
@@ -50,17 +62,31 @@ def mock_tts():
 
 
 @pytest.fixture
+def mock_media_client():
+    """MockMediaClient instance for menu/session tests."""
+    from src.plex_client import MockMediaClient
+    return MockMediaClient()
+
+
+# Backward-compat alias used by test_menu.py and test_session.py
+@pytest.fixture
 def mock_plex():
-    """MockPlexClient instance for menu/session tests."""
-    from src.plex_client import MockPlexClient
-    return MockPlexClient()
+    from src.plex_client import MockMediaClient
+    return MockMediaClient()
 
 
 @pytest.fixture
+def mock_media_store():
+    """MockMediaStore instance for menu/session tests."""
+    from src.media_store import MockMediaStore
+    return MockMediaStore()
+
+
+# Backward-compat alias
+@pytest.fixture
 def mock_plex_store():
-    """MockPlexStore instance for menu/session tests."""
-    from src.plex_store import MockPlexStore
-    return MockPlexStore()
+    from src.media_store import MockMediaStore
+    return MockMediaStore()
 
 
 @pytest.fixture

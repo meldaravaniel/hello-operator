@@ -110,7 +110,7 @@ def _run_with_stubs(makedirs_mock=None):
         patch("src.main.SounddeviceAudio", MagicMock()),
         patch("src.main.PiperTTS", MagicMock()),
         patch("src.main.PlexClient", MagicMock()),
-        patch("src.main.PlexStore", MagicMock()),
+        patch("src.main.MediaStore", MagicMock()),
         patch("src.main.build_gpio_handler", MagicMock()),
         patch("src.main.Session", MagicMock()),
         patch("src.main.time.sleep", side_effect=KeyboardInterrupt),
@@ -159,7 +159,7 @@ def test_run_makedirs_called_before_sqlite_error_queue():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
@@ -190,7 +190,7 @@ def test_run_makedirs_exist_ok_true():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
@@ -226,7 +226,7 @@ def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler",
                MagicMock(side_effect=build_gpio_side_effect)), \
          patch("src.main.Session", MagicMock()), \
@@ -272,7 +272,7 @@ def test_gpio_cleanup_called_after_audio_stop():
          patch("src.main.SounddeviceAudio", audio_class_mock), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \

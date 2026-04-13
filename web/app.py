@@ -51,6 +51,18 @@ DOC_PAGES = [
 
 CONFIG_FIELDS = [
     {
+        "section": "Media Backend",
+        "key": "MEDIA_BACKEND",
+        "label": "Media Backend",
+        "type": "select",
+        "options": ["plex", "mpd"],
+        "required": False,
+        "default": "plex",
+        "help": "Which media player backend to use. "
+                "'plex' connects to a Plex Media Server; "
+                "'mpd' connects to a local Music Player Daemon.",
+    },
+    {
         "section": "Plex",
         "key": "PLEX_TOKEN",
         "label": "Plex Token",
@@ -77,6 +89,26 @@ CONFIG_FIELDS = [
         "default": "http://localhost:32400",
         "help": "Full URL of your Plex Media Server. "
                 "Change this if your Plex server runs on a different machine.",
+    },
+    {
+        "section": "MPD",
+        "key": "MPD_HOST",
+        "label": "MPD Host",
+        "type": "text",
+        "required": False,
+        "default": "localhost",
+        "help": "Hostname or IP address of the Music Player Daemon. "
+                "Only used when MEDIA_BACKEND is 'mpd'.",
+    },
+    {
+        "section": "MPD",
+        "key": "MPD_PORT",
+        "label": "MPD Port",
+        "type": "number",
+        "required": False,
+        "default": "6600",
+        "help": "TCP port on which MPD is listening. Default is 6600. "
+                "Only used when MEDIA_BACKEND is 'mpd'.",
     },
     {
         "section": "Phone System",

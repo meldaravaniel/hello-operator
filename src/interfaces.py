@@ -7,7 +7,7 @@ from typing import Optional
 
 @dataclass
 class MediaItem:
-    plex_key: str
+    media_key: str
     name: str
     media_type: str  # "playlist" | "artist" | "album" | "genre" | "radio"
 
@@ -82,8 +82,8 @@ class TTSInterface(ABC):
         """Pre-synthesize fixed strings to cached audio files."""
 
 
-class PlexClientInterface(ABC):
-    """Abstracts all Plex API calls."""
+class MediaClientInterface(ABC):
+    """Abstracts all media player API calls (Plex, MPD, etc.)."""
 
     @abstractmethod
     def get_playlists(self) -> list:
@@ -98,11 +98,11 @@ class PlexClientInterface(ABC):
         """Return all genres."""
 
     @abstractmethod
-    def get_albums_for_artist(self, artist_key: str) -> list:
+    def get_albums_for_artist(self, artist_media_key: str) -> list:
         """Return albums for a given artist."""
 
     @abstractmethod
-    def play(self, plex_key: str) -> None:
+    def play(self, media_key: str) -> None:
         """Start playback of a media item."""
 
     @abstractmethod
@@ -134,12 +134,16 @@ class PlexClientInterface(ABC):
         """Return (current_track, total_tracks)."""
 
     @abstractmethod
-    def get_tracks_for_genre(self, section_id: str, genre_key: str) -> list:
-        """Return list of track ratingKey values for a genre."""
+    def get_tracks_for_genre(self, genre_media_key: str) -> list:
+        """Return list of track keys for a genre, given the genre's media_key."""
 
     @abstractmethod
     def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
-        """Create a Plex play queue from track keys and start playback."""
+        """Create a play queue from track keys and start playback."""
+
+
+# Backward-compat alias — use MediaClientInterface in new code
+PlexClientInterface = MediaClientInterface
 
 
 class ErrorQueueInterface(ABC):

@@ -30,10 +30,10 @@ def test_number_is_unique(tmp_phone_book):
     assert len(numbers) == 100
 
 
-def test_lookup_by_plex_key(tmp_phone_book):
+def test_lookup_by_media_key(tmp_phone_book):
     pb = PhoneBook(tmp_phone_book)
     pb.assign_or_get("/lib/1", "playlist", "My Playlist")
-    item = pb.lookup_by_plex_key("/lib/1")
+    item = pb.lookup_by_media_key("/lib/1")
     assert item is not None
     assert item["name"] == "My Playlist"
     assert item["media_type"] == "playlist"
@@ -44,13 +44,13 @@ def test_lookup_by_phone_number(tmp_phone_book):
     number = pb.assign_or_get("/lib/1", "playlist", "My Playlist")
     item = pb.lookup_by_phone_number(number)
     assert item is not None
-    assert item["plex_key"] == "/lib/1"
+    assert item["media_key"] == "/lib/1"
     assert item["name"] == "My Playlist"
 
 
 def test_lookup_missing_key(tmp_phone_book):
     pb = PhoneBook(tmp_phone_book)
-    result = pb.lookup_by_plex_key("/lib/does_not_exist")
+    result = pb.lookup_by_media_key("/lib/does_not_exist")
     assert result is None
 
 
@@ -110,7 +110,7 @@ def test_generate_unique_number_raises_after_max_attempts(tmp_phone_book):
     import sqlite3
     with pb._connect() as conn:
         conn.execute(
-            "INSERT INTO phone_book (plex_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
+            "INSERT INTO phone_book (media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
             ("/taken/1", "artist", "Taken", "1234567")
         )
     with patch("src.phone_book.random.randint", return_value=1234567):
@@ -134,7 +134,7 @@ def test_seed_inserts_entry(tmp_phone_book):
     pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
     entry = pb.lookup_by_phone_number("5550903")
     assert entry == {
-        "plex_key": "radio:90300000.0",
+        "media_key": "radio:90300000.0",
         "media_type": "radio",
         "name": "KEXP",
         "phone_number": "5550903",
@@ -156,7 +156,7 @@ def test_seed_skips_if_phone_number_taken(tmp_phone_book):
     pb.seed("5550903", "radio:A", "radio", "Station A")
     pb.seed("5550903", "radio:B", "radio", "Station B")
     entry = pb.lookup_by_phone_number("5550903")
-    assert entry["plex_key"] == "radio:A"
+    assert entry["media_key"] == "radio:A"
 
 
 def test_seed_skips_if_plex_key_already_assigned(tmp_phone_book):
@@ -179,7 +179,7 @@ def test_invalid_media_type_rejected(tmp_phone_book):
     with pb._connect() as conn:
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                "INSERT INTO phone_book (media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
                 ("/k/1", "track", "Name", "5551234")
             )
 
@@ -192,6 +192,6 @@ def test_valid_media_types_accepted(tmp_phone_book):
     with pb._connect() as conn:
         for i, media_type in enumerate(valid_types):
             conn.execute(
-                "INSERT INTO phone_book VALUES (?, ?, ?, ?)",
+                "INSERT INTO phone_book (media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
                 (f"/k/{i}", media_type, f"Name {i}", f"555000{i}")
             )

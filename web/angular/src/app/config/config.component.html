@@ -10,25 +10,38 @@
   </ul>
 </div>
 
-<mat-card *ngFor="let section of sections" class="section-card">
-  <mat-card-header>
-    <mat-card-title>{{ section }}</mat-card-title>
-  </mat-card-header>
-  <mat-card-content>
-    <mat-form-field *ngFor="let field of fieldsForSection(section)" appearance="outline" class="full-width">
-      <mat-label>{{ field.label }}<span *ngIf="field.required"> *</span></mat-label>
-      <input
-        matInput
-        [id]="field.key"
-        [name]="field.key"
-        [type]="field.type"
-        [placeholder]="field.default ?? ''"
-        [(ngModel)]="values[field.key]"
-      />
-      <mat-hint>{{ field.help }}</mat-hint>
-    </mat-form-field>
-  </mat-card-content>
-</mat-card>
+<ng-container *ngFor="let section of sections">
+  <mat-card *ngIf="isSectionVisible(section)" class="section-card">
+    <mat-card-header>
+      <mat-card-title>{{ section }}</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <ng-container *ngFor="let field of fieldsForSection(section)">
+        <!-- Select field -->
+        <mat-form-field *ngIf="field.type === 'select'" appearance="outline" class="full-width">
+          <mat-label>{{ field.label }}<span *ngIf="field.required"> *</span></mat-label>
+          <mat-select [id]="field.key" [name]="field.key" [(ngModel)]="values[field.key]">
+            <mat-option *ngFor="let opt of field.options" [value]="opt">{{ opt }}</mat-option>
+          </mat-select>
+          <mat-hint>{{ field.help }}</mat-hint>
+        </mat-form-field>
+        <!-- All other field types -->
+        <mat-form-field *ngIf="field.type !== 'select'" appearance="outline" class="full-width">
+          <mat-label>{{ field.label }}<span *ngIf="field.required"> *</span></mat-label>
+          <input
+            matInput
+            [id]="field.key"
+            [name]="field.key"
+            [type]="field.type"
+            [placeholder]="field.default ?? ''"
+            [(ngModel)]="values[field.key]"
+          />
+          <mat-hint>{{ field.help }}</mat-hint>
+        </mat-form-field>
+      </ng-container>
+    </mat-card-content>
+  </mat-card>
+</ng-container>
 
 <mat-card class="section-card">
   <mat-card-header>

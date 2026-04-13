@@ -4,15 +4,22 @@ import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { ApiService, ConfigField, RadioStation } from '../api.service';
 
+/** Sections visible only when a specific backend is selected. */
+const BACKEND_SECTIONS: Record<string, string> = {
+  'Plex': 'plex',
+  'MPD': 'mpd',
+};
+
 @Component({
   selector: 'app-config',
   standalone: true,
-  imports: [NgFor, NgIf, FormsModule, MatCardModule, MatFormFieldModule, MatInputModule, MatButtonModule, MatIconModule, MatProgressSpinnerModule],
+  imports: [NgFor, NgIf, FormsModule, MatCardModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatButtonModule, MatIconModule, MatProgressSpinnerModule],
   templateUrl: './config.component.html',
 })
 export class ConfigComponent implements OnInit {
@@ -54,6 +61,16 @@ export class ConfigComponent implements OnInit {
 
   fieldsForSection(section: string): ConfigField[] {
     return this.fields.filter(f => f.section === section);
+  }
+
+  get mediaBackend(): string {
+    return this.values['MEDIA_BACKEND'] || 'plex';
+  }
+
+  isSectionVisible(section: string): boolean {
+    const requiredBackend = BACKEND_SECTIONS[section];
+    if (!requiredBackend) return true;
+    return this.mediaBackend === requiredBackend;
   }
 
   saveEnv(): void {

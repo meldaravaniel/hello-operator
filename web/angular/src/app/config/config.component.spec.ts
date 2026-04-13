@@ -87,6 +87,56 @@ describe('ConfigComponent', () => {
     });
   });
 
+  // ── mediaBackend getter ────────────────────────────────────────────────────
+
+  describe('mediaBackend', () => {
+    it('returns the value of MEDIA_BACKEND when set', () => {
+      component.values['MEDIA_BACKEND'] = 'mpd';
+      expect(component.mediaBackend).toBe('mpd');
+    });
+
+    it("defaults to 'plex' when MEDIA_BACKEND is not set", () => {
+      delete component.values['MEDIA_BACKEND'];
+      expect(component.mediaBackend).toBe('plex');
+    });
+  });
+
+  // ── isSectionVisible() ────────────────────────────────────────────────────
+
+  describe('isSectionVisible(section)', () => {
+    it('returns true for sections not tied to a specific backend', () => {
+      expect(component.isSectionVisible('GPIO')).toBe(true);
+      expect(component.isSectionVisible('TTS')).toBe(true);
+      expect(component.isSectionVisible('Phone System')).toBe(true);
+    });
+
+    it("shows Plex section when backend is 'plex'", () => {
+      component.values['MEDIA_BACKEND'] = 'plex';
+      expect(component.isSectionVisible('Plex')).toBe(true);
+    });
+
+    it("hides Plex section when backend is 'mpd'", () => {
+      component.values['MEDIA_BACKEND'] = 'mpd';
+      expect(component.isSectionVisible('Plex')).toBe(false);
+    });
+
+    it("shows MPD section when backend is 'mpd'", () => {
+      component.values['MEDIA_BACKEND'] = 'mpd';
+      expect(component.isSectionVisible('MPD')).toBe(true);
+    });
+
+    it("hides MPD section when backend is 'plex'", () => {
+      component.values['MEDIA_BACKEND'] = 'plex';
+      expect(component.isSectionVisible('MPD')).toBe(false);
+    });
+
+    it("defaults to showing Plex when MEDIA_BACKEND is unset", () => {
+      delete component.values['MEDIA_BACKEND'];
+      expect(component.isSectionVisible('Plex')).toBe(true);
+      expect(component.isSectionVisible('MPD')).toBe(false);
+    });
+  });
+
   // ── addStation() ──────────────────────────────────────────────────────────
 
   describe('addStation()', () => {
