@@ -7,7 +7,7 @@ skipped by default.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.plex_client import MockPlexClient
+from src.plex_client import MockMediaClient, MockPlexClient
 from src.interfaces import MediaItem, PlaybackState
 
 
@@ -18,16 +18,16 @@ from src.interfaces import MediaItem, PlaybackState
 @pytest.fixture
 def sample_playlists():
     return [
-        MediaItem(plex_key="/library/playlists/1", name="Chill Vibes", media_type="playlist"),
-        MediaItem(plex_key="/library/playlists/2", name="Rock Classics", media_type="playlist"),
+        MediaItem(media_key="/library/playlists/1", name="Chill Vibes", media_type="playlist"),
+        MediaItem(media_key="/library/playlists/2", name="Rock Classics", media_type="playlist"),
     ]
 
 
 @pytest.fixture
 def sample_artists():
     return [
-        MediaItem(plex_key="/library/sections/3/all/10", name="The Beatles", media_type="artist"),
-        MediaItem(plex_key="/library/sections/3/all/11", name="Led Zeppelin", media_type="artist"),
+        MediaItem(media_key="/library/sections/3/all/10", name="The Beatles", media_type="artist"),
+        MediaItem(media_key="/library/sections/3/all/11", name="Led Zeppelin", media_type="artist"),
     ]
 
 
@@ -71,7 +71,7 @@ class TestMockPlexClient:
 
     def test_mock_now_playing_returns_playing_state(self):
         client = MockPlexClient()
-        item = MediaItem(plex_key="/library/metadata/1", name="Song A", media_type="album")
+        item = MediaItem(media_key="/library/metadata/1", name="Song A", media_type="album")
         client.set_now_playing(PlaybackState(item=item, is_paused=False))
         state = client.now_playing()
         assert state.item == item
@@ -79,7 +79,7 @@ class TestMockPlexClient:
 
     def test_mock_now_playing_returns_paused_state(self):
         client = MockPlexClient()
-        item = MediaItem(plex_key="/library/metadata/1", name="Song A", media_type="album")
+        item = MediaItem(media_key="/library/metadata/1", name="Song A", media_type="album")
         client.set_now_playing(PlaybackState(item=item, is_paused=True))
         state = client.now_playing()
         assert state.item == item
@@ -100,13 +100,13 @@ class TestMockPlexClient:
 
     def test_mock_get_genres_returns_list(self):
         client = MockPlexClient()
-        genres = [MediaItem(plex_key="/genre/1", name="Jazz", media_type="genre")]
+        genres = [MediaItem(media_key="/genre/1", name="Jazz", media_type="genre")]
         client.set_genres(genres)
         assert client.get_genres() == genres
 
     def test_mock_get_albums_for_artist_returns_list(self):
         client = MockPlexClient()
-        albums = [MediaItem(plex_key="/album/1", name="Abbey Road", media_type="album")]
+        albums = [MediaItem(media_key="/album/1", name="Abbey Road", media_type="album")]
         artist_key = "/artist/1"
         client.set_albums_for_artist(artist_key, albums)
         assert client.get_albums_for_artist(artist_key) == albums
@@ -287,45 +287,45 @@ class TestGenrePlayback:
     """Tests for F-06: genre track fetching and play_tracks."""
 
     def test_mock_get_tracks_for_genre_returns_list(self):
-        """MockPlexClient.get_tracks_for_genre returns configured track list."""
-        client = MockPlexClient()
-        client.set_tracks_for_genre("1", "/library/sections/1/genre/Jazz", ["key1", "key2"])
-        result = client.get_tracks_for_genre("1", "/library/sections/1/genre/Jazz")
+        """MockMediaClient.get_tracks_for_genre returns configured track list."""
+        client = MockMediaClient()
+        client.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz", ["key1", "key2"])
+        result = client.get_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz")
         assert result == ["key1", "key2"]
 
     def test_mock_get_tracks_for_genre_records_call(self):
-        """MockPlexClient.get_tracks_for_genre records its call."""
-        client = MockPlexClient()
-        client.set_tracks_for_genre("1", "/library/sections/1/genre/Jazz", ["key1"])
-        client.get_tracks_for_genre("1", "/library/sections/1/genre/Jazz")
-        assert ('get_tracks_for_genre', "1", "/library/sections/1/genre/Jazz") in client.calls
+        """MockMediaClient.get_tracks_for_genre records its call."""
+        client = MockMediaClient()
+        client.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz", ["key1"])
+        client.get_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz")
+        assert ('get_tracks_for_genre', "section:1/genre:/library/sections/1/genre/Jazz") in client.calls
 
     def test_mock_get_tracks_for_genre_returns_empty_by_default(self):
-        """MockPlexClient.get_tracks_for_genre returns [] when not configured."""
-        client = MockPlexClient()
-        result = client.get_tracks_for_genre("1", "/library/sections/1/genre/Jazz")
+        """MockMediaClient.get_tracks_for_genre returns [] when not configured."""
+        client = MockMediaClient()
+        result = client.get_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz")
         assert result == []
 
     def test_mock_play_tracks_records_call(self):
-        """MockPlexClient.play_tracks records its call with shuffle flag."""
-        client = MockPlexClient()
+        """MockMediaClient.play_tracks records its call with shuffle flag."""
+        client = MockMediaClient()
         client.play_tracks(["key1", "key2"], shuffle=True)
         assert ('play_tracks', ["key1", "key2"], True) in client.calls
 
     def test_mock_play_tracks_shuffle_defaults_to_true(self):
-        """MockPlexClient.play_tracks shuffle defaults to True."""
-        client = MockPlexClient()
+        """MockMediaClient.play_tracks shuffle defaults to True."""
+        client = MockMediaClient()
         client.play_tracks(["key1"])
         assert ('play_tracks', ["key1"], True) in client.calls
 
     def test_mock_play_tracks_shuffle_false(self):
-        """MockPlexClient.play_tracks records shuffle=False when specified."""
-        client = MockPlexClient()
+        """MockMediaClient.play_tracks records shuffle=False when specified."""
+        client = MockMediaClient()
         client.play_tracks(["key1", "key2"], shuffle=False)
         assert ('play_tracks', ["key1", "key2"], False) in client.calls
 
     def test_plexclient_get_tracks_for_genre_calls_correct_endpoint(self):
-        """PlexClient.get_tracks_for_genre calls /library/sections/{id}/all?genre={key}."""
+        """PlexClient.get_tracks_for_genre parses section/genre from media_key and calls correct endpoint."""
         from src.plex_client import PlexClient
         client = PlexClient(url="http://localhost:32400", token="tok")
         mock_resp = MagicMock()
@@ -338,8 +338,9 @@ class TestGenrePlayback:
                 ]
             }
         }
+        genre_media_key = "section:1/genre:/library/sections/1/genre/Jazz"
         with patch("requests.get", return_value=mock_resp) as mock_get:
-            result = client.get_tracks_for_genre("1", "/library/sections/1/genre/Jazz")
+            result = client.get_tracks_for_genre(genre_media_key)
             url_called = mock_get.call_args[0][0]
             assert "/library/sections/1/all" in url_called
             params = mock_get.call_args[1].get("params", {})
@@ -354,7 +355,7 @@ class TestGenrePlayback:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {"MediaContainer": {}}
         with patch("requests.get", return_value=mock_resp):
-            result = client.get_tracks_for_genre("1", "/library/sections/1/genre/Jazz")
+            result = client.get_tracks_for_genre("section:1/genre:/library/sections/1/genre/Jazz")
         assert result == []
 
     def test_plexclient_play_tracks_posts_play_queue(self):
@@ -426,7 +427,7 @@ class TestGenrePlayback:
             genres = client.get_genres()
         assert len(genres) == 1
         # plex_key should encode section_id
-        assert genres[0].plex_key == "section:1/genre:/library/sections/1/genre/15"
+        assert genres[0].media_key == "section:1/genre:/library/sections/1/genre/15"
         assert genres[0].name == "Jazz"
         assert genres[0].media_type == "genre"
 
@@ -453,7 +454,7 @@ class TestRealPlexClient:
     def test_real_play_starts_playback(self, real_client):
         playlists = real_client.get_playlists()
         assert playlists, "No playlists available for integration test"
-        real_client.play(playlists[0].plex_key)
+        real_client.play(playlists[0].media_key)
         import time; time.sleep(2)
         state = real_client.now_playing()
         assert state.item is not None

@@ -1,7 +1,7 @@
 """Menu state machine for hello-operator.
 
-Receives digit events and system state; emits audio instructions and Plex
-commands.  Has no knowledge of GPIO, audio hardware, or HTTP — only the
+Receives digit events and system state; emits audio instructions and media
+player commands.  Has no knowledge of GPIO, audio hardware, or HTTP — only the
 interfaces.
 
 States
@@ -26,7 +26,7 @@ from enum import Enum, auto
 from typing import Optional, List
 
 from src.interfaces import (
-    AudioInterface, TTSInterface, PlexClientInterface, ErrorQueueInterface,
+    AudioInterface, TTSInterface, MediaClientInterface, ErrorQueueInterface,
     MediaItem, PlaybackState,
 )
 from src.constants import (
@@ -203,16 +203,6 @@ def _t9_digit_for_char(ch: str) -> int:
     return 8
 
 
-def _parse_genre_plex_key(plex_key: str):
-    """Parse a genre plex_key of the form 'section:{section_id}/genre:{genre_key}'.
-
-    Returns (section_id, genre_key).
-    """
-    # Format: section:{section_id}/genre:{genre_key}
-    section_part, genre_part = plex_key.split("/genre:", 1)
-    section_id = section_part.split("section:", 1)[1]
-    return section_id, genre_part
-
 
 class MenuState(Enum):
     IDLE_DIAL_TONE = auto()
@@ -242,16 +232,19 @@ class Menu:
         self,
         audio: AudioInterface,
         tts: TTSInterface,
-        plex_client: PlexClientInterface,
-        plex_store,   # PlexStore or MockPlexStore
-        phone_book,   # PhoneBook
+        media_client: MediaClientInterface,
+        media_store,   # MediaStore or MockMediaStore
+        phone_book,    # PhoneBook
         error_queue: ErrorQueueInterface,
-        radio=None,   # RadioInterface or MockRadio
+        radio=None,    # RadioInterface or MockRadio
+        # Backward-compat aliases
+        plex_client: MediaClientInterface = None,
+        plex_store=None,
     ) -> None:
         self._audio = audio
         self._tts = tts
-        self._plex_client = plex_client
-        self._plex_store = plex_store
+        self._media_client = media_client or plex_client
+        self._media_store = media_store or plex_store
         self._phone_book = phone_book
         self._error_queue = error_queue
         self._radio = radio
@@ -391,7 +384,7 @@ class Menu:
         """Fire the menu prompt after the appropriate dial tone silence."""
         elapsed = now - self._handset_up_time
         # Determine which timeout applies
-        playback = self._plex_client.now_playing()
+        playback = self._media_client.now_playing()
         radio_active = self._radio is not None and self._radio.is_playing()
         if playback.item is not None or radio_active:
             timeout = DIAL_TONE_TIMEOUT_PLAYING
@@ -413,19 +406,19 @@ class Menu:
 
         # Try to load content
         try:
-            has_playlists = self._plex_store.playlists_has_content
-            has_artists = self._plex_store.artists_has_content
-            has_genres = self._plex_store.genres_has_content
+            has_playlists = self._media_store.playlists_has_content
+            has_artists = self._media_store.artists_has_content
+            has_genres = self._media_store.genres_has_content
 
             if not has_playlists:
-                self._plex_store.get_playlists()
-                has_playlists = self._plex_store.playlists_has_content
+                self._media_store.get_playlists()
+                has_playlists = self._media_store.playlists_has_content
             if not has_artists:
-                self._plex_store.get_artists()
-                has_artists = self._plex_store.artists_has_content
+                self._media_store.get_artists()
+                has_artists = self._media_store.artists_has_content
             if not has_genres:
-                self._plex_store.get_genres()
-                has_genres = self._plex_store.genres_has_content
+                self._media_store.get_genres()
+                has_genres = self._media_store.genres_has_content
 
         except (sqlite3.Error, OSError):
             self._failure_mode = "plex"
@@ -485,7 +478,7 @@ class Menu:
         )
 
         # Determine skip availability
-        pos, total = self._plex_client.get_queue_position()
+        pos, total = self._media_client.get_queue_position()
         is_last_track = (pos == total)
 
         if playback.is_paused:
@@ -538,7 +531,7 @@ class Menu:
         # digit — the user dialed before hearing the options and must dial again.
         if self._state == MenuState.IDLE_DIAL_TONE:
             self._audio.stop()
-            playback = self._plex_client.now_playing()
+            playback = self._media_client.now_playing()
             if playback.item is not None:
                 self._deliver_playing_menu(playback, now)
             else:
@@ -597,7 +590,7 @@ class Menu:
         if self._failure_mode == "plex":
             if digit == 1:
                 # Retry — refresh all categories and check if at least one succeeded
-                result = self._plex_store.refresh()
+                result = self._media_store.refresh()
                 if any(v == "ok" for v in result.values()):
                     self._failure_mode = None
                     self._deliver_idle_menu(now)
@@ -609,9 +602,9 @@ class Menu:
             return
 
         # Determine available options dynamically
-        has_playlists = self._plex_store.playlists_has_content
-        has_artists = self._plex_store.artists_has_content
-        has_genres = self._plex_store.genres_has_content
+        has_playlists = self._media_store.playlists_has_content
+        has_artists = self._media_store.artists_has_content
+        has_genres = self._media_store.genres_has_content
 
         options = []
         if has_playlists:
@@ -630,40 +623,40 @@ class Menu:
 
         name, next_state = options[idx]
         if name == 'shuffle':
-            self._plex_client.shuffle_all()
+            self._media_client.shuffle_all()
             self._tts.speak_and_play(SCRIPT_SHUFFLE_CONNECTING)
             self._state = MenuState.PLAYING_MENU
         elif next_state == MenuState.BROWSE_PLAYLISTS:
-            items = self._plex_store.get_playlists()
+            items = self._media_store.get_playlists()
             self._start_browse(items, MenuState.BROWSE_PLAYLISTS,
                                SCRIPT_BROWSE_PROMPT_PLAYLIST, now)
         elif next_state == MenuState.BROWSE_ARTISTS:
-            items = self._plex_store.get_artists()
+            items = self._media_store.get_artists()
             self._start_browse(items, MenuState.BROWSE_ARTISTS,
                                SCRIPT_BROWSE_PROMPT_ARTIST, now)
         elif next_state == MenuState.BROWSE_GENRES:
-            items = self._plex_store.get_genres()
+            items = self._media_store.get_genres()
             self._start_browse(items, MenuState.BROWSE_GENRES,
                                SCRIPT_BROWSE_PROMPT_GENRE, now)
 
     def _handle_playing_menu_digit(self, digit: int, now: float) -> None:
         """Process digit in PLAYING_MENU state."""
-        playback = self._plex_client.now_playing()
-        pos, total = self._plex_client.get_queue_position()
+        playback = self._media_client.now_playing()
+        pos, total = self._media_client.get_queue_position()
         is_last_track = (pos == total)
 
         if digit == 1:
             if playback.is_paused:
-                self._plex_client.unpause()
+                self._media_client.unpause()
             else:
-                self._plex_client.pause()
+                self._media_client.pause()
         elif digit == 2:
             if not is_last_track:
-                self._plex_client.skip()
+                self._media_client.skip()
             else:
                 self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
         elif digit == 3:
-            self._plex_client.stop()
+            self._media_client.stop()
             self._just_stopped_music = True
             self._state = MenuState.IDLE_MENU
             # Go to idle menu without re-delivering opener
@@ -733,7 +726,7 @@ class Menu:
         if media_type == "artist":
             self._current_artist = item
             self._state = MenuState.ARTIST_SUBMENU
-            albums = self._plex_store.get_albums_for_artist(item.plex_key)
+            albums = self._media_store.get_albums_for_artist(item.media_key)
             if albums:
                 text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=item.name)
                 text += SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX
@@ -742,30 +735,27 @@ class Menu:
             self._tts.speak_and_play(text)
             self._browse_listed = []
         elif media_type == "genre":
-            # Genre: decode section_id and genre_key from plex_key, fetch tracks, play shuffled
-            # plex_key format: "section:{section_id}/genre:{genre_key}"
-            section_id, genre_key = _parse_genre_plex_key(item.plex_key)
-            track_keys = self._plex_client.get_tracks_for_genre(section_id, genre_key)
+            track_keys = self._media_client.get_tracks_for_genre(item.media_key)
             if not track_keys:
                 self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
                 # Return to the genre browse state
                 self._state = MenuState.BROWSE_GENRES
             else:
-                number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+                number = self._phone_book.assign_or_get(item.media_key, item.media_type, item.name)
                 digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
                 self._tts.speak_and_play(
                     SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
                 )
-                self._plex_client.play_tracks(track_keys, shuffle=True)
+                self._media_client.play_tracks(track_keys, shuffle=True)
                 self._state = MenuState.PLAYING_MENU
         else:
             # Playlist, album → play directly
-            number = self._phone_book.assign_or_get(item.plex_key, item.media_type, item.name)
+            number = self._phone_book.assign_or_get(item.media_key, item.media_type, item.name)
             digit_words_str = " ".join(DIGIT_WORDS[d] for d in number)
             self._tts.speak_and_play(
                 SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=item.name)
             )
-            self._plex_client.play(item.plex_key)
+            self._media_client.play(item.media_key)
             self._state = MenuState.PLAYING_MENU
 
     # ------------------------------------------------------------------
@@ -814,7 +804,7 @@ class Menu:
             pre = self._pre_dial_state or MenuState.IDLE_MENU
             if pre == MenuState.IDLE_DIAL_TONE:
                 # User dialed before any menu was delivered — determine correct top-level menu
-                playback = self._plex_client.now_playing()
+                playback = self._media_client.now_playing()
                 if playback.item is not None:
                     self._deliver_playing_menu(playback, now)
                 else:
@@ -826,12 +816,12 @@ class Menu:
 
         if entry["media_type"] == "radio":
             # Stop any active Plex session
-            self._plex_client.stop()
+            self._media_client.stop()
             # Stop any existing radio stream
             if self._radio is not None:
                 self._radio.stop()
             # Parse frequency from plex_key "radio:{frequency_hz}"
-            freq_hz = float(entry["plex_key"].split("radio:", 1)[1])
+            freq_hz = float(entry["media_key"].split("radio:", 1)[1])
             freq_mhz = freq_hz / 1_000_000
             name = entry.get("name", "")
             self._current_radio_name = name
@@ -849,7 +839,7 @@ class Menu:
             self._tts.speak_and_play(
                 SCRIPT_CONNECTING_TEMPLATE.format(digits=digit_words_str, name=name)
             )
-            self._plex_client.play(entry["plex_key"])
+            self._media_client.play(entry["media_key"])
             self._state = MenuState.PLAYING_MENU
 
     # ------------------------------------------------------------------
@@ -858,7 +848,7 @@ class Menu:
 
     def _go_top_level(self, now: float) -> None:
         """Navigate to the appropriate top-level menu."""
-        playback = self._plex_client.now_playing()
+        playback = self._media_client.now_playing()
         if playback.item is not None:
             self._deliver_playing_menu(playback, now)
         else:
@@ -869,7 +859,7 @@ class Menu:
         if self._state == MenuState.IDLE_MENU:
             self._deliver_idle_menu(now)
         elif self._state == MenuState.PLAYING_MENU:
-            playback = self._plex_client.now_playing()
+            playback = self._media_client.now_playing()
             self._deliver_playing_menu(playback, now)
         elif self._state == MenuState.BROWSE_PLAYLISTS:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_PLAYLIST)
@@ -881,7 +871,7 @@ class Menu:
             self._tts.speak_and_play(SCRIPT_BROWSE_PROMPT_ALBUM)
         elif self._state == MenuState.ARTIST_SUBMENU:
             if self._current_artist:
-                albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
+                albums = self._media_store.get_albums_for_artist(self._current_artist.media_key)
                 text = SCRIPT_ARTIST_SUBMENU_TEMPLATE.format(artist=self._current_artist.name)
                 if albums:
                     text += SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX
@@ -892,11 +882,11 @@ class Menu:
         if self._current_artist is None:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
             return
-        albums = self._plex_store.get_albums_for_artist(self._current_artist.plex_key)
+        albums = self._media_store.get_albums_for_artist(self._current_artist.media_key)
         if digit == 1:
             # Play / shuffle artist — announce connection first
             number = self._phone_book.assign_or_get(
-                self._current_artist.plex_key,
+                self._current_artist.media_key,
                 self._current_artist.media_type,
                 self._current_artist.name,
             )
@@ -906,7 +896,7 @@ class Menu:
                     digits=digit_words_str, name=self._current_artist.name
                 )
             )
-            self._plex_client.play(self._current_artist.plex_key)
+            self._media_client.play(self._current_artist.media_key)
             self._state = MenuState.PLAYING_MENU
         elif digit == 2 and albums:
             # Browse albums for this artist
@@ -1049,7 +1039,7 @@ class Menu:
     def _do_assistant_refresh(self, now: float) -> None:
         """Perform the assistant refresh action."""
         try:
-            self._plex_store.refresh()
+            self._media_store.refresh()
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_SUCCESS)
         except (sqlite3.Error, OSError):
             self._tts.speak_and_play(SCRIPT_ASSISTANT_REFRESH_FAILURE)
@@ -1057,7 +1047,7 @@ class Menu:
 
     def _deliver_assistant_redirect(self, now: float) -> None:
         """Redirect from assistant to appropriate menu."""
-        playback = self._plex_client.now_playing()
+        playback = self._media_client.now_playing()
         if playback.item is not None:
             self._deliver_playing_menu(playback, now)
         else:

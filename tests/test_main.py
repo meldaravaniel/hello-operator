@@ -110,7 +110,7 @@ def _run_with_stubs(makedirs_mock=None):
         patch("src.main.SounddeviceAudio", MagicMock()),
         patch("src.main.PiperTTS", MagicMock()),
         patch("src.main.PlexClient", MagicMock()),
-        patch("src.main.PlexStore", MagicMock()),
+        patch("src.main.MediaStore", MagicMock()),
         patch("src.main.build_gpio_handler", MagicMock()),
         patch("src.main.Session", MagicMock()),
         patch("src.main.time.sleep", side_effect=KeyboardInterrupt),
@@ -159,7 +159,7 @@ def test_run_makedirs_called_before_sqlite_error_queue():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
@@ -190,7 +190,7 @@ def test_run_makedirs_exist_ok_true():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
@@ -226,7 +226,7 @@ def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler",
                MagicMock(side_effect=build_gpio_side_effect)), \
          patch("src.main.Session", MagicMock()), \
@@ -272,7 +272,7 @@ def test_gpio_cleanup_called_after_audio_stop():
          patch("src.main.SounddeviceAudio", audio_class_mock), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.PlexClient", MagicMock()), \
-         patch("src.main.PlexStore", MagicMock()), \
+         patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \
@@ -344,3 +344,48 @@ def test_radio_playing_menu_script_in_prerender():
     from src.main import _PRERENDER_SCRIPTS
 
     assert "radio_playing_menu" in _PRERENDER_SCRIPTS
+
+
+# ---------------------------------------------------------------------------
+# build_media_client() — backend selection
+# ---------------------------------------------------------------------------
+
+def test_build_media_client_plex():
+    """MEDIA_BACKEND=plex → PlexClient is instantiated."""
+    import src.main as main_mod
+    plex_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "plex"), \
+         patch("src.main.PlexClient", plex_mock):
+        main_mod.build_media_client()
+    plex_mock.assert_called_once()
+
+
+def test_build_media_client_mpd():
+    """MEDIA_BACKEND=mpd → MPDClient is instantiated."""
+    import src.main as main_mod
+    mpd_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mpd"), \
+         patch("src.main.MPDClient", mpd_mock):
+        main_mod.build_media_client()
+    mpd_mock.assert_called_once()
+
+
+def test_build_media_client_mopidy():
+    """MEDIA_BACKEND=mopidy → MPDClient is instantiated (Mopidy speaks MPD protocol)."""
+    import src.main as main_mod
+    mpd_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mopidy"), \
+         patch("src.main.MPDClient", mpd_mock):
+        main_mod.build_media_client()
+    mpd_mock.assert_called_once()
+
+
+def test_build_media_client_mopidy_not_plex():
+    """MEDIA_BACKEND=mopidy must not instantiate PlexClient."""
+    import src.main as main_mod
+    plex_mock = MagicMock()
+    with patch("src.main.MEDIA_BACKEND", "mopidy"), \
+         patch("src.main.MPDClient", MagicMock()), \
+         patch("src.main.PlexClient", plex_mock):
+        main_mod.build_media_client()
+    plex_mock.assert_not_called()

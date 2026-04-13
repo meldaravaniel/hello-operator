@@ -28,8 +28,8 @@ def make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue
     return Menu(
         audio=mock_audio,
         tts=mock_tts,
-        plex_client=mock_plex,
-        plex_store=mock_plex_store,
+        media_client=mock_plex,
+        media_store=mock_plex_store,
         phone_book=phone_book,
         error_queue=mock_error_queue,
         radio=radio,
@@ -393,7 +393,7 @@ class TestIdleMenu:
         mock_plex_store.set_artists([])
         mock_plex_store.set_genres([])
         mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'error', 'genres': 'error'})
-        menu._plex_store = mock_plex_store
+        menu._media_store = mock_plex_store
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
@@ -431,7 +431,7 @@ class TestIdleMenu:
 
         # swap in a store whose refresh returns all errors
         mock_plex_store.set_refresh_result({'playlists': 'error', 'artists': 'error', 'genres': 'error'})
-        menu._plex_store = mock_plex_store
+        menu._media_store = mock_plex_store
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
@@ -471,7 +471,7 @@ class TestIdleMenu:
         mock_plex_store.set_artists([MediaItem("/a/1", "The Beatles", "artist")])
         mock_plex_store.set_genres([MediaItem("section:1/genre:/g/1", "Rock", "genre")])
         mock_plex_store.set_refresh_result({'playlists': 'ok', 'artists': 'ok', 'genres': 'ok'})
-        menu._plex_store = mock_plex_store
+        menu._media_store = mock_plex_store
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
@@ -542,7 +542,7 @@ class TestIdleMenu:
 
 @pytest.fixture
 def playing_item():
-    return MediaItem(plex_key="/library/metadata/1", name="Abbey Road", media_type="album")
+    return MediaItem(media_key="/library/metadata/1", name="Abbey Road", media_type="album")
 
 
 @pytest.fixture
@@ -941,9 +941,9 @@ class TestArtistSubmenu:
         mock_plex_store.set_artists([artist])
         mock_plex_store.set_genres([MediaItem("/g/1", "Rock", "genre")])
         if albums is not None:
-            mock_plex_store.set_albums_for_artist(artist.plex_key, albums)
+            mock_plex_store.set_albums_for_artist(artist.media_key, albums)
         else:
-            mock_plex_store.set_albums_for_artist(artist.plex_key, [])
+            mock_plex_store.set_albums_for_artist(artist.media_key, [])
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
 
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path)
@@ -1510,7 +1510,7 @@ class TestGenrePlayback:
         """Selecting a genre from browse calls plex_client.get_tracks_for_genre."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", ["101", "102"])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1526,7 +1526,7 @@ class TestGenrePlayback:
         """Selecting a genre calls play_tracks(..., shuffle=True)."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", ["101", "102"])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1544,7 +1544,7 @@ class TestGenrePlayback:
         """After genre playback started → state transitions to PLAYING_MENU."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", ["101", "102"])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1557,7 +1557,7 @@ class TestGenrePlayback:
         """Genre selection does NOT call plex_client.play() (uses play_tracks instead)."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", ["101", "102"])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", ["101", "102"])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1572,7 +1572,7 @@ class TestGenrePlayback:
         """Genre with no tracks → SCRIPT_NOT_IN_SERVICE spoken."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", [])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1588,7 +1588,7 @@ class TestGenrePlayback:
         """Genre with no tracks → play_tracks NOT called."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", [])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1603,7 +1603,7 @@ class TestGenrePlayback:
         """Genre with no tracks → user returned to browse state (not PLAYING_MENU)."""
         genre_plex_key = "section:1/genre:/library/sections/1/genre/15"
         genres = [MediaItem(genre_plex_key, "Jazz", "genre")]
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/15", [])
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/15", [])
         menu = _make_genre_menu(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, genres
         )
@@ -1708,7 +1708,7 @@ class TestBrowseConnectingAnnouncement:
         mock_plex_store.set_artists([])
         mock_plex_store.set_genres([genre])
         mock_plex.set_now_playing(PlaybackState(item=None, is_paused=False))
-        mock_plex.set_tracks_for_genre("1", "/library/sections/1/genre/10",
+        mock_plex.set_tracks_for_genre("section:1/genre:/library/sections/1/genre/10",
                                        ["t1", "t2", "t3"])
         menu = make_menu(mock_audio, mock_tts, mock_plex, mock_plex_store,
                          mock_error_queue, tmp_path)
@@ -2214,9 +2214,9 @@ SCRIPT_RADIO_PLAYING_GREETING_FRAGMENT = "currently tuned to"
 from src.constants import DIAL_TONE_TIMEOUT_PLAYING
 
 
-def _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR", media_type="radio"):
+def _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR", media_type="radio"):
     """Seed a radio entry into the phone book and return its phone number."""
-    return phone_book.assign_or_get(plex_key=plex_key, media_type=media_type, name=name)
+    return phone_book.assign_or_get(media_key=media_key, media_type=media_type, name=name)
 
 
 class TestRadioMenu:
@@ -2235,8 +2235,8 @@ class TestRadioMenu:
         menu = Menu(
             audio=mock_audio,
             tts=mock_tts,
-            plex_client=mock_plex,
-            plex_store=mock_plex_store,
+            media_client=mock_plex,
+            media_store=mock_plex_store,
             phone_book=phone_book,
             error_queue=mock_error_queue,
             radio=radio,
@@ -2254,7 +2254,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
 
         _dial_number(menu, number, start_time=11.0)
 
@@ -2274,7 +2274,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
 
         _dial_number(menu, number, start_time=11.0)
 
@@ -2292,7 +2292,7 @@ class TestRadioMenu:
         radio.set_playing(True)
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
 
         _dial_number(menu, number, start_time=11.0)
 
@@ -2330,7 +2330,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
         _dial_number(menu, number, start_time=11.0)
         assert menu.state == MenuState.RADIO_PLAYING_MENU
 
@@ -2351,7 +2351,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
         _dial_number(menu, number, start_time=11.0)
         assert menu.state == MenuState.RADIO_PLAYING_MENU
 
@@ -2372,7 +2372,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
         _dial_number(menu, number, start_time=11.0)
         assert menu.state == MenuState.RADIO_PLAYING_MENU
 
@@ -2394,7 +2394,7 @@ class TestRadioMenu:
         radio = MockRadio()
         menu, phone_book = self._make_menu_with_radio(
             mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path, radio)
-        number = _seed_radio_entry(phone_book, plex_key="radio:90300000.0", name="NPR")
+        number = _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR")
         _dial_number(menu, number, start_time=11.0)
         assert menu.state == MenuState.RADIO_PLAYING_MENU
 
@@ -2597,7 +2597,7 @@ class TestNarrowExceptionHandlers:
         def raise_sqlite():
             raise sqlite3.Error("DB locked")
 
-        menu._plex_store.refresh = raise_sqlite
+        menu._media_store.refresh = raise_sqlite
         menu.on_digit(1, now=20.0)
         menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
 
@@ -2617,7 +2617,7 @@ class TestNarrowExceptionHandlers:
         def raise_oserror():
             raise OSError("HTTP connection failed")
 
-        menu._plex_store.refresh = raise_oserror
+        menu._media_store.refresh = raise_oserror
         menu.on_digit(1, now=20.0)
         menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
 

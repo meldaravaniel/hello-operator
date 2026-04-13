@@ -11,29 +11,49 @@ rather than producing a silent authentication failure later.
 import os
 
 # ---------------------------------------------------------------------------
-# Secrets — loaded from environment variables
+# Media backend selection
+# ---------------------------------------------------------------------------
+
+MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "plex")  # "plex" | "mpd" | "mopidy"
+
+# ---------------------------------------------------------------------------
+# Plex — only required when MEDIA_BACKEND=plex
 # ---------------------------------------------------------------------------
 
 PLEX_URL = os.environ.get("PLEX_URL", "http://localhost:32400")
 
-_plex_token = os.environ.get("PLEX_TOKEN")
-if not _plex_token:
-    raise RuntimeError(
-        "Required environment variable PLEX_TOKEN is not set. "
-        "Export it before starting hello-operator (e.g. export PLEX_TOKEN=<your-token>)."
-    )
-PLEX_TOKEN: str = _plex_token
+if MEDIA_BACKEND == "plex":
+    _plex_token = os.environ.get("PLEX_TOKEN")
+    if not _plex_token:
+        raise RuntimeError(
+            "Required environment variable PLEX_TOKEN is not set. "
+            "Export it before starting hello-operator (e.g. export PLEX_TOKEN=<your-token>)."
+        )
+    PLEX_TOKEN: str = _plex_token
 
-_plex_player_identifier = os.environ.get("PLEX_PLAYER_IDENTIFIER")
-if not _plex_player_identifier:
-    raise RuntimeError(
-        "Required environment variable PLEX_PLAYER_IDENTIFIER is not set. "
-        "Export it before starting hello-operator "
-        "(e.g. export PLEX_PLAYER_IDENTIFIER=<machine-identifier>)."
-    )
-PLEX_PLAYER_IDENTIFIER: str = _plex_player_identifier
+    _plex_player_identifier = os.environ.get("PLEX_PLAYER_IDENTIFIER")
+    if not _plex_player_identifier:
+        raise RuntimeError(
+            "Required environment variable PLEX_PLAYER_IDENTIFIER is not set. "
+            "Export it before starting hello-operator "
+            "(e.g. export PLEX_PLAYER_IDENTIFIER=<machine-identifier>)."
+        )
+    PLEX_PLAYER_IDENTIFIER: str = _plex_player_identifier
+else:
+    PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "")
+    PLEX_PLAYER_IDENTIFIER = os.environ.get("PLEX_PLAYER_IDENTIFIER", "")
 
+# ---------------------------------------------------------------------------
+# MPD / Mopidy — only used when MEDIA_BACKEND=mpd or MEDIA_BACKEND=mopidy
+# ---------------------------------------------------------------------------
+
+MPD_HOST = os.environ.get("MPD_HOST", "localhost")
+MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
+
+# ---------------------------------------------------------------------------
 # Timing constants (in seconds unless noted)
+# ---------------------------------------------------------------------------
+
 DIAL_TONE_TIMEOUT_IDLE = 5       # Silence before idle operator prompt
 DIAL_TONE_TIMEOUT_PLAYING = 2    # Silence before playing-state prompt
 INTER_DIGIT_TIMEOUT = 0.3        # Gap after last pulse → digit complete (300 ms)

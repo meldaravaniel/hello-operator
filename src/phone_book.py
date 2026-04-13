@@ -1,4 +1,4 @@
-"""Phone number registry — maps Plex keys to 7-digit phone numbers."""
+"""Phone number registry — maps media keys to 7-digit phone numbers."""
 
 import random
 import sqlite3
@@ -8,7 +8,7 @@ from src.constants import PHONE_NUMBER_LENGTH, PHONE_NUMBER_GENERATE_MAX_ATTEMPT
 
 
 class PhoneBook:
-    """Persistent mapping of Plex media keys to auto-generated phone numbers."""
+    """Persistent mapping of media keys to auto-generated phone numbers."""
 
     def __init__(self, db_path: str):
         self._db_path = db_path
@@ -24,12 +24,16 @@ class PhoneBook:
             with self._connect() as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS phone_book (
-                        plex_key     TEXT PRIMARY KEY,
+                        media_key    TEXT PRIMARY KEY,
                         media_type   TEXT NOT NULL CHECK(media_type IN ('playlist','artist','album','genre','radio')),
                         name         TEXT NOT NULL,
                         phone_number TEXT NOT NULL UNIQUE
                     )
                 """)
+                # Migrate: rename plex_key column → media_key on existing databases
+                cols = [row[1] for row in conn.execute("PRAGMA table_info(phone_book)").fetchall()]
+                if 'plex_key' in cols and 'media_key' not in cols:
+                    conn.execute("ALTER TABLE phone_book RENAME COLUMN plex_key TO media_key")
         except sqlite3.OperationalError as e:
             raise RuntimeError(f"PhoneBook: cannot open database at {self._db_path!r}: {e}") from e
 
@@ -52,47 +56,47 @@ class PhoneBook:
                 return candidate
         raise RuntimeError("Phone book number space exhausted")
 
-    def assign_or_get(self, plex_key: str, media_type: str, name: str) -> str:
-        """Return existing phone number for plex_key, or assign a new one."""
+    def assign_or_get(self, media_key: str, media_type: str, name: str) -> str:
+        """Return existing phone number for media_key, or assign a new one."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT phone_number FROM phone_book WHERE plex_key = ?", (plex_key,)
+                "SELECT phone_number FROM phone_book WHERE media_key = ?", (media_key,)
             ).fetchone()
             if row:
                 return row["phone_number"]
             number = self._generate_unique_number(conn)
             conn.execute(
-                "INSERT INTO phone_book (plex_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
-                (plex_key, media_type, name, number)
+                "INSERT INTO phone_book (media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
+                (media_key, media_type, name, number)
             )
             return number
 
-    def lookup_by_plex_key(self, plex_key: str) -> Optional[dict]:
-        """Return dict with plex_key, media_type, name, phone_number or None."""
+    def lookup_by_media_key(self, media_key: str) -> Optional[dict]:
+        """Return dict with media_key, media_type, name, phone_number or None."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT plex_key, media_type, name, phone_number FROM phone_book WHERE plex_key = ?",
-                (plex_key,)
+                "SELECT media_key, media_type, name, phone_number FROM phone_book WHERE media_key = ?",
+                (media_key,)
             ).fetchone()
         if row is None:
             return None
         return dict(row)
 
     def lookup_by_phone_number(self, phone_number: str) -> Optional[dict]:
-        """Return dict with plex_key, media_type, name, phone_number or None."""
+        """Return dict with media_key, media_type, name, phone_number or None."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT plex_key, media_type, name, phone_number FROM phone_book WHERE phone_number = ?",
+                "SELECT media_key, media_type, name, phone_number FROM phone_book WHERE phone_number = ?",
                 (phone_number,)
             ).fetchone()
         if row is None:
             return None
         return dict(row)
 
-    def seed(self, phone_number: str, plex_key: str, media_type: str, name: str) -> None:
+    def seed(self, phone_number: str, media_key: str, media_type: str, name: str) -> None:
         """Insert a pre-configured entry if the phone number is not already present.
 
-        Idempotent: silently skips if phone_number or plex_key already exists.
+        Idempotent: silently skips if phone_number or media_key already exists.
         """
         with self._connect() as conn:
             exists = conn.execute(
@@ -101,14 +105,14 @@ class PhoneBook:
             if not exists:
                 conn.execute(
                     "INSERT OR IGNORE INTO phone_book "
-                    "(plex_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
-                    (plex_key, media_type, name, phone_number)
+                    "(media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
+                    (media_key, media_type, name, phone_number)
                 )
 
     def get_all(self) -> list:
         """Return all entries as a list of dicts."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT plex_key, media_type, name, phone_number FROM phone_book"
+                "SELECT media_key, media_type, name, phone_number FROM phone_book"
             ).fetchall()
         return [dict(r) for r in rows]

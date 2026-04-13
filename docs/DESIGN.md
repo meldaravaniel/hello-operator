@@ -1,36 +1,5 @@
 # Rotary Phone Media Controller — Design Overview
 
-## Project Summary
-
-A vintage rotary phone is wired to a Raspberry Pi 4 and transformed into a
-hands-on interface for a Plex media server. Picking up the handset triggers an
-interactive voice menu — styled as a telephone operator experience — that lets
-the user browse and play playlists, artists, albums, and genres by dialing.
-The rotary dial doubles as both a direct-dial input (for known "phone numbers"
-mapped to media) and a menu navigation device.
-
----
-
-## Hardware
-
-| Component | Part | Notes |
-|---|---|---|
-| Computer | Raspberry Pi 4 (2GB) | Target platform |
-| Amplifier | Adafruit MAX98357A I2S 3W Class D | Connected via I2S |
-| Hook switch | Rotary phone hook switch → GPIO | Open = on cradle, closed = lifted |
-| Pulse switch | Rotary phone dial → optocoupler → GPIO | Open = resting, closed = pulsing |
-| Speaker | Rotary phone handset speaker | Driven by MAX98357A |
-| Radio tuner | RTL2832U USB dongle with FC0013 tuner | FM reception via `rtl_fm` subprocess |
-
-### GPIO Signal Conventions
-
-| Signal | Resting state | Active state |
-|---|---|---|
-| Hook switch | HIGH (open circuit) | LOW (handset lifted) |
-| Pulse switch | HIGH (open circuit) | LOW (dial pulsing) |
-
----
-
 ## Software Architecture
 
 ### Dependency Philosophy
@@ -60,272 +29,21 @@ dependency directly. This means:
     └────────────┘      └──┬──────┬──┘
                            │      │
               ┌────────────▼┐   ┌─▼───────────┐
-              │ plex_store  │   │  phone_book  │
+              │ media_store │   │  phone_book  │
               │ local cache │   │   (SQLite)   │
               └──────┬──────┘   └─────────────┘
                      │
-              ┌──────▼──────┐
-              │ plex_client │
-              │  interface  │
-              └─────────────┘
+              ┌──────▼──────────────────────────┐
+              │       media_client               │
+              │  MediaClientInterface            │
+              │  (PlexClient or MPDClient)       │
+              └──────────────────────────────────┘
                      │
               ┌──────▼──────┐   ┌─────────────┐   ┌─────────────┐
               │    audio    │   │     tts      │   │    radio    │
               │  interface  │   │  interface   │   │  interface  │
               └─────────────┘   └─────────────┘   └─────────────┘
 ```
-
----
-
-## Interfaces
-
-### `AudioInterface`
-Abstracts all sound output.
-
-| Method | Description |
-|---|---|
-| `play_tone(frequencies, duration_ms)` | Generate and play a sine wave mix |
-| `play_file(path)` | Play a pre-rendered audio file |
-| `play_dtmf(digit: int)` | Play the standard DTMF tone for a digit (0–9) |
-| `play_off_hook_tone()` | Play off-hook warning tone continuously until `stop()` |
-| `stop()` | Stop any current playback immediately |
-| `is_playing() -> bool` | True if audio is currently playing |
-
-### `TTSInterface`
-Abstracts text-to-speech.
-
-| Method | Description |
-|---|---|
-| `speak(text) -> str` | Synthesize text; return path to audio file |
-| `speak_and_play(text)` | Synthesize and play immediately |
-| `speak_digits(digits)` | Speak each character as an individual digit word |
-| `prerender(prompts: dict)` | Pre-synthesize fixed strings to cached audio files |
-
-Fixed menu prompts are pre-rendered to a persistent cache directory that survives restarts. At startup, each script's text is hashed and compared against the stored hash; only scripts whose hash has changed or whose audio file is missing are re-synthesized. `speak_and_play` uses cached files for known prompts; live synthesis is used only for dynamic strings (media names, phone numbers).
-
-### `PlexClientInterface`
-Abstracts all Plex API calls.
-
-| Method | Description |
-|---|---|
-| `get_playlists()` | Return all playlists as `MediaItem` list |
-| `get_artists()` | Return all artists |
-| `get_genres()` | Return all genres |
-| `get_albums_for_artist(artist_key)` | Return albums for a given artist |
-| `play(plex_key)` | Start playback of a media item |
-| `shuffle_all()` | Shuffle and play the entire library |
-| `pause()` | Pause current playback |
-| `unpause()` | Resume paused playback |
-| `skip()` | Skip to next track |
-| `stop()` | Stop playback entirely |
-| `now_playing() -> PlaybackState` | Return current playback state (see Core Data Types) |
-| `get_queue_position() -> tuple[int, int]` | Return (current_track, total_tracks) |
-
----
-
-## Core Data Types
-
-```python
-@dataclass
-class MediaItem:
-    plex_key: str
-    name: str
-    media_type: str  # "playlist" | "artist" | "album" | "genre" | "radio"
-
-@dataclass
-class PlaybackState:
-    item: MediaItem | None  # None if nothing is playing
-    is_paused: bool         # True if playback is paused; always False when item is None
-
-@dataclass
-class RadioStation:
-    name: str           # Human-readable station name (e.g. "KEXP")
-    frequency_hz: float # Carrier frequency in Hz (e.g. 90_300_000.0)
-    phone_number: str   # Pre-configured 7-digit direct-dial number
-```
-
-### `RadioInterface`
-Abstracts FM radio reception via the RTL-SDR dongle.
-
-| Method | Description |
-|---|---|
-| `play(frequency_hz: float)` | Tune to the given frequency and begin streaming audio |
-| `stop()` | Stop radio playback |
-| `is_playing() -> bool` | True if radio is currently streaming |
-
-Radio streams are live and have no pause, skip, or queue position. `is_playing()` is the only state query.
-
-### `ErrorQueueInterface`
-Abstracts the persistent error log.
-
-| Method | Description |
-|---|---|
-| `log(source: str, severity: str, message: str)` | Add or update an entry; deduplicated by `(source, message)`; increments count and updates `last_happened` on repeat |
-| `get_all() -> list[ErrorEntry]` | Return all entries, newest first |
-| `get_by_severity(severity: str) -> list[ErrorEntry]` | Return entries filtered by `"warning"` or `"error"` |
-
-`ErrorEntry` fields: `source`, `severity`, `message`, `count`, `last_happened`.
-
-**Storage:** Persisted to disk; survives restarts. Clearable only via manual intervention outside the system.
-
-**Injection:** `ErrorQueueInterface` is injected into any module that originates errors (`tts`, `plex_store`). Modules that only re-raise exceptions (e.g. `plex_client`) do not receive it — callers decide whether to log.
-
----
-
-## Module Descriptions
-
-### `gpio_handler`
-Polls GPIO pins and emits clean events to the rest of the system. Handles
-debouncing for both the hook switch and the pulse switch. Decodes pulse bursts
-into digits using the inter-digit timeout. Never exposes raw GPIO state to
-higher layers.
-
-**Events emitted:**
-- `HANDSET_LIFTED`
-- `HANDSET_ON_CRADLE`
-- `DIGIT_DIALED(digit: int)`
-
-### `audio`
-Concrete implementation of `AudioInterface`. Generates dial tone, DTMF tones,
-and the off-hook warning tone programmatically. Plays pre-rendered audio files
-from disk. All playback supports immediate stop.
-
-### `tts`
-Concrete implementation of `TTSInterface`. At startup, `main.py` calls
-`prerender({script_name: text, ...})` with all pre-renderable scripts from
-`SCRIPTS.md`. Runtime synthesis is used only for dynamic content. `speak_digits`
-maps each character to its English word and synthesizes the full string.
-
-### `phone_book`
-Manages a persistent database mapping Plex media items to auto-generated 7-digit
-phone numbers. Numbers are assigned lazily — on first encounter of a `plex_key`
-(either at `plex_store` population time or at first selection) — and never
-reassigned. Supports lookup by Plex key or by phone number. Numbers are formatted
-and spoken digit-by-digit.
-
-### `plex_store`
-A persistent, session-independent local cache that sits between the menu and
-`plex_client`. The menu never calls `plex_client` directly for browse data —
-it always goes through `plex_store`. Plex is treated as the source of truth,
-but is assumed to change infrequently.
-
-**Persistence:** Survives restarts and persists across sessions.
-
-**Stored data:**
-- Full list of playlists, artists, genres (as `MediaItem` lists)
-- Albums per artist (keyed by artist `plex_key`)
-- Derived boolean flags: `playlists_has_content`, `artists_has_content`,
-  `genres_has_content`
-
-**Initialization:** If local store is empty for a category, fetch from Plex and
-populate. Otherwise use local data without an API call.
-
-**Update strategy:**
-- On a successful Plex response that differs from local data: update local store
-- On a Plex API error: leave local store unchanged
-- On a playback failure where Plex indicates the item no longer exists: remove
-  that item from local store, serve `SCRIPT_NOT_IN_SERVICE`
-
-**Refresh:** The diagnostic assistant exposes a manual full-refresh option that
-re-fetches all categories from Plex and updates local store (successful calls
-only). This is the only way to proactively sync local state with Plex outside
-of the normal lazy-update path.
-
-### `plex_client`
-Concrete implementation of `PlexClientInterface`. Called only by `plex_store`
-for browse data, and directly by the menu for playback commands (`play`,
-`shuffle_all`, `pause`, `unpause`, `skip`, `stop`, `now_playing`,
-`get_queue_position`). `now_playing()` returns a `PlaybackState` containing the
-current `MediaItem` (or `None`) and whether playback is paused. Raises exceptions
-on API failures; callers decide whether to log. Integration tests against the
-real server are marked and skipped during normal unit test runs.
-
-### `menu`
-The heart of the application. A state machine that receives digit events and
-system state, then issues audio and Plex commands. Has no knowledge of GPIO,
-audio hardware, or HTTP — only the interfaces.
-
-**States:**
-- `IDLE_DIAL_TONE` — handset lifted, playing dial tone, waiting
-- `IDLE_MENU` — browsing from idle (no music playing)
-- `PLAYING_MENU` — browsing while Plex music is active
-- `RADIO_PLAYING_MENU` — handset lifted while radio is streaming
-- `BROWSE_PLAYLISTS` / `BROWSE_ARTISTS` / `BROWSE_GENRES` — narrowing by T9
-- `ARTIST_SUBMENU` — shuffle artist or pick album
-- `BROWSE_ALBUMS` — T9 narrowing through an artist's albums
-- `DIRECT_DIAL` — accumulating digits for a direct phone number
-- `ASSISTANT` — diagnostic status readout
-
-**Reserved digits (all states except `DIRECT_DIAL`):**
-| Digit | Action |
-|---|---|
-| `0` | Return to top-level menu for current system state |
-| `9` | Go back one menu level (or stay at top) |
-
-**Digit disambiguation:** When a digit is received, the system waits up to
-`DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` for a second digit before acting. If no
-second digit arrives, the single digit is treated as a navigation/menu input
-(`0` and `9` are reserved as above; `1`–`8` select menu options). If a second
-digit arrives within the timeout, the system enters `DIRECT_DIAL` mode and all
-subsequent digits — including `0` and `9` — are treated as literal phone number
-digits. This applies in all states, including `IDLE_DIAL_TONE`.
-
-**DTMF feedback:** When the system enters `DIRECT_DIAL` mode, a DTMF tone is
-played for each digit as it is received (including the first two that triggered
-the mode switch).
-
-**Inactivity timeout:** If no digit is received for `INACTIVITY_TIMEOUT` while
-the handset is lifted and the system is in any menu state, the off-hook warning
-tone plays continuously until the user hangs up.
-
-**"Operator." opener:** The `SCRIPT_OPERATOR_OPENER` ("Operator.") is spoken
-only once per session — at the first menu prompt after the handset is lifted.
-Subsequent menu prompts (including after stopping music) skip the opener.
-
-**State after stopping music:** When the user ends a call (stops Plex playback)
-from the playing menu, the system transitions directly to `IDLE_MENU` without
-replaying the dial tone or `SCRIPT_OPERATOR_OPENER`.
-
-**Invalid digit handling:** Any digit that has no corresponding option in the
-current menu state → TTS plays `SCRIPT_NOT_IN_SERVICE` and re-reads the current
-menu options.
-
-**Plex state:** The menu never tracks paused/playing state locally. All playback
-state (playing, paused, what's playing) is derived from `now_playing()` →
-`PlaybackState` at menu-speak time. This ensures the menu always reflects actual
-Plex state regardless of changes made by other clients.
-
-**T9 matching is case-insensitive.** "beatles" and "Beatles" both match digit `1`
-(ABC).
-
-### `radio`
-Concrete implementation of `RadioInterface`. Launches `rtl_fm` as a subprocess piped to `aplay` to receive and play FM audio through the system audio output. Accepts a frequency in Hz. `stop()` terminates the subprocess pair. `is_playing()` returns `True` while the subprocess is alive.
-
-### `session`
-Owns the application lifecycle for a single handset interaction. Listens for
-GPIO events, starts/stops the dial tone timer, routes digits to the menu state
-machine, and handles graceful cleanup on hang-up. Does not stop Plex playback
-on hang-up — music continues if it was playing.
-
-At handset lift, checks `plex_store` for category availability flags. If local
-store is already populated, no API call is made — the flags are used directly.
-If local store is not yet populated, fetches from Plex to initialize it. Only
-categories with at least one playable item are offered as options. If the Plex
-connection fails and local store is also empty, plays `SCRIPT_PLEX_FAILURE` and
-enters the retry loop.
-
-Caches each successful Plex browse result as the user navigates. If a Plex API
-call fails mid-browse, apologizes about "service degradation" and re-prompts
-from the last successful cached state. If no cached state exists, returns to
-top level.
-
-Hang-up (HANDSET_ON_CRADLE) stops all local audio immediately — even mid-TTS
-— and cleans up session state. Plex playback is not affected.
-
-Direct dial is entered when a second digit is received within
-`DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` of the first. All digits including `0` and
-`9` are treated as literal. Lookup fires at exactly 7 digits; subsequent digits
-are ignored. Hang-up before 7 digits silently abandons the partial number.
 
 ---
 
@@ -446,7 +164,7 @@ Radio stations are pre-configured with specific 7-digit phone numbers in `radio_
 
 ```
 7-digit number dialed → phone book lookup → media_type == "radio"
-  → Stop any active Plex playback
+  → Stop any active media playback
   → Stop any active radio stream
   → Speak SCRIPT_RADIO_CONNECTING (contains station name and frequency)
   → radio.play(frequency_hz)
@@ -522,7 +240,7 @@ continuously until the user physically hangs up.
 - Log error to error queue
 - No TTS possible; play off-hook warning tone continuously until user hangs up
 
-**Plex connection failure at session start:**
+**Media backend connection failure at session start:**
 - Play vintage "service disconnected" message
 - Offer retry loop: "If you'd like me to retry, dial 1. Otherwise, please hang
   up and try again later."
@@ -544,7 +262,7 @@ Response:
 - Brief pause
 - Off-hook warning tone, played continuously until user hangs up
 
-**Plex API failure mid-browse:**
+**Media client failure mid-browse:**
 - Apologize about "service degradation"
 - Return to last successfully cached browse state and re-prompt
 - If no cached state: return to top level
@@ -557,80 +275,61 @@ Response:
 
 ---
 
-## Configuration Constants
+## Database Schemas
 
-| Constant | Value | Description |
-|---|---|---|
-| `DIAL_TONE_TIMEOUT_IDLE` | 5 s | Silence before idle operator prompt |
-| `DIAL_TONE_TIMEOUT_PLAYING` | 2 s | Silence before playing-state prompt |
-| `INTER_DIGIT_TIMEOUT` | 300 ms | Gap after last pulse → digit complete |
-| `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` | TBD | Wait after first digit before treating as single navigation input |
-| `INACTIVITY_TIMEOUT` | 30 s | Inactivity in any menu state → off-hook warning tone |
-| `DIAL_TONE_FREQUENCIES` | [350, 440] Hz | Standard PSTN dial tone |
-| `MAX_MENU_OPTIONS` | 8 | Max items listed before narrowing required |
-| `PHONE_NUMBER_LENGTH` | 7 | Digits in an assigned phone number |
-| `ASSISTANT_MESSAGE_PAGE_SIZE` | 3 | Messages read aloud per page in assistant |
-| `ASSISTANT_NUMBER` | set in constants file | Reserved 7-digit diagnostic number; excluded from phone book assignment |
-| `RADIO_CONFIG_PATH` | `"/etc/hello-operator/radio_stations.json"` | Path to the radio station config file |
-| `HOOK_DEBOUNCE` | TBD | Hook switch debounce window; requires hardware tuning |
-| `PULSE_DEBOUNCE` | TBD | Pulse switch debounce window; requires hardware tuning |
-| `CACHE_RETRY_MAX` | TBD | Max repopulation attempts for missing TTS cache files |
-| `CACHE_RETRY_BACKOFF` | TBD | Base backoff interval between cache repopulation attempts |
+### `phone_book` (SQLite)
 
----
+```sql
+CREATE TABLE phone_book (
+    media_key    TEXT PRIMARY KEY,
+    media_type   TEXT NOT NULL CHECK(media_type IN ('playlist','artist','album','genre','radio')),
+    name         TEXT NOT NULL,
+    phone_number TEXT NOT NULL UNIQUE
+);
+```
 
-## Web Interface
+Radio station entries use `media_key = "radio:{frequency_hz}"` (e.g. `"radio:90300000.0"`). Pre-seeded at startup via `phone_book.seed()`; phone numbers are user-configured and never auto-generated.
 
-A browser-based configuration panel served at port 8080 by the `hello-operator-web` systemd service.
+### `media_cache` (SQLite, separate file)
 
-### Architecture
+Used by `MediaStore` (`src/media_store.py`):
 
-The web layer follows a strict client/server split:
+```sql
+CREATE TABLE media_cache (
+    cache_key  TEXT PRIMARY KEY,  -- e.g. "playlists", "albums:media_key"
+    data       TEXT NOT NULL,     -- JSON list of MediaItems (field: "media_key")
+    updated_at TEXT NOT NULL      -- ISO8601 timestamp of last successful sync
+);
+```
 
-- **Backend:** Flask (`web/app.py`) exposes a pure JSON REST API. It reads and writes `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json`, and triggers `sudo systemctl restart hello-operator` after saves. It serves the compiled Angular application for all non-API routes.
-- **Frontend:** An Angular 21 SPA (`web/angular/`) compiled to `web/angular/dist/`. All UI rendering happens client-side; the backend never generates HTML.
+### `error_queue` (SQLite, separate file)
 
-### REST API
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/status` | GET | Current systemd active state (`"active"`, `"inactive"`, `"failed"`, …) |
-| `/service/restart` | POST | Restart hello-operator; returns `{ok, error, status}` |
-| `/api/docs` | GET | List available documentation pages: `{pages: [{title, slug}]}` |
-| `/api/docs/<slug>` | GET | Raw Markdown content for a page: `{title, slug, content}` |
-| `/api/config` | GET | Field definitions, non-password values, and radio stations |
-| `/api/config/env` | POST | Save env var updates; restarts service on success |
-| `/api/config/radio` | POST | Save radio station list; restarts service on success |
-
-Password-type fields (`PLEX_TOKEN`) are never returned by `GET /api/config`. A blank value in a `POST /api/config/env` body means "keep the existing value".
-
-### Angular SPA
-
-Three routed components:
-
-| Component | Route | Purpose |
-|---|---|---|
-| `StatusComponent` | `/` | Service badge, restart button; shares status state via `ApiService` |
-| `DocsComponent` | `/docs/:slug` | Sidebar nav, client-side Markdown rendering, anchor scrolling |
-| `ConfigComponent` | `/config` | Grouped config fields, radio station table with add/remove rows |
-
-A shared `ApiService` (Angular singleton) owns the status `BehaviorSubject` so the nav bar and status page stay in sync without duplicate requests.
-
-### Service management
-
-`restart_service()` runs `sudo systemctl restart hello-operator` via subprocess. A passwordless sudoers rule for this command is installed by `install.sh` and `build-image-chroot.sh`. The web service user must be in the sudoers file for restarts to work.
+```sql
+CREATE TABLE error_queue (
+    source        TEXT NOT NULL,
+    message       TEXT NOT NULL,
+    severity      TEXT NOT NULL CHECK(severity IN ('warning','error')),
+    count         INTEGER NOT NULL DEFAULT 1,
+    last_happened TEXT NOT NULL,   -- ISO8601
+    PRIMARY KEY (source, message)
+);
+```
 
 ---
 
-## Testing Strategy
+## DTMF Frequencies
 
-All unit tests run without hardware, network, or audio output. The four
-interfaces (`AudioInterface`, `TTSInterface`, `PlexClientInterface`,
-`ErrorQueueInterface`) are the seams where mocks are injected. GPIO is also
-abstracted so the handler can be driven by a mock pin reader in tests.
+Standard frequency pairs used by `SounddeviceAudio.play_dtmf`:
 
-Integration tests (tagged, skipped by default) cover the real Plex client
-against a live server.
-
-See `TEST_SPEC.md` for the full test suite. See `IMPL.md` for concrete class
-names, technology choices, database schemas, and development order.
+| Digit | Frequencies (Hz) |
+|---|---|
+| 0 | 941 + 1336 |
+| 1 | 697 + 1209 |
+| 2 | 697 + 1336 |
+| 3 | 697 + 1477 |
+| 4 | 770 + 1209 |
+| 5 | 770 + 1336 |
+| 6 | 770 + 1477 |
+| 7 | 852 + 1209 |
+| 8 | 852 + 1336 |
+| 9 | 852 + 1477 |

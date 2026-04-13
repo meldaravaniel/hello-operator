@@ -2,11 +2,11 @@
 
 Owns the application lifecycle for a single handset interaction. Listens for
 GPIO events, routes them to the Menu state machine, and handles cleanup on
-hang-up. Does not stop Plex playback on hang-up — music continues.
+hang-up. Does not stop media playback on hang-up — music continues.
 
 Usage::
 
-    session = Session(audio, tts, plex_client, plex_store, phone_book, error_queue, radio)
+    session = Session(audio, tts, media_client, media_store, phone_book, error_queue, radio)
     # In an event loop:
     event = gpio_handler.poll(now=time.monotonic())
     if event is not None:
@@ -18,7 +18,7 @@ import time
 from typing import Optional, Tuple, Union
 
 from src.gpio_handler import GpioEvent
-from src.interfaces import AudioInterface, TTSInterface, PlexClientInterface, ErrorQueueInterface
+from src.interfaces import AudioInterface, TTSInterface, MediaClientInterface, ErrorQueueInterface
 from src.menu import Menu
 
 
@@ -29,8 +29,8 @@ class Session:
     ----------
     audio : AudioInterface
     tts : TTSInterface
-    plex_client : PlexClientInterface
-    plex_store : PlexStore or MockPlexStore
+    media_client : MediaClientInterface
+    media_store : MediaStore or MockMediaStore
     phone_book : PhoneBook
     error_queue : ErrorQueueInterface
     radio : RadioInterface
@@ -40,17 +40,20 @@ class Session:
         self,
         audio: AudioInterface,
         tts: TTSInterface,
-        plex_client: PlexClientInterface,
-        plex_store,
-        phone_book,
-        error_queue: ErrorQueueInterface,
-        radio,  # RadioInterface
+        media_client: MediaClientInterface = None,
+        media_store=None,
+        phone_book=None,
+        error_queue: ErrorQueueInterface = None,
+        radio=None,  # RadioInterface
+        # Backward-compat aliases
+        plex_client: MediaClientInterface = None,
+        plex_store=None,
     ) -> None:
         self._menu = Menu(
             audio=audio,
             tts=tts,
-            plex_client=plex_client,
-            plex_store=plex_store,
+            media_client=media_client or plex_client,
+            media_store=media_store or plex_store,
             phone_book=phone_book,
             error_queue=error_queue,
             radio=radio,

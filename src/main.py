@@ -10,7 +10,9 @@ import time
 import logging
 
 from src.constants import (
+    MEDIA_BACKEND,
     PLEX_URL, PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER,
+    MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
     RADIO_CONFIG_PATH,
@@ -20,10 +22,11 @@ from src.phone_book import PhoneBook
 from src.audio import SounddeviceAudio
 from src.tts import PiperTTS
 from src.plex_client import PlexClient
-from src.plex_store import PlexStore
+from src.mpd_client import MPDClient
+from src.media_store import MediaStore
 from src.radio import RtlFmRadio
 from src.gpio_handler import GPIOHandler, GpioEvent
-from src.interfaces import RadioStation
+from src.interfaces import RadioStation, MediaClientInterface
 from src.session import Session
 
 # Import all pre-renderable script strings from menu
@@ -72,7 +75,7 @@ log = logging.getLogger("hello-operator")
 _DB_DIR = "/var/lib/hello-operator"
 _ERROR_QUEUE_DB = f"{_DB_DIR}/error_queue.db"
 _PHONE_BOOK_DB = f"{_DB_DIR}/phone_book.db"
-_PLEX_STORE_DB = f"{_DB_DIR}/plex_cache.db"
+_MEDIA_STORE_DB = f"{_DB_DIR}/media_cache.db"
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +148,19 @@ def load_radio_stations(path: str) -> list:
         return []
 
 
+def build_media_client() -> MediaClientInterface:
+    """Construct the configured media client (Plex, MPD, or Mopidy)."""
+    if MEDIA_BACKEND == "mpd":
+        log.info("Media backend: MPD (%s:%d)", MPD_HOST, MPD_PORT)
+        return MPDClient(host=MPD_HOST, port=MPD_PORT)
+    elif MEDIA_BACKEND == "mopidy":
+        log.info("Media backend: Mopidy (%s:%d)", MPD_HOST, MPD_PORT)
+        return MPDClient(host=MPD_HOST, port=MPD_PORT)
+    else:
+        log.info("Media backend: Plex (%s)", PLEX_URL)
+        return PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
+
+
 def _gpio_cleanup() -> None:
     """Call GPIO.cleanup() to release pin reservations on shutdown.
 
@@ -198,7 +214,7 @@ def run() -> None:
     for station in stations:
         phone_book.seed(
             phone_number=station.phone_number,
-            plex_key=f"radio:{station.frequency_hz}",
+            media_key=f"radio:{station.frequency_hz}",
             media_type="radio",
             name=station.name,
         )
@@ -213,9 +229,9 @@ def run() -> None:
         error_queue=error_queue,
     )
 
-    # Plex
-    plex_client = PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
-    plex_store = PlexStore(db_path=_PLEX_STORE_DB, plex_client=plex_client)
+    # Media client + local cache
+    media_client = build_media_client()
+    media_store = MediaStore(db_path=_MEDIA_STORE_DB, media_client=media_client)
 
     # Radio
     radio = RtlFmRadio()
@@ -235,8 +251,8 @@ def run() -> None:
     session = Session(
         audio=audio,
         tts=tts,
-        plex_client=plex_client,
-        plex_store=plex_store,
+        media_client=media_client,
+        media_store=media_store,
         phone_book=phone_book,
         error_queue=error_queue,
         radio=radio,
