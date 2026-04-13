@@ -64,7 +64,8 @@ apt-get install -y \
     libportaudio2 \
     portaudio19-dev \
     alsa-utils \
-    rtl-sdr
+    rtl-sdr \
+    mpd
 
 # ---------------------------------------------------------------------------
 # Config directory and files
@@ -187,8 +188,16 @@ echo ""
 echo "==> Installation complete."
 echo ""
 echo "Next steps:"
-echo "  1. Edit /etc/hello-operator/config.env and fill in:"
-echo "       PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER, ASSISTANT_NUMBER"
+echo "  1. Edit /etc/hello-operator/config.env and set:"
+echo "       ASSISTANT_NUMBER   — required for all backends"
+echo ""
+echo "     If using Plex (default, MEDIA_BACKEND=plex):"
+echo "       PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER"
+echo ""
+echo "     If using MPD (MEDIA_BACKEND=mpd):"
+echo "       MPD_HOST, MPD_PORT  — defaults: localhost, 6600"
+echo "       Configure MPD itself in /etc/mpd.conf, then:"
+echo "         sudo systemctl enable mpd && sudo systemctl start mpd"
 echo ""
 echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
 echo "     to add your local FM stations. Requires an RTL-SDR USB dongle."
