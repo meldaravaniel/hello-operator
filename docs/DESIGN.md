@@ -3,11 +3,13 @@
 ## Project Summary
 
 A vintage rotary phone is wired to a Raspberry Pi 4 and transformed into a
-hands-on interface for a Plex media server. Picking up the handset triggers an
+hands-on interface for a media player. Picking up the handset triggers an
 interactive voice menu — styled as a telephone operator experience — that lets
 the user browse and play playlists, artists, albums, and genres by dialing.
 The rotary dial doubles as both a direct-dial input (for known "phone numbers"
-mapped to media) and a menu navigation device.
+mapped to media) and a menu navigation device. Supports **Plex** and **MPD
+(Music Player Daemon)** as swappable backends via the `MEDIA_BACKEND`
+environment variable.
 
 ---
 
@@ -60,14 +62,15 @@ dependency directly. This means:
     └────────────┘      └──┬──────┬──┘
                            │      │
               ┌────────────▼┐   ┌─▼───────────┐
-              │ plex_store  │   │  phone_book  │
+              │ media_store │   │  phone_book  │
               │ local cache │   │   (SQLite)   │
               └──────┬──────┘   └─────────────┘
                      │
-              ┌──────▼──────┐
-              │ plex_client │
-              │  interface  │
-              └─────────────┘
+              ┌──────▼──────────────────────────┐
+              │       media_client               │
+              │  MediaClientInterface            │
+              │  (PlexClient or MPDClient)       │
+              └──────────────────────────────────┘
                      │
               ┌──────▼──────┐   ┌─────────────┐   ┌─────────────┐
               │    audio    │   │     tts      │   │    radio    │
@@ -103,8 +106,8 @@ Abstracts text-to-speech.
 
 Fixed menu prompts are pre-rendered to a persistent cache directory that survives restarts. At startup, each script's text is hashed and compared against the stored hash; only scripts whose hash has changed or whose audio file is missing are re-synthesized. `speak_and_play` uses cached files for known prompts; live synthesis is used only for dynamic strings (media names, phone numbers).
 
-### `PlexClientInterface`
-Abstracts all Plex API calls.
+### `MediaClientInterface`
+Abstracts all media player API calls. Implemented by `PlexClient` (Plex HTTP API) and `MPDClient` (MPD via `python-mpd2`). Selected at startup via `MEDIA_BACKEND`.
 
 | Method | Description |
 |---|---|
@@ -112,7 +115,9 @@ Abstracts all Plex API calls.
 | `get_artists()` | Return all artists |
 | `get_genres()` | Return all genres |
 | `get_albums_for_artist(artist_key)` | Return albums for a given artist |
-| `play(plex_key)` | Start playback of a media item |
+| `get_tracks_for_genre(genre_media_key)` | Return track keys for a genre; each backend parses its own key format |
+| `play(media_key)` | Start playback of a media item |
+| `play_tracks(track_keys, shuffle)` | Enqueue and play a list of tracks (optionally shuffled) |
 | `shuffle_all()` | Shuffle and play the entire library |
 | `pause()` | Pause current playback |
 | `unpause()` | Resume paused playback |
@@ -121,6 +126,18 @@ Abstracts all Plex API calls.
 | `now_playing() -> PlaybackState` | Return current playback state (see Core Data Types) |
 | `get_queue_position() -> tuple[int, int]` | Return (current_track, total_tracks) |
 
+**Media key formats by backend and type:**
+
+| Backend | Type | Format |
+|---|---|---|
+| Plex | playlist / artist / album | Plex HTTP path, e.g. `/library/sections/1/all` |
+| Plex | genre | `"section:{id}/genre:{key}"` |
+| MPD | playlist | `"playlist:{name}"` |
+| MPD | artist | `"artist:{name}"` |
+| MPD | album | `"album:{name}"` |
+| MPD | genre | `"genre:{name}"` |
+| Both | radio | `"radio:{frequency_hz}"` (phone book only; not from media client) |
+
 ---
 
 ## Core Data Types
@@ -128,7 +145,7 @@ Abstracts all Plex API calls.
 ```python
 @dataclass
 class MediaItem:
-    plex_key: str
+    media_key: str   # backend-specific key; see MediaClientInterface for formats
     name: str
     media_type: str  # "playlist" | "artist" | "album" | "genre" | "radio"
 
@@ -168,7 +185,7 @@ Abstracts the persistent error log.
 
 **Storage:** Persisted to disk; survives restarts. Clearable only via manual intervention outside the system.
 
-**Injection:** `ErrorQueueInterface` is injected into any module that originates errors (`tts`, `plex_store`). Modules that only re-raise exceptions (e.g. `plex_client`) do not receive it — callers decide whether to log.
+**Injection:** `ErrorQueueInterface` is injected into any module that originates errors (`tts`, `media_store`). Modules that only re-raise exceptions (e.g. `plex_client`, `mpd_client`) do not receive it — callers decide whether to log.
 
 ---
 
@@ -197,47 +214,53 @@ Concrete implementation of `TTSInterface`. At startup, `main.py` calls
 maps each character to its English word and synthesizes the full string.
 
 ### `phone_book`
-Manages a persistent database mapping Plex media items to auto-generated 7-digit
-phone numbers. Numbers are assigned lazily — on first encounter of a `plex_key`
-(either at `plex_store` population time or at first selection) — and never
-reassigned. Supports lookup by Plex key or by phone number. Numbers are formatted
+Manages a persistent database mapping media items to auto-generated 7-digit
+phone numbers. Numbers are assigned lazily — on first encounter of a `media_key`
+(either at `media_store` population time or at first selection) — and never
+reassigned. Supports lookup by media key or by phone number. Numbers are formatted
 and spoken digit-by-digit.
 
-### `plex_store`
+### `media_store` (`src/media_store.py`)
 A persistent, session-independent local cache that sits between the menu and
-`plex_client`. The menu never calls `plex_client` directly for browse data —
-it always goes through `plex_store`. Plex is treated as the source of truth,
-but is assumed to change infrequently.
+`media_client`. The menu never calls `media_client` directly for browse data —
+it always goes through `media_store`. The backend is treated as the source of
+truth but is assumed to change infrequently.
+
+`plex_store.py` is a backward-compat shim that re-exports `MediaStore`.
 
 **Persistence:** Survives restarts and persists across sessions.
 
 **Stored data:**
 - Full list of playlists, artists, genres (as `MediaItem` lists)
-- Albums per artist (keyed by artist `plex_key`)
+- Albums per artist (keyed by artist `media_key`)
 - Derived boolean flags: `playlists_has_content`, `artists_has_content`,
   `genres_has_content`
 
-**Initialization:** If local store is empty for a category, fetch from Plex and
-populate. Otherwise use local data without an API call.
+**Initialization:** If local store is empty for a category, fetch from the media
+client and populate. Otherwise use local data without an API call.
 
 **Update strategy:**
-- On a successful Plex response that differs from local data: update local store
-- On a Plex API error: leave local store unchanged
-- On a playback failure where Plex indicates the item no longer exists: remove
+- On a successful media client response that differs from local data: update local store
+- On a media client error: leave local store unchanged
+- On a playback failure where the backend indicates the item no longer exists: remove
   that item from local store, serve `SCRIPT_NOT_IN_SERVICE`
 
 **Refresh:** The diagnostic assistant exposes a manual full-refresh option that
-re-fetches all categories from Plex and updates local store (successful calls
-only). This is the only way to proactively sync local state with Plex outside
-of the normal lazy-update path.
+re-fetches all categories from the media client and updates local store (successful
+calls only). This is the only way to proactively sync local state with the backend
+outside of the normal lazy-update path.
 
-### `plex_client`
-Concrete implementation of `PlexClientInterface`. Called only by `plex_store`
-for browse data, and directly by the menu for playback commands (`play`,
-`shuffle_all`, `pause`, `unpause`, `skip`, `stop`, `now_playing`,
-`get_queue_position`). `now_playing()` returns a `PlaybackState` containing the
-current `MediaItem` (or `None`) and whether playback is paused. Raises exceptions
-on API failures; callers decide whether to log. Integration tests against the
+### `plex_client` / `mpd_client`
+Concrete implementations of `MediaClientInterface`.
+
+- `PlexClient` — uses the Plex HTTP API (server URL + auth token). Called only by
+  `media_store` for browse data, and directly by the menu for playback commands.
+- `MPDClient` — uses `python-mpd2` to communicate with MPD over TCP. Same call
+  pattern as `PlexClient` from the menu's perspective.
+
+`now_playing()` returns a `PlaybackState` containing the current `MediaItem`
+(or `None`) and whether playback is paused. Both clients raise exceptions on
+connection failures; callers decide whether to log. Integration tests against the
 real server are marked and skipped during normal unit test runs.
 
 ### `menu`
@@ -307,20 +330,20 @@ GPIO events, starts/stops the dial tone timer, routes digits to the menu state
 machine, and handles graceful cleanup on hang-up. Does not stop Plex playback
 on hang-up — music continues if it was playing.
 
-At handset lift, checks `plex_store` for category availability flags. If local
+At handset lift, checks `media_store` for category availability flags. If local
 store is already populated, no API call is made — the flags are used directly.
-If local store is not yet populated, fetches from Plex to initialize it. Only
-categories with at least one playable item are offered as options. If the Plex
-connection fails and local store is also empty, plays `SCRIPT_PLEX_FAILURE` and
-enters the retry loop.
+If local store is not yet populated, fetches from the media client to initialize
+it. Only categories with at least one playable item are offered as options. If
+the media backend connection fails and local store is also empty, plays
+`SCRIPT_PLEX_FAILURE` and enters the retry loop.
 
-Caches each successful Plex browse result as the user navigates. If a Plex API
-call fails mid-browse, apologizes about "service degradation" and re-prompts
-from the last successful cached state. If no cached state exists, returns to
-top level.
+Caches each successful media client browse result as the user navigates. If a
+media client call fails mid-browse, apologizes about "service degradation" and
+re-prompts from the last successful cached state. If no cached state exists,
+returns to top level.
 
 Hang-up (HANDSET_ON_CRADLE) stops all local audio immediately — even mid-TTS
-— and cleans up session state. Plex playback is not affected.
+— and cleans up session state. Backend media playback is not affected.
 
 Direct dial is entered when a second digit is received within
 `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` of the first. All digits including `0` and
@@ -446,7 +469,7 @@ Radio stations are pre-configured with specific 7-digit phone numbers in `radio_
 
 ```
 7-digit number dialed → phone book lookup → media_type == "radio"
-  → Stop any active Plex playback
+  → Stop any active media playback
   → Stop any active radio stream
   → Speak SCRIPT_RADIO_CONNECTING (contains station name and frequency)
   → radio.play(frequency_hz)
@@ -522,7 +545,7 @@ continuously until the user physically hangs up.
 - Log error to error queue
 - No TTS possible; play off-hook warning tone continuously until user hangs up
 
-**Plex connection failure at session start:**
+**Media backend connection failure at session start:**
 - Play vintage "service disconnected" message
 - Offer retry loop: "If you'd like me to retry, dial 1. Otherwise, please hang
   up and try again later."
@@ -544,7 +567,7 @@ Response:
 - Brief pause
 - Off-hook warning tone, played continuously until user hangs up
 
-**Plex API failure mid-browse:**
+**Media client failure mid-browse:**
 - Apologize about "service degradation"
 - Return to last successfully cached browse state and re-prompt
 - If no cached state: return to top level
@@ -554,6 +577,67 @@ Response:
 - Entries: `source`, `severity` (`"warning"` | `"error"`), `message`, `count`, `last_happened`
 - Deduplicated by `(source, message)` — repeat occurrences increment `count` and update `last_happened`
 - Read-only from phone interface; clearable only via manual intervention outside the system
+
+---
+
+## Database Schemas
+
+### `phone_book` (SQLite)
+
+```sql
+CREATE TABLE phone_book (
+    media_key    TEXT PRIMARY KEY,
+    media_type   TEXT NOT NULL CHECK(media_type IN ('playlist','artist','album','genre','radio')),
+    name         TEXT NOT NULL,
+    phone_number TEXT NOT NULL UNIQUE
+);
+```
+
+Radio station entries use `media_key = "radio:{frequency_hz}"` (e.g. `"radio:90300000.0"`). Pre-seeded at startup via `phone_book.seed()`; phone numbers are user-configured and never auto-generated.
+
+### `media_cache` (SQLite, separate file)
+
+Used by `MediaStore` (`src/media_store.py`):
+
+```sql
+CREATE TABLE media_cache (
+    cache_key  TEXT PRIMARY KEY,  -- e.g. "playlists", "albums:media_key"
+    data       TEXT NOT NULL,     -- JSON list of MediaItems (field: "media_key")
+    updated_at TEXT NOT NULL      -- ISO8601 timestamp of last successful sync
+);
+```
+
+### `error_queue` (SQLite, separate file)
+
+```sql
+CREATE TABLE error_queue (
+    source        TEXT NOT NULL,
+    message       TEXT NOT NULL,
+    severity      TEXT NOT NULL CHECK(severity IN ('warning','error')),
+    count         INTEGER NOT NULL DEFAULT 1,
+    last_happened TEXT NOT NULL,   -- ISO8601
+    PRIMARY KEY (source, message)
+);
+```
+
+---
+
+## DTMF Frequencies
+
+Standard frequency pairs used by `SounddeviceAudio.play_dtmf`:
+
+| Digit | Frequencies (Hz) |
+|---|---|
+| 0 | 941 + 1336 |
+| 1 | 697 + 1209 |
+| 2 | 697 + 1336 |
+| 3 | 697 + 1477 |
+| 4 | 770 + 1209 |
+| 5 | 770 + 1336 |
+| 6 | 770 + 1477 |
+| 7 | 852 + 1209 |
+| 8 | 852 + 1336 |
+| 9 | 852 + 1477 |
 
 ---
 
@@ -602,7 +686,7 @@ The web layer follows a strict client/server split:
 | `/api/config/env` | POST | Save env var updates; restarts service on success |
 | `/api/config/radio` | POST | Save radio station list; restarts service on success |
 
-Password-type fields (`PLEX_TOKEN`) are never returned by `GET /api/config`. A blank value in a `POST /api/config/env` body means "keep the existing value".
+Password-type fields (`PLEX_TOKEN`) are never returned by `GET /api/config`. A blank value in a `POST /api/config/env` body means "keep the existing value". The `MEDIA_BACKEND` field is a `select` type with options `["plex", "mpd"]`; the Plex and MPD config sections in the UI are shown or hidden based on the current selection.
 
 ### Angular SPA
 
