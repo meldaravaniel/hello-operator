@@ -38,12 +38,38 @@ export interface ApiResult {
   status?: string;
 }
 
+export interface AuthStatus {
+  authenticated: boolean;
+  required: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private _status = new BehaviorSubject<string>('unknown');
   readonly status$ = this._status.asObservable();
 
+  private _authenticated = new BehaviorSubject<boolean | null>(null);
+  readonly authenticated$ = this._authenticated.asObservable();
+
   constructor(private http: HttpClient) {}
+
+  checkAuthStatus(): Observable<AuthStatus> {
+    return this.http.get<AuthStatus>('/api/auth/status').pipe(
+      tap(data => this._authenticated.next(data.authenticated || !data.required))
+    );
+  }
+
+  login(password: string): Observable<ApiResult> {
+    return this.http.post<ApiResult>('/api/auth/login', { password }).pipe(
+      tap(result => { if (result.ok) this._authenticated.next(true); })
+    );
+  }
+
+  logout(): Observable<ApiResult> {
+    return this.http.post<ApiResult>('/api/auth/logout', {}).pipe(
+      tap(() => this._authenticated.next(false))
+    );
+  }
 
   refreshStatus(): void {
     this.http.get<{ status: string }>('/api/status').subscribe({

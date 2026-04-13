@@ -55,7 +55,7 @@ cd hello-operator
 sudo ./install.sh
 ```
 
-The script installs system packages, downloads the Piper TTS binary and voice model, creates a Python virtual environment, installs pip dependencies, creates `/etc/hello-operator/` with example config files, and generates and enables both systemd unit files.
+The script installs system packages, creates a dedicated `hello-operator` system account, downloads the Piper TTS binary and voice model, creates a Python virtual environment, installs pip dependencies, creates `/etc/hello-operator/` (owned by `hello-operator`, mode 750) with example config files, and generates and enables both systemd unit files. Both services run as `hello-operator`.
 
 If Node.js (`npm`) is available on the machine, `install.sh` also builds the Angular frontend so the web interface is fully operational at `http://<hostname>.local:8080` immediately after starting the service. If Node.js is not present, the API works but the browser UI shows a "not built" message; build it manually:
 
@@ -67,7 +67,13 @@ cd web/angular && npm install && npm run build
 
 ## Step — Configure
 
-Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.env.example` with comments explaining each variable.
+Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.env.example` with comments explaining each variable. Because the file is owned by the `hello-operator` service account, you need `sudo` to edit it from the command line:
+
+```bash
+sudo nano /etc/hello-operator/config.env
+```
+
+Alternatively, use the web interface at `http://<hostname>.local:8080` — no `sudo` needed there.
 
 ### Required
 
@@ -95,6 +101,8 @@ These have sensible defaults matching the install script's paths and the hardwar
 | `PIPER_BINARY` | `/usr/local/bin/piper` | Path to Piper binary |
 | `PIPER_MODEL` | `/usr/local/share/piper/en_US-lessac-medium.onnx` | Path to Piper voice model |
 | `TTS_CACHE_DIR` | `/var/cache/hello-operator/tts` | Directory for pre-rendered TTS audio files |
+| `ADMIN_PASSWORD` | *(empty — open access)* | Password to protect the configuration web UI. Leave empty for open access on a trusted home network; set to a strong passphrase if other people share your Wi-Fi. |
+| `SECRET_KEY` | *(random, regenerated on restart)* | Flask session signing key. Set to a fixed value if you need login sessions to survive service restarts. Generate one with: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 
 ---
 
@@ -156,17 +164,24 @@ Three views are available via the top navigation bar:
 
 Configuration changes written through the UI are saved to `/etc/hello-operator/config.env` and `/etc/hello-operator/radio_stations.json`. The phone service is restarted automatically after each save.
 
+If `ADMIN_PASSWORD` is set in `config.env`, the UI shows a login page before granting access to the Configure view and the restart button.
+
 **REST API** — the backend exposes the following JSON endpoints (useful for scripting or diagnostics):
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/status` | GET | Current systemd active state |
-| `/service/restart` | POST | Restart hello-operator |
-| `/api/docs` | GET | List of available documentation pages |
-| `/api/docs/<slug>` | GET | Raw Markdown content for a single page |
-| `/api/config` | GET | Config field definitions, current values, and radio stations |
-| `/api/config/env` | POST | Save environment variable updates (JSON body) |
-| `/api/config/radio` | POST | Save radio station list (JSON body) |
+| Endpoint | Method | Auth required | Description |
+|---|---|---|---|
+| `/api/status` | GET | No | Current systemd active state |
+| `/api/docs` | GET | No | List of available documentation pages |
+| `/api/docs/<slug>` | GET | No | Raw Markdown content for a single page |
+| `/api/auth/status` | GET | No | Whether auth is required and if the current session is authenticated |
+| `/api/auth/login` | POST | No | Start a session (`{"password": "..."}`) |
+| `/api/auth/logout` | POST | No | Clear the session |
+| `/service/restart` | POST | Yes | Restart hello-operator |
+| `/api/config` | GET | Yes | Config field definitions, current values, and radio stations |
+| `/api/config/env` | POST | Yes | Save environment variable updates (JSON body) |
+| `/api/config/radio` | POST | Yes | Save radio station list (JSON body) |
+
+"Auth required" only applies when `ADMIN_PASSWORD` is set; all endpoints are open when it is not.
 
 ---
 

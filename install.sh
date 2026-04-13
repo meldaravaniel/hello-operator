@@ -44,11 +44,13 @@ if [ -z "$SUDO_USER" ]; then
 fi
 
 INSTALL_DIR="$(pwd)"
-INSTALL_USER="$SUDO_USER"
+LOGIN_USER="$SUDO_USER"       # person who ran sudo (used for Angular build)
+SERVICE_USER="hello-operator" # dedicated system account for both services
 
 echo "==> Installing hello-operator"
 echo "    Project directory : $INSTALL_DIR"
-echo "    Running as user   : $INSTALL_USER"
+echo "    Login user        : $LOGIN_USER"
+echo "    Service user      : $SERVICE_USER"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -67,13 +69,25 @@ apt-get install -y \
     rtl-sdr
 
 # ---------------------------------------------------------------------------
+# Service user
+# ---------------------------------------------------------------------------
+
+echo "==> Creating service user '$SERVICE_USER'..."
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+fi
+usermod -aG audio "$SERVICE_USER"
+getent group gpio    && usermod -aG gpio    "$SERVICE_USER" || true
+getent group plugdev && usermod -aG plugdev "$SERVICE_USER" || true
+
+# ---------------------------------------------------------------------------
 # Config directory and files
 # ---------------------------------------------------------------------------
 
 echo "==> Creating config directory $CONFIG_DIR..."
 mkdir -p "$CONFIG_DIR"
-chmod 755 "$CONFIG_DIR"
-chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
+chown "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR"
+chmod 750 "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/config.env" ]; then
     echo "==> Copying config.env.example to $CONFIG_DIR/config.env..."
@@ -81,6 +95,8 @@ if [ ! -f "$CONFIG_DIR/config.env" ]; then
 else
     echo "==> $CONFIG_DIR/config.env already exists — skipping (not overwritten)."
 fi
+chown "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/config.env"
+chmod 640 "$CONFIG_DIR/config.env"
 
 if [ ! -f "$CONFIG_DIR/radio_stations.json" ]; then
     echo "==> Copying radio_stations.json.example to $CONFIG_DIR/radio_stations.json..."
@@ -88,6 +104,18 @@ if [ ! -f "$CONFIG_DIR/radio_stations.json" ]; then
 else
     echo "==> $CONFIG_DIR/radio_stations.json already exists — skipping (not overwritten)."
 fi
+chown "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/radio_stations.json"
+chmod 640 "$CONFIG_DIR/radio_stations.json"
+
+# ---------------------------------------------------------------------------
+# SQLite data directory
+# ---------------------------------------------------------------------------
+
+DB_DIR="/var/lib/hello-operator"
+echo "==> Creating data directory $DB_DIR..."
+mkdir -p "$DB_DIR"
+chown "$SERVICE_USER:$SERVICE_USER" "$DB_DIR"
+chmod 750 "$DB_DIR"
 
 # ---------------------------------------------------------------------------
 # TTS cache directory
@@ -95,7 +123,7 @@ fi
 
 echo "==> Creating TTS cache directory $CACHE_DIR..."
 mkdir -p "$CACHE_DIR"
-chown -R "$INSTALL_USER:$INSTALL_USER" "$(dirname "$CACHE_DIR")"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$(dirname "$CACHE_DIR")"
 
 # ---------------------------------------------------------------------------
 # Piper binary
@@ -133,11 +161,12 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Creating Python virtual environment..."
-sudo -u "$INSTALL_USER" python3 -m venv "$INSTALL_DIR/venv"
+python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
-sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
-sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
+"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
+"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/venv"
 
 # ---------------------------------------------------------------------------
 # Angular frontend
@@ -160,18 +189,18 @@ fi
 echo "==> Generating systemd unit files..."
 sed \
     -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
-    -e "s|%%USER%%|$INSTALL_USER|g" \
+    -e "s|%%USER%%|$SERVICE_USER|g" \
     "$INSTALL_DIR/hello-operator.service.template" \
     > /etc/systemd/system/hello-operator.service
 
 sed \
     -e "s|%%INSTALL_DIR%%|$INSTALL_DIR|g" \
-    -e "s|%%USER%%|$INSTALL_USER|g" \
+    -e "s|%%USER%%|$SERVICE_USER|g" \
     "$INSTALL_DIR/hello-operator-web.service.template" \
     > /etc/systemd/system/hello-operator-web.service
 
 echo "==> Allowing web service to restart hello-operator without a password..."
-echo "$INSTALL_USER ALL=(root) NOPASSWD: /bin/systemctl restart hello-operator" \
+echo "$SERVICE_USER ALL=(root) NOPASSWD: /bin/systemctl restart hello-operator" \
     > /etc/sudoers.d/hello-operator-web
 chmod 440 /etc/sudoers.d/hello-operator-web
 

@@ -50,11 +50,21 @@ getent group plugdev && usermod -aG plugdev "$INSTALL_USER"
 # ---------------------------------------------------------------------------
 echo "==> Setting up config directory $CONFIG_DIR..."
 mkdir -p "$CONFIG_DIR"
-chmod 755 "$CONFIG_DIR"
 chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
+chmod 750 "$CONFIG_DIR"
 cp "$INSTALL_DIR/config.env.example"          "$CONFIG_DIR/config.env"
 cp "$INSTALL_DIR/radio_stations.json.example" "$CONFIG_DIR/radio_stations.json"
 chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR/config.env" "$CONFIG_DIR/radio_stations.json"
+chmod 640 "$CONFIG_DIR/config.env" "$CONFIG_DIR/radio_stations.json"
+
+# ---------------------------------------------------------------------------
+# SQLite data directory
+# ---------------------------------------------------------------------------
+DB_DIR="/var/lib/hello-operator"
+echo "==> Creating data directory $DB_DIR..."
+mkdir -p "$DB_DIR"
+chown "$INSTALL_USER:$INSTALL_USER" "$DB_DIR"
+chmod 750 "$DB_DIR"
 
 # ---------------------------------------------------------------------------
 # TTS cache directory

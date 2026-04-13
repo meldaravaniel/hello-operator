@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideHttpClient } from '@angular/common/http';
 
-import { ApiService, RadioStation } from './api.service';
+import { ApiService, AuthStatus, RadioStation } from './api.service';
 
 describe('ApiService', () => {
   let service: ApiService;
@@ -174,6 +174,102 @@ describe('ApiService', () => {
       const req = http.expectOne('/api/config/radio');
       expect(req.request.body).toEqual(stations);
       req.flush({ ok: true });
+    });
+  });
+
+  // ── checkAuthStatus ───────────────────────────────────────────────────────
+
+  describe('checkAuthStatus()', () => {
+    it('makes GET /api/auth/status', () => {
+      service.checkAuthStatus().subscribe();
+      const req = http.expectOne('/api/auth/status');
+      expect(req.request.method).toBe('GET');
+      req.flush({ authenticated: true, required: false });
+    });
+
+    it('sets authenticated$ to true when auth not required', done => {
+      service.checkAuthStatus().subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBe(true);
+          done();
+        });
+      });
+      http.expectOne('/api/auth/status').flush({ authenticated: false, required: false });
+    });
+
+    it('sets authenticated$ to true when already authenticated', done => {
+      service.checkAuthStatus().subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBe(true);
+          done();
+        });
+      });
+      http.expectOne('/api/auth/status').flush({ authenticated: true, required: true });
+    });
+
+    it('sets authenticated$ to false when required but not logged in', done => {
+      service.checkAuthStatus().subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBe(false);
+          done();
+        });
+      });
+      http.expectOne('/api/auth/status').flush({ authenticated: false, required: true });
+    });
+  });
+
+  // ── login ─────────────────────────────────────────────────────────────────
+
+  describe('login(password)', () => {
+    it('makes POST /api/auth/login with the password', () => {
+      service.login('hunter2').subscribe();
+      const req = http.expectOne('/api/auth/login');
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ password: 'hunter2' });
+      req.flush({ ok: true });
+    });
+
+    it('sets authenticated$ to true on successful login', done => {
+      service.login('hunter2').subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBe(true);
+          done();
+        });
+      });
+      http.expectOne('/api/auth/login').flush({ ok: true });
+    });
+
+    it('does not set authenticated$ on failed login', done => {
+      (service as any)._authenticated.next(null);
+      service.login('wrong').subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBeNull();
+          done();
+        });
+      });
+      http.expectOne('/api/auth/login').flush({ ok: false, error: 'Incorrect password' });
+    });
+  });
+
+  // ── logout ────────────────────────────────────────────────────────────────
+
+  describe('logout()', () => {
+    it('makes POST /api/auth/logout', () => {
+      service.logout().subscribe();
+      const req = http.expectOne('/api/auth/logout');
+      expect(req.request.method).toBe('POST');
+      req.flush({ ok: true });
+    });
+
+    it('sets authenticated$ to false after logout', done => {
+      (service as any)._authenticated.next(true);
+      service.logout().subscribe(() => {
+        service.authenticated$.subscribe(v => {
+          expect(v).toBe(false);
+          done();
+        });
+      });
+      http.expectOne('/api/auth/logout').flush({ ok: true });
     });
   });
 
