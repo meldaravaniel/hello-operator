@@ -10,10 +10,10 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { ApiService, ConfigField, RadioStation } from '../api.service';
 
-/** Sections visible only when a specific backend is selected. */
-const BACKEND_SECTIONS: Record<string, string> = {
-  'Plex': 'plex',
-  'MPD': 'mpd',
+/** Sections visible only when one of the listed backends is selected. */
+const BACKEND_SECTIONS: Record<string, string[]> = {
+  'Plex': ['plex'],
+  'MPD': ['mpd', 'mopidy'],
 };
 
 @Component({
@@ -68,9 +68,9 @@ export class ConfigComponent implements OnInit {
   }
 
   isSectionVisible(section: string): boolean {
-    const requiredBackend = BACKEND_SECTIONS[section];
-    if (!requiredBackend) return true;
-    return this.mediaBackend === requiredBackend;
+    const requiredBackends = BACKEND_SECTIONS[section];
+    if (!requiredBackends) return true;
+    return requiredBackends.includes(this.mediaBackend);
   }
 
   saveEnv(): void {

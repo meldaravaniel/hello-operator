@@ -130,6 +130,16 @@ describe('ConfigComponent', () => {
       expect(component.isSectionVisible('MPD')).toBe(false);
     });
 
+    it("shows MPD section when backend is 'mopidy'", () => {
+      component.values['MEDIA_BACKEND'] = 'mopidy';
+      expect(component.isSectionVisible('MPD')).toBe(true);
+    });
+
+    it("hides Plex section when backend is 'mopidy'", () => {
+      component.values['MEDIA_BACKEND'] = 'mopidy';
+      expect(component.isSectionVisible('Plex')).toBe(false);
+    });
+
     it("defaults to showing Plex when MEDIA_BACKEND is unset", () => {
       delete component.values['MEDIA_BACKEND'];
       expect(component.isSectionVisible('Plex')).toBe(true);
