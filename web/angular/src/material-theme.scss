@@ -7,6 +7,7 @@
 @use '@angular/material' as mat;
 
 html {
+  color-scheme: light dark;
   height: 100%;
   @include mat.theme((
     color: (
@@ -91,7 +92,7 @@ body {
   background: var(--mat-sys-surface-variant);
   color: var(--mat-sys-on-surface-variant);
 
-  &.feedback-success { background: color-mix(in srgb, #4caf50 15%, transparent); color: #1b5e20; }
+  &.feedback-success { background: color-mix(in srgb, #4caf50 15%, transparent); color: color-mix(in srgb, #4caf50 80%, var(--mat-sys-on-surface)); }
   &.feedback-error   { background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent); color: var(--mat-sys-error); }
 }
 

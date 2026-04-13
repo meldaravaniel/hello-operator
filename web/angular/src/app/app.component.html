@@ -10,6 +10,10 @@
   <a routerLink="/docs"   routerLinkActive="active" class="nav-link" mat-button>Docs</a>
   <a routerLink="/config" routerLinkActive="active" class="nav-link" mat-button>Configure</a>
 
+  <button mat-icon-button (click)="toggleDarkMode()" [attr.aria-label]="darkMode ? 'Switch to light mode' : 'Switch to dark mode'" title="{{ darkMode ? 'Light mode' : 'Dark mode' }}">
+    <mat-icon>{{ darkMode ? 'light_mode' : 'dark_mode' }}</mat-icon>
+  </button>
+
   <div class="nav-status">
     <span class="status-dot" [ngClass]="'status-' + (api.status$ | async)"></span>
     <span>{{ api.status$ | async }}</span>
