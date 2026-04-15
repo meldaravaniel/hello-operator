@@ -538,6 +538,19 @@ class TestRouteApiConfigEnv:
         assert data["ok"] is True
         assert "restart failed" in data["message"].lower()
 
+    def test_plex_required_fields_not_validated_for_mpd_backend(self, client):
+        payload = self._payload(MEDIA_BACKEND="mpd", PLEX_PLAYER_IDENTIFIER="", PLEX_TOKEN="")
+        resp = client.post("/api/config/env", json=payload)
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_plex_required_fields_validated_for_plex_backend(self, client):
+        payload = self._payload(MEDIA_BACKEND="plex", PLEX_PLAYER_IDENTIFIER="")
+        resp = client.post("/api/config/env", json=payload)
+        assert resp.status_code == 422
+        data = resp.get_json()
+        assert any("Plex Player Identifier" in e for e in data["errors"])
+
     def test_non_json_body_returns_400(self, client):
         resp = client.post("/api/config/env", data="not json", content_type="text/plain")
         assert resp.status_code == 400

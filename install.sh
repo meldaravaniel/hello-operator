@@ -8,14 +8,6 @@
 
 set -e
 
-# ---------------------------------------------------------------------------
-# Pinned Piper release — update these when a new version is available
-# ---------------------------------------------------------------------------
-PIPER_VERSION="2023.11.14-2"
-PIPER_ARCH="aarch64"  # Raspberry Pi 4 (64-bit OS)
-PIPER_TARBALL="piper_${PIPER_ARCH}.tar.gz"
-PIPER_URL="https://github.com/OHF-Voice/piper1-gpl/releases/download/${PIPER_VERSION}/${PIPER_TARBALL}"
-
 PIPER_MODEL_NAME="en_US-lessac-medium"
 PIPER_MODEL_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/${PIPER_MODEL_NAME}.onnx"
 PIPER_MODEL_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/${PIPER_MODEL_NAME}.onnx.json"
@@ -66,6 +58,7 @@ apt-get install -y \
     alsa-utils \
     rtl-sdr \
     mpd \
+    mpc \
     mopidy
 
 # ---------------------------------------------------------------------------
@@ -100,22 +93,6 @@ mkdir -p "$CACHE_DIR"
 chown -R "$INSTALL_USER:$INSTALL_USER" "$(dirname "$CACHE_DIR")"
 
 # ---------------------------------------------------------------------------
-# Piper binary
-# ---------------------------------------------------------------------------
-
-if [ ! -f "$PIPER_BIN_DIR/piper" ]; then
-    echo "==> Downloading Piper $PIPER_VERSION..."
-    TMP_DIR="$(mktemp -d)"
-    curl -fsSL "$PIPER_URL" -o "$TMP_DIR/$PIPER_TARBALL"
-    tar -xzf "$TMP_DIR/$PIPER_TARBALL" -C "$TMP_DIR"
-    install -m 755 "$TMP_DIR/piper/piper" "$PIPER_BIN_DIR/piper"
-    rm -rf "$TMP_DIR"
-    echo "==> Piper installed to $PIPER_BIN_DIR/piper."
-else
-    echo "==> Piper already installed at $PIPER_BIN_DIR/piper — skipping."
-fi
-
-# ---------------------------------------------------------------------------
 # Piper voice model
 # ---------------------------------------------------------------------------
 
@@ -138,8 +115,13 @@ echo "==> Creating Python virtual environment..."
 sudo -u "$INSTALL_USER" python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
+sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
+
+echo "==> Linking piper into $PIPER_BIN_DIR..."
+ln -sf "$INSTALL_DIR/venv/bin/piper" "$PIPER_BIN_DIR/piper"
+echo "==> Piper available at $PIPER_BIN_DIR/piper."
 
 # ---------------------------------------------------------------------------
 # Angular frontend
@@ -181,6 +163,14 @@ systemctl daemon-reload
 systemctl enable hello-operator
 systemctl enable hello-operator-web
 
+echo "==> Configuring MPD music directory..."
+MUSIC_DIR="/home/$INSTALL_USER/Music"
+sed -i "s|^music_directory.*|music_directory \"$MUSIC_DIR\"|" /etc/mpd.conf
+
+echo "==> Enabling and starting MPD..."
+systemctl enable mpd
+systemctl start mpd
+
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
@@ -192,19 +182,19 @@ echo "Next steps:"
 echo "  1. Edit /etc/hello-operator/config.env and set:"
 echo "       ASSISTANT_NUMBER   — required for all backends"
 echo ""
-echo "     If using Plex (default, MEDIA_BACKEND=plex):"
-echo "       PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER"
-echo ""
-echo "     If using MPD (MEDIA_BACKEND=mpd):"
-echo "       MPD_HOST, MPD_PORT  — defaults: localhost, 6600"
-echo "       Configure MPD itself in /etc/mpd.conf, then:"
-echo "         sudo systemctl enable mpd && sudo systemctl start mpd"
+echo "     If using MPD (default, MEDIA_BACKEND=mpd):"
+echo "       MPD is already enabled and running. If the audio output device"
+echo "       needs changing, edit /etc/mpd.conf and restart:"
+echo "         sudo systemctl restart mpd"
+echo "       MPD_HOST, MPD_PORT default to localhost:6600 — override if needed"
 echo ""
 echo "     If using Mopidy (MEDIA_BACKEND=mopidy):"
-echo "       MPD_HOST, MPD_PORT  — defaults: localhost, 6600"
-echo "       Configure Mopidy in /etc/mopidy/mopidy.conf, enable the"
+echo "       Configure Mopidy in /etc/mopidy/mopidy.conf and enable the"
 echo "       mopidy-mpd extension, then:"
 echo "         sudo systemctl enable mopidy && sudo systemctl start mopidy"
+echo ""
+echo "     If using Plex (MEDIA_BACKEND=plex):"
+echo "       PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER"
 echo ""
 echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
 echo "     to add your local FM stations. Requires an RTL-SDR USB dongle."

@@ -49,6 +49,13 @@ DOC_PAGES = [
 # Configuration field definitions
 # ---------------------------------------------------------------------------
 
+# Sections that are only relevant when one of the listed backends is active.
+# Fields in these sections skip required-validation for other backends.
+BACKEND_SECTIONS: dict[str, list[str]] = {
+    "Plex": ["plex"],
+    "MPD":  ["mpd", "mopidy"],
+}
+
 CONFIG_FIELDS = [
     {
         "section": "Media Backend",
@@ -57,7 +64,7 @@ CONFIG_FIELDS = [
         "type": "select",
         "options": ["plex", "mpd", "mopidy"],
         "required": False,
-        "default": "plex",
+        "default": "mpd",
         "help": "Which media player backend to use. "
                 "'plex' connects to a Plex Media Server; "
                 "'mpd' connects to a Music Player Daemon; "
@@ -367,9 +374,17 @@ def api_config_env():
     updates: dict = {}
     errors: list = []
 
+    backend = str(payload.get("MEDIA_BACKEND", "mpd")).strip() or "mpd"
+
     for field in CONFIG_FIELDS:
         key = field["key"]
         value = str(payload.get(key, "")).strip()
+        # Skip required-validation for fields that belong to a non-selected backend.
+        required_backends = BACKEND_SECTIONS.get(field["section"])
+        if required_backends and backend not in required_backends:
+            if value:
+                updates[key] = value
+            continue
         # Password fields: blank means "keep current value"
         if field["type"] == "password" and not value:
             continue
