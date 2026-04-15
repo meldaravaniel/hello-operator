@@ -4,15 +4,11 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Paths and versions — keep PIPER_VERSION in sync with install.sh
+# Paths
 # ---------------------------------------------------------------------------
 INSTALL_DIR="/opt/hello-operator"
 INSTALL_USER="hello-operator"
 
-PIPER_VERSION="2023.11.14-2"
-PIPER_ARCH="aarch64"
-PIPER_TARBALL="piper_${PIPER_ARCH}.tar.gz"
-PIPER_URL="https://github.com/OHF-Voice/piper1-gpl/releases/download/${PIPER_VERSION}/${PIPER_TARBALL}"
 PIPER_MODEL_NAME="en_US-lessac-medium"
 PIPER_MODEL_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
 
@@ -34,6 +30,9 @@ apt-get install -y --no-install-recommends \
     portaudio19-dev \
     alsa-utils \
     rtl-sdr \
+    mpd \
+    mpc \
+    mopidy \
     curl
 
 # ---------------------------------------------------------------------------
@@ -64,16 +63,6 @@ mkdir -p "$CACHE_DIR"
 chown -R "$INSTALL_USER:$INSTALL_USER" "$(dirname "$CACHE_DIR")"
 
 # ---------------------------------------------------------------------------
-# Piper binary
-# ---------------------------------------------------------------------------
-echo "==> Downloading Piper $PIPER_VERSION..."
-TMP_DIR="$(mktemp -d)"
-curl -fsSL "$PIPER_URL" -o "$TMP_DIR/$PIPER_TARBALL"
-tar -xzf "$TMP_DIR/$PIPER_TARBALL" -C "$TMP_DIR"
-install -m 755 "$TMP_DIR/piper/piper" "$PIPER_BIN_DIR/piper"
-rm -rf "$TMP_DIR"
-
-# ---------------------------------------------------------------------------
 # Piper voice model
 # ---------------------------------------------------------------------------
 echo "==> Downloading Piper voice model $PIPER_MODEL_NAME..."
@@ -88,8 +77,12 @@ echo "==> Creating Python virtual environment..."
 python3 -m venv "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
+"$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
+
+echo "==> Linking piper into $PIPER_BIN_DIR..."
+ln -sf "$INSTALL_DIR/venv/bin/piper" "$PIPER_BIN_DIR/piper"
 
 # ---------------------------------------------------------------------------
 # Ownership and systemd service
@@ -121,6 +114,8 @@ ln -sf /etc/systemd/system/hello-operator.service \
         /etc/systemd/system/multi-user.target.wants/hello-operator.service
 ln -sf /etc/systemd/system/hello-operator-web.service \
         /etc/systemd/system/multi-user.target.wants/hello-operator-web.service
+ln -sf /lib/systemd/system/mpd.service \
+        /etc/systemd/system/multi-user.target.wants/mpd.service
 
 # ---------------------------------------------------------------------------
 # Clean up to reduce image size
@@ -132,12 +127,4 @@ rm -rf /var/lib/apt/lists/*
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Image setup complete."
-echo ""
-echo "After flashing, boot the Pi and complete setup:"
-echo "  1. Edit /etc/hello-operator/config.env"
-echo "     Set PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER, and ASSISTANT_NUMBER"
-echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
-echo "  3. sudo systemctl start hello-operator"
-echo "  4. sudo journalctl -u hello-operator -f"
+echo "==> Image setup complete. See INSTALL.md for post-flash configuration."

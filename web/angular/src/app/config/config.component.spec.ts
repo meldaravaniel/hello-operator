@@ -95,9 +95,9 @@ describe('ConfigComponent', () => {
       expect(component.mediaBackend).toBe('mpd');
     });
 
-    it("defaults to 'plex' when MEDIA_BACKEND is not set", () => {
+    it("defaults to 'mpd' when MEDIA_BACKEND is not set", () => {
       delete component.values['MEDIA_BACKEND'];
-      expect(component.mediaBackend).toBe('plex');
+      expect(component.mediaBackend).toBe('mpd');
     });
   });
 
@@ -140,10 +140,10 @@ describe('ConfigComponent', () => {
       expect(component.isSectionVisible('Plex')).toBe(false);
     });
 
-    it("defaults to showing Plex when MEDIA_BACKEND is unset", () => {
+    it("defaults to showing MPD when MEDIA_BACKEND is unset", () => {
       delete component.values['MEDIA_BACKEND'];
-      expect(component.isSectionVisible('Plex')).toBe(true);
-      expect(component.isSectionVisible('MPD')).toBe(false);
+      expect(component.isSectionVisible('MPD')).toBe(true);
+      expect(component.isSectionVisible('Plex')).toBe(false);
     });
   });
 

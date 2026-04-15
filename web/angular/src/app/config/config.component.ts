@@ -64,7 +64,7 @@ export class ConfigComponent implements OnInit {
   }
 
   get mediaBackend(): string {
-    return this.values['MEDIA_BACKEND'] || 'plex';
+    return this.values['MEDIA_BACKEND'] || 'mpd';
   }
 
   isSectionVisible(section: string): boolean {

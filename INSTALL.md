@@ -75,7 +75,7 @@ Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.en
 |---|---|
 | `ASSISTANT_NUMBER` | 7-digit reserved number for the diagnostic assistant (must not conflict with any media entry) |
 
-### Required for Plex (`MEDIA_BACKEND=plex`, default)
+### Required for Plex (`MEDIA_BACKEND=plex`)
 
 | Variable | Description |
 |---|---|
@@ -90,6 +90,18 @@ Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.en
 
 Set `MEDIA_BACKEND=mpd` to connect to a Music Player Daemon instance, or `MEDIA_BACKEND=mopidy` to connect to a Mopidy server. Both use the same `MPD_HOST` and `MPD_PORT` variables — Mopidy implements the MPD wire protocol via its `mopidy-mpd` extension.
 
+**MPD setup notes:**
+- MPD is installed and enabled automatically by the install script and pre-built image.
+- The install script configures MPD to look for music in `~/Music`. Image users need to set this manually in `/etc/mpd.conf`:
+  ```
+  music_directory "/home/<your-username>/Music"
+  ```
+- After adding files to your Music folder, update the MPD database so they appear in the library:
+  ```bash
+  mpc update
+  ```
+- If the audio output device needs changing from the system default, edit `/etc/mpd.conf` and restart: `sudo systemctl restart mpd`
+
 **Mopidy setup notes:**
 - Install the MPD frontend extension: `sudo pip install mopidy-mpd`
 - In `/etc/mopidy/mopidy.conf`, enable the MPD extension and set `hostname = ::` (or `0.0.0.0`) so hello-operator can reach it over the network
@@ -103,7 +115,7 @@ These have sensible defaults matching the install script's paths and the hardwar
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEDIA_BACKEND` | `plex` | Media player backend: `plex`, `mpd`, or `mopidy` |
+| `MEDIA_BACKEND` | `mpd` | Media player backend: `mpd`, `mopidy`, or `plex` |
 | `PLEX_URL` | `http://localhost:32400` | Plex server URL (Plex backend only) |
 | `MPD_HOST` | `localhost` | MPD/Mopidy server hostname or IP (MPD and Mopidy backends) |
 | `MPD_PORT` | `6600` | MPD/Mopidy TCP port (MPD and Mopidy backends) |
