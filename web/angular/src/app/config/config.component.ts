@@ -12,7 +12,6 @@ import { ApiService, ConfigField, RadioStation } from '../api.service';
 
 /** Sections visible only when one of the listed backends is selected. */
 const BACKEND_SECTIONS: Record<string, string[]> = {
-  'Plex': ['plex'],
   'MPD': ['mpd', 'mopidy'],
 };
 

@@ -144,7 +144,7 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 
 ## Error States
 
-### `SCRIPT_PLEX_FAILURE`
+### `SCRIPT_MEDIA_FAILURE`
 **Pre-rendered**
 > "I'm sorry, our long-distance exchange appears to be temporarily out of service. We apologize for the inconvenience."
 
@@ -153,7 +153,7 @@ files. Scripts marked **runtime** are synthesized on demand via live Piper
 > "I'm sorry, our directory appears to be temporarily unavailable. The switchboard is experiencing an internal fault."
 
 ### `SCRIPT_RETRY_PROMPT`
-**Pre-rendered** (used for both Plex and DB failures)
+**Pre-rendered** (used for both media and DB failures)
 > "If you'd like me to try the exchange again, dial one. Otherwise, you may replace your handset and try your call again later."
 
 ### `SCRIPT_NO_CONTENT`

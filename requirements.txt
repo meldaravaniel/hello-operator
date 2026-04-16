@@ -1,4 +1,3 @@
 numpy
 python-mpd2
 requests
-sounddevice

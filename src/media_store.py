@@ -140,12 +140,6 @@ class MediaStore:
                     updated_at TEXT NOT NULL
                 )
             """)
-            # Migrate from old plex_cache table name if it exists
-            tables = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
-            if 'plex_cache' in tables and 'media_cache' not in tables:
-                conn.execute("ALTER TABLE plex_cache RENAME TO media_cache")
 
     # ------------------------------------------------------------------
     # Private DB helpers
@@ -159,12 +153,10 @@ class MediaStore:
         if row is None:
             return None
         data = json.loads(row["data"])
-        # Support both old plex_key and new media_key serialization format
-        result = []
-        for d in data:
-            key = d.get("media_key") or d.get("plex_key", "")
-            result.append(MediaItem(media_key=key, name=d["name"], media_type=d["media_type"]))
-        return result
+        return [
+            MediaItem(media_key=d["media_key"], name=d["name"], media_type=d["media_type"])
+            for d in data
+        ]
 
     def _write(self, cache_key: str, items: List[MediaItem]) -> None:
         with self._connect() as conn:

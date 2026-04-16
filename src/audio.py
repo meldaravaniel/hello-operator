@@ -1,20 +1,24 @@
 """Audio output for hello-operator.
 
-SounddeviceAudio — concrete implementation using sounddevice + numpy.
+SounddeviceAudio — concrete implementation using aplay (subprocess).
 MockAudio        — records calls for use in unit tests.
 
 All public play_* methods are non-blocking: they enqueue a task onto an
 internal queue.Queue and return immediately.  A single daemon worker thread
 dequeues and executes tasks in FIFO order.  Calling stop() clears the queue,
-sets a stop event, and calls sd.stop() so current playback halts within one
-polling cycle (~5 ms).
+sets a stop event, and terminates the current aplay process so current
+playback halts within one polling cycle (~5 ms).
+
+aplay is used instead of sounddevice because it talks directly to ALSA and
+works in a systemd service context where PulseAudio is not available.
 """
 
+import io
 import queue
+import subprocess
 import threading
 import wave
 import numpy as np
-import sounddevice as sd
 
 from src.interfaces import AudioInterface
 
@@ -60,20 +64,50 @@ def _generate_tone(frequencies: list, duration_ms: int, sample_rate: int = _SAMP
     return wave_data.astype(np.float32)
 
 
+def _array_to_wav_bytes(samples: np.ndarray, sample_rate: int) -> bytes:
+    """Convert a float32 numpy array to in-memory WAV bytes (int16).
+
+    Multi-channel arrays (shape [frames, channels]) are flattened to
+    interleaved samples before encoding.
+    """
+    samples_i16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+    if samples_i16.ndim > 1:
+        n_channels = samples_i16.shape[1]
+        data = samples_i16.flatten()
+    else:
+        n_channels = 1
+        data = samples_i16
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(n_channels)
+        wf.setsampwidth(2)  # int16 = 2 bytes per sample
+        wf.setframerate(sample_rate)
+        wf.writeframes(data.tobytes())
+    return buf.getvalue()
+
+
 class SounddeviceAudio(AudioInterface):
-    """Concrete audio implementation using sounddevice + numpy.
+    """Concrete audio implementation using aplay (subprocess).
 
     All play_* methods enqueue a task and return immediately.  A single daemon
     worker thread executes tasks in FIFO order.  stop() drains the queue and
-    halts current playback so the caller regains control within ~5 ms.
+    terminates the current aplay process so the caller regains control within ~5 ms.
+
+    aplay is invoked as ``aplay -q -`` (read WAV from stdin, quiet mode).  It
+    talks directly to ALSA, which works in a systemd service context where
+    PulseAudio is not available.
+
+    The _popen parameter is injectable for unit testing.
     """
 
-    def __init__(self, sample_rate: int = _SAMPLE_RATE) -> None:
+    def __init__(self, sample_rate: int = _SAMPLE_RATE, _popen=None) -> None:
         self._sample_rate = sample_rate
+        self._popen = _popen if _popen is not None else subprocess.Popen
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
         self._busy = False  # True while worker is executing a task
+        self._proc = None   # Currently running aplay subprocess (if any)
 
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
@@ -85,27 +119,18 @@ class SounddeviceAudio(AudioInterface):
     def play_tone(self, frequencies: list, duration_ms: int) -> None:
         """Enqueue a sine wave mix task; returns immediately."""
         waveform = _generate_tone(frequencies, duration_ms, self._sample_rate)
-        self._enqueue(lambda: self._play_waveform(waveform))
+        wav_bytes = _array_to_wav_bytes(waveform, self._sample_rate)
+        self._enqueue(lambda: self._play_bytes(wav_bytes))
 
     def play_file(self, path: str) -> None:
-        """Enqueue a WAV file playback task; returns immediately."""
-        # Read the file here (in the calling thread) so the path is accessed
-        # before any later stop/clear can race with the enqueue.
-        with wave.open(path, 'rb') as wf:
-            sr = wf.getframerate()
-            n_channels = wf.getnchannels()
-            sample_width = wf.getsampwidth()
-            raw = wf.readframes(wf.getnframes())
+        """Enqueue a WAV file playback task; returns immediately.
 
-        dtype_map = {1: np.int8, 2: np.int16, 4: np.int32}
-        dtype = dtype_map.get(sample_width, np.int16)
-        samples = np.frombuffer(raw, dtype=dtype).astype(np.float32)
-        max_val = float(np.iinfo(dtype).max)
-        samples = samples / max_val
-        if n_channels > 1:
-            samples = samples.reshape(-1, n_channels)
-
-        self._enqueue(lambda: self._play_waveform(samples, sr))
+        The file is read eagerly here (in the calling thread) so the data is
+        captured before any later stop/clear can race with the enqueue.
+        """
+        with open(path, 'rb') as f:
+            wav_bytes = f.read()
+        self._enqueue(lambda: self._play_bytes(wav_bytes))
 
     def play_dtmf(self, digit: int) -> None:
         """Enqueue the standard DTMF tone for digit 0–9; returns immediately."""
@@ -115,7 +140,8 @@ class SounddeviceAudio(AudioInterface):
     def play_off_hook_tone(self) -> None:
         """Enqueue a looping off-hook warning tone task; returns immediately."""
         waveform = _generate_tone(_OFF_HOOK_FREQ, _OFF_HOOK_SEGMENT_MS, self._sample_rate)
-        self._enqueue(lambda: self._play_off_hook_loop(waveform))
+        wav_bytes = _array_to_wav_bytes(waveform, self._sample_rate)
+        self._enqueue(lambda: self._play_off_hook_loop(wav_bytes))
 
     def stop(self) -> None:
         """Stop any current playback immediately and clear all queued tasks."""
@@ -128,11 +154,12 @@ class SounddeviceAudio(AudioInterface):
                 self._queue.task_done()
             except queue.Empty:
                 break
-        # Tell sounddevice to stop immediately.
-        sd.stop()
-        # Mark as not playing.
+        # Terminate any running aplay process.
         with self._lock:
+            proc = self._proc
             self._busy = False
+        if proc is not None:
+            proc.terminate()
 
     def is_playing(self) -> bool:
         """True if the worker is currently executing a task or the queue is non-empty."""
@@ -168,34 +195,66 @@ class SounddeviceAudio(AudioInterface):
                 with self._lock:
                     self._busy = False
 
-    def _play_waveform(self, samples: np.ndarray, sample_rate: int = None) -> None:
-        """Play samples via sounddevice, polling for stop()."""
-        if sample_rate is None:
-            sample_rate = self._sample_rate
-        self._stop_event.clear()
-        sd.play(samples, samplerate=sample_rate)
-        total = len(samples) / sample_rate
-        interval = 0.005  # 5 ms polling — within one cycle of the stop guarantee
-        elapsed = 0.0
-        while elapsed < total:
-            if self._stop_event.wait(timeout=interval):
-                sd.stop()
+    def _play_bytes(self, wav_bytes: bytes) -> None:
+        """Play WAV bytes via aplay subprocess, polling for the stop event."""
+        proc = self._popen(
+            ['aplay', '-q', '-'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with self._lock:
+            self._proc = proc
+        try:
+            if self._stop_event.is_set():
+                proc.terminate()
                 return
-            elapsed += interval
-
-    def _play_off_hook_loop(self, waveform: np.ndarray) -> None:
-        """Loop the off-hook waveform segment until stop() is called."""
-        self._stop_event.clear()
-        while not self._stop_event.is_set():
-            sd.play(waveform, samplerate=self._sample_rate)
-            total = _OFF_HOOK_SEGMENT_MS / 1000.0
-            interval = 0.005
-            elapsed = 0.0
-            while elapsed < total:
-                if self._stop_event.wait(timeout=interval):
-                    sd.stop()
+            try:
+                proc.stdin.write(wav_bytes)
+                proc.stdin.close()
+            except BrokenPipeError:
+                return
+            while proc.poll() is None:
+                if self._stop_event.wait(timeout=0.005):
+                    proc.terminate()
+                    proc.wait()
                     return
-                elapsed += interval
+        finally:
+            proc.wait()
+            with self._lock:
+                if self._proc is proc:
+                    self._proc = None
+
+    def _play_off_hook_loop(self, wav_bytes: bytes) -> None:
+        """Loop aplay with the off-hook waveform until stop() is called."""
+        while not self._stop_event.is_set():
+            proc = self._popen(
+                ['aplay', '-q', '-'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            with self._lock:
+                self._proc = proc
+            try:
+                if self._stop_event.is_set():
+                    proc.terminate()
+                    return
+                try:
+                    proc.stdin.write(wav_bytes)
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    return
+                while proc.poll() is None:
+                    if self._stop_event.wait(timeout=0.005):
+                        proc.terminate()
+                        proc.wait()
+                        return
+            finally:
+                proc.wait()
+                with self._lock:
+                    if self._proc is proc:
+                        self._proc = None
 
 
 class MockAudio(AudioInterface):

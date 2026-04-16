@@ -1,6 +1,6 @@
 # Hello Operator
 
-A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interface for a media player. Picking up the handset triggers an interactive voice menu — styled as a telephone operator experience — where you browse and play playlists, artists, albums, and genres by dialing. Supports **Plex**, **MPD** (Music Player Daemon), and **Mopidy** as backends.
+A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interface for a media player. Picking up the handset triggers an interactive voice menu — styled as a telephone operator experience — where you browse and play playlists, artists, albums, and genres by dialing. Supports **MPD** (Music Player Daemon) and **Mopidy** as backends.
 
 ---
 
@@ -14,7 +14,7 @@ A vintage rotary phone wired to a Raspberry Pi 4 that acts as a hands-on interfa
 | Dial `9` | Go back one level |
 | Dial two digits within 300 ms | Enter direct-dial mode |
 | Direct-dial a 7-digit number | Connect directly to a media item or radio station |
-| Replace handset | Stop local audio (music keeps playing on Plex/MPD) |
+| Replace handset | Stop local audio (music keeps playing on MPD/Mopidy) |
 
 All menus are spoken aloud. There are no screens.
 
@@ -37,7 +37,6 @@ Setup guides for each hardware component are in `docs/`:
 - [`docs/BREAKBEAM_SETUP.md`](docs/BREAKBEAM_SETUP.md) — IR breakbeam pulse switch
 - [`docs/HOOK_SWITCH_SETUP.md`](docs/HOOK_SWITCH_SETUP.md) — hook switch
 - [`docs/PIPER_SETUP.md`](docs/PIPER_SETUP.md) — Piper TTS voice engine
-- [`docs/PLEX_SETUP.md`](docs/PLEX_SETUP.md) — Plex server configuration (Plex backend only)
 
 ---
 
@@ -73,7 +72,7 @@ http://<pi-hostname>.local:8080
 
 The default hostname on Raspberry Pi OS is `raspberrypi`, so the address is typically `http://raspberrypi.local:8080`. The web interface lets you configure all settings, browse documentation, and restart the service — no command line needed.
 
-Settings are stored in `/etc/hello-operator/config.env`. **Always required:** `ASSISTANT_NUMBER`. **Required for Plex:** `PLEX_TOKEN`, `PLEX_PLAYER_IDENTIFIER`. **Optional:** `MEDIA_BACKEND` (default: `plex`; also accepts `mpd` or `mopidy`), MPD/Mopidy host/port, Plex URL, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
+Settings are stored in `/etc/hello-operator/config.env`. **Always required:** `ASSISTANT_NUMBER`. **Optional:** `MEDIA_BACKEND` (default: `mpd`; also accepts `mopidy`), MPD/Mopidy host/port, GPIO pin assignments, Piper paths, TTS cache directory. See [`INSTALL.md`](INSTALL.md) for the full table.
 
 ---
 
@@ -91,7 +90,7 @@ pip install -r requirements-dev.txt
 # Run all unit tests
 python -m pytest -m "not integration" -v
 
-# Run integration tests (requires live Plex server)
+# Run integration tests (requires live MPD/Mopidy server)
 python -m pytest -m integration -v
 
 # Run the app
@@ -131,7 +130,7 @@ cd web/angular && npm run build
 # Flask at :8080 now serves the full SPA
 ```
 
-Tests use dependency injection via Python ABCs — no hardware or network required. GPIO, audio, TTS, Plex, and MPD are all mockable at the seam without patching.
+Tests use dependency injection via Python ABCs — no hardware or network required. GPIO, audio, TTS, and MPD are all mockable at the seam without patching.
 
 `DOCS_ROOT` defaults to the project root, so the documentation pages work without any extra configuration. The service status and restart buttons will fail gracefully since `systemctl` is not available outside a Pi.
 
@@ -147,10 +146,8 @@ src/
   session.py       # lifecycle: GPIO events → menu state machine
   menu.py          # state machine
   gpio_handler.py  # decodes raw GPIO pulses into events
-  plex_client.py   # Plex HTTP API (implements MediaClientInterface)
-  mpd_client.py    # MPD client via python-mpd2 (implements MediaClientInterface)
+  mpd_client.py    # MPD/Mopidy client via python-mpd2 (implements MediaClientInterface)
   media_store.py   # local SQLite browse cache (backend-agnostic)
-  plex_store.py    # shim — re-exports MediaStore for backward compat
   phone_book.py    # maps 7-digit numbers to media items
   audio.py         # sounddevice audio output
   tts.py           # Piper TTS

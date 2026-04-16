@@ -116,13 +116,13 @@ describe('ApiService', () => {
 
     it('returns fields, values, and stations', done => {
       const payload = {
-        fields: [{ section: 'Plex', key: 'PLEX_URL', label: 'Plex URL', type: 'url', required: false, help: '' }],
-        values: { PLEX_URL: 'http://localhost:32400' },
+        fields: [{ section: 'MPD', key: 'MPD_HOST', label: 'MPD Host', type: 'text', required: false, help: '' }],
+        values: { MPD_HOST: 'localhost' },
         stations: [{ name: 'KEXP', frequency_mhz: 90.3, phone_number: '5550903' }],
       };
       service.getConfig().subscribe(data => {
         expect(data.fields.length).toBe(1);
-        expect(data.values['PLEX_URL']).toBe('http://localhost:32400');
+        expect(data.values['MPD_HOST']).toBe('localhost');
         expect(data.stations[0].name).toBe('KEXP');
         done();
       });
@@ -141,7 +141,7 @@ describe('ApiService', () => {
     });
 
     it('sends the values dict as the request body', () => {
-      const values = { PLEX_URL: 'http://192.168.1.50:32400', ASSISTANT_NUMBER: '5550001' };
+      const values = { MPD_HOST: '192.168.1.50', ASSISTANT_NUMBER: '5550001' };
       service.saveConfigEnv(values).subscribe();
       const req = http.expectOne('/api/config/env');
       expect(req.request.body).toEqual(values);

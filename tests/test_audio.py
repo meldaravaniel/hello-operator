@@ -1,67 +1,101 @@
 """Tests for src/audio.py — SounddeviceAudio concrete implementation.
 
-sounddevice is mocked at the module level because PortAudio is not available
-in the development environment.  All tests verify behavior through the mock
-rather than actually playing sound.
+subprocess.Popen is mocked at the module level via the _popen_mock fixture
+so no real aplay process is launched.  All tests verify behaviour through the
+FakeProcess helper rather than actually playing sound.
 
-After F-04, SounddeviceAudio uses an internal worker thread. All play_*
-methods are non-blocking — they enqueue a task and return immediately. The
-worker thread executes tasks in FIFO order. stop() drains the queue and
-halts playback within one polling cycle.
+After F-04, SounddeviceAudio uses an internal worker thread.  All play_*
+methods are non-blocking — they enqueue a task and return immediately.  The
+worker thread executes tasks in FIFO order.  stop() drains the queue and
+terminates the current aplay process within one polling cycle.
 """
 
-import sys
-import types
+import io
 import threading
 import time
 import wave
 import array
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Mock sounddevice at the module level before importing src.audio
-# ---------------------------------------------------------------------------
-
-# Build a minimal mock of the sounddevice module
-_sd_mock = MagicMock()
-_sd_mock.play = MagicMock()
-_sd_mock.stop = MagicMock()
-_sd_mock.wait = MagicMock()
-_sd_mock.OutputStream = MagicMock()
-sys.modules['sounddevice'] = _sd_mock
-
-# Now safe to import
 from src.audio import SounddeviceAudio, MockAudio  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# FakeProcess — simulates an aplay subprocess
 # ---------------------------------------------------------------------------
 
+class FakeProcess:
+    """Minimal fake subprocess.Popen result for testing SounddeviceAudio.
+
+    By default the process finishes immediately (poll() returns 0).
+    Pass a finish_event to make poll() block until the event is set
+    (or until terminate() is called).
+    """
+
+    def __init__(self, finish_event=None):
+        self.stdin = MagicMock()
+        self._finish = finish_event
+        self.terminated = threading.Event()
+        self._written_bytes = bytearray()
+        self.write_called = threading.Event()
+
+        def _capture_write(data):
+            self._written_bytes.extend(data)
+            self.write_called.set()
+
+        self.stdin.write.side_effect = _capture_write
+
+    @property
+    def written_bytes(self):
+        return bytes(self._written_bytes)
+
+    def poll(self):
+        if self.terminated.is_set():
+            return 0
+        if self._finish is None or self._finish.is_set():
+            return 0
+        return None
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        self.terminated.set()
+        if self._finish is not None:
+            self._finish.set()
+
+
+# ---------------------------------------------------------------------------
+# Module-level popen mock — injected into every SounddeviceAudio under test
+# ---------------------------------------------------------------------------
+
+_popen_mock = MagicMock()
+
+
 @pytest.fixture(autouse=True)
-def reset_sd_mock():
-    """Reset the sounddevice mock between tests."""
-    _sd_mock.reset_mock()
-    _sd_mock.play = MagicMock()
-    _sd_mock.stop = MagicMock()
-    _sd_mock.wait = MagicMock()
+def reset_popen_mock():
+    """Reset the popen mock between tests; default returns a fast-finishing FakeProcess."""
+    _popen_mock.reset_mock()
+    _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
     yield
 
 
 @pytest.fixture
 def audio():
-    """Fresh SounddeviceAudio instance with daemon worker thread."""
-    a = SounddeviceAudio()
+    """Fresh SounddeviceAudio instance with injected mock popen."""
+    a = SounddeviceAudio(_popen=_popen_mock)
     yield a
-    # Ensure stop is called to clean up any background threads
     a.stop()
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _make_wav(tmp_path, name="test.wav", n_samples=4410):
-    """Helper: write a minimal valid WAV file and return its path."""
+    """Write a minimal valid WAV file and return its path."""
     wav_path = str(tmp_path / name)
     with wave.open(wav_path, 'w') as wf:
         wf.setnchannels(1)
@@ -82,6 +116,24 @@ def _wait_for(condition, timeout=2.0, interval=0.005):
     return condition()
 
 
+def _capture_wav_bytes(audio, method, *args, timeout=2.0):
+    """Call audio.<method>(*args) and return the WAV bytes written to aplay stdin."""
+    proc = FakeProcess()
+    _popen_mock.side_effect = lambda *a, **kw: proc
+    getattr(audio, method)(*args)
+    assert proc.write_called.wait(timeout=timeout), f"{method} never wrote to aplay stdin"
+    return proc.written_bytes
+
+
+def _parse_wav_samples(wav_bytes):
+    """Parse WAV bytes into (samples_int16, sample_rate)."""
+    buf = io.BytesIO(wav_bytes)
+    with wave.open(buf, 'rb') as wf:
+        sr = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+    return np.frombuffer(raw, dtype=np.int16), sr
+
+
 # ---------------------------------------------------------------------------
 # 2.1 Dial tone
 # ---------------------------------------------------------------------------
@@ -90,24 +142,10 @@ class TestDialTone:
 
     def test_dial_tone_frequencies(self, audio):
         """Generated waveform contains 350 Hz and 440 Hz components (FFT check)."""
-        captured = {}
-        ready = threading.Event()
+        wav_bytes = _capture_wav_bytes(audio, 'play_tone', [350, 440], 100)
+        waveform, sr = _parse_wav_samples(wav_bytes)
 
-        def capture_play(data, samplerate, **kwargs):
-            captured['data'] = data
-            captured['samplerate'] = samplerate
-            ready.set()
-
-        _sd_mock.play.side_effect = capture_play
-        audio.play_tone([350, 440], duration_ms=100)
-
-        # play_tone is now non-blocking; wait for worker to call sd.play
-        assert ready.wait(timeout=2.0), "sounddevice.play was not called"
-        waveform = captured['data']
-        sr = captured['samplerate']
-
-        # FFT check
-        spectrum = np.abs(np.fft.rfft(waveform))
+        spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
         freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
 
         def peak_near(target_hz, tolerance=5):
@@ -119,35 +157,34 @@ class TestDialTone:
         assert peak_near(440) > noise_floor, "440 Hz component not found in waveform"
 
     def test_dial_tone_stops_after_duration(self, audio):
-        """play_tone with a short duration — sounddevice.play is called once."""
+        """play_tone with a short duration — aplay is invoked once."""
         called = threading.Event()
-        _sd_mock.play.side_effect = lambda *a, **kw: called.set()
+
+        def make_proc(*a, **kw):
+            called.set()
+            return FakeProcess()
+
+        _popen_mock.side_effect = make_proc
         audio.play_tone([350, 440], duration_ms=50)
-        assert called.wait(timeout=2.0), "sounddevice.play was never called"
+        assert called.wait(timeout=2.0), "aplay was never invoked"
 
     def test_dial_tone_stop_called_early(self, audio):
         """stop() while tone playing → is_playing() returns False promptly."""
-        # Block sd.play so we can observe the playing state and then stop
-        block = threading.Event()
+        finish = threading.Event()
         playing = threading.Event()
 
-        def blocking_play(data, samplerate, **kwargs):
+        def make_blocking_proc(*a, **kw):
             playing.set()
-            block.wait(timeout=2.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = blocking_play
+        _popen_mock.side_effect = make_blocking_proc
 
-        # Run play_tone in a thread so this test works regardless of
-        # whether play_tone is blocking (old) or non-blocking (new/worker).
-        t = threading.Thread(target=audio.play_tone, args=([350, 440], 5000), daemon=True)
-        t.start()
-
-        # Wait until sd.play has been called (worker or direct)
+        audio.play_tone([350, 440], 5000)
         assert playing.wait(timeout=2.0), "play never started"
         assert audio.is_playing()
 
         audio.stop()
-        block.set()  # unblock sd.play
+        finish.set()
 
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after stop()"
@@ -160,42 +197,35 @@ class TestDialTone:
 class TestOffHookTone:
 
     def test_off_hook_tone_plays_continuously(self, audio):
-        """play_off_hook_tone() → tone plays in a loop; doesn't stop itself."""
+        """play_off_hook_tone() → aplay is invoked repeatedly; doesn't stop itself."""
         call_count = [0]
         started = threading.Event()
 
-        def count_plays(data, samplerate, **kwargs):
+        def make_proc(*a, **kw):
             call_count[0] += 1
             started.set()
+            return FakeProcess()
 
-        _sd_mock.play.side_effect = count_plays
+        _popen_mock.side_effect = make_proc
 
-        # Run in thread in case old blocking impl is under test (will still be
-        # stopped by audio.stop() in teardown via the fixture)
-        t = threading.Thread(target=audio.play_off_hook_tone, daemon=True)
-        t.start()
-
-        # Wait for at least one play call, then let it loop briefly
+        audio.play_off_hook_tone()
         assert started.wait(timeout=2.0), "off-hook tone never started"
         time.sleep(0.05)
-
-        # Stop it so the fixture teardown doesn't hang
         audio.stop()
 
-        # Should have looped more than once (or at least once)
         assert call_count[0] >= 1
 
     def test_off_hook_tone_stops_on_stop_call(self, audio):
         """stop() while off-hook tone playing → tone stops; is_playing() False."""
         started = threading.Event()
 
-        def set_started(data, samplerate, **kwargs):
+        def make_proc(*a, **kw):
             started.set()
+            return FakeProcess()
 
-        _sd_mock.play.side_effect = set_started
+        _popen_mock.side_effect = make_proc
 
-        t = threading.Thread(target=audio.play_off_hook_tone, daemon=True)
-        t.start()
+        audio.play_off_hook_tone()
         assert started.wait(timeout=2.0), "off-hook tone never started"
 
         audio.stop()
@@ -224,28 +254,12 @@ DTMF_FREQUENCIES = {
 
 class TestDtmfTones:
 
-    def _capture_waveform(self, audio, digit):
-        captured = {}
-        ready = threading.Event()
-
-        def capture(data, samplerate, **kwargs):
-            captured['data'] = data
-            captured['samplerate'] = samplerate
-            ready.set()
-
-        _sd_mock.play.side_effect = capture
-        audio.play_dtmf(digit)
-        ready.wait(timeout=2.0)
-        return captured
-
     def test_dtmf_digit_frequencies(self, audio):
         """play_dtmf(1) → waveform contains 697 Hz and 1209 Hz (FFT check)."""
-        captured = self._capture_waveform(audio, 1)
-        assert 'data' in captured
+        wav_bytes = _capture_wav_bytes(audio, 'play_dtmf', 1)
+        waveform, sr = _parse_wav_samples(wav_bytes)
 
-        waveform = captured['data']
-        sr = captured['samplerate']
-        spectrum = np.abs(np.fft.rfft(waveform))
+        spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
         freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
 
         def peak_near(target_hz, tolerance=10):
@@ -261,13 +275,10 @@ class TestDtmfTones:
         """All digits 0–9 produce distinct frequency pairs."""
         seen_pairs = set()
         for digit in range(10):
-            captured = self._capture_waveform(audio, digit)
-            _sd_mock.reset_mock()
-            assert 'data' in captured, f"digit {digit} produced no waveform"
+            wav_bytes = _capture_wav_bytes(audio, 'play_dtmf', digit)
+            waveform, sr = _parse_wav_samples(wav_bytes)
 
-            waveform = captured['data']
-            sr = captured['samplerate']
-            spectrum = np.abs(np.fft.rfft(waveform))
+            spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
             freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
 
             def peak_idx(target_hz, tolerance=10):
@@ -285,7 +296,6 @@ class TestDtmfTones:
         start = time.monotonic()
         audio.play_dtmf(5)
         elapsed = time.monotonic() - start
-        # Non-blocking enqueue should return in well under 100 ms
         assert elapsed < 0.5, f"play_dtmf took {elapsed:.3f}s — expected near-instant return"
 
 
@@ -295,41 +305,36 @@ class TestDtmfTones:
 
 class TestFilePlayback:
 
-    def test_play_file_called_with_correct_path(self, audio, tmp_path):
-        """play_file(path) → backend receives that path's samples."""
+    def test_play_file_sends_file_bytes_to_aplay(self, audio, tmp_path):
+        """play_file(path) → aplay receives the exact bytes from the WAV file."""
         wav_path = _make_wav(tmp_path)
-        called = threading.Event()
-        captured = {}
+        with open(wav_path, 'rb') as f:
+            expected_bytes = f.read()
 
-        def capture(data, samplerate, **kwargs):
-            captured['data'] = data
-            called.set()
-
-        _sd_mock.play.side_effect = capture
+        proc = FakeProcess()
+        _popen_mock.side_effect = lambda *a, **kw: proc
         audio.play_file(wav_path)
 
-        assert called.wait(timeout=2.0), "sounddevice.play was never called"
-        assert len(captured['data']) > 0
+        assert proc.write_called.wait(timeout=2.0), "aplay was never invoked"
+        assert proc.written_bytes == expected_bytes
 
     def test_stop_interrupts_playback(self, audio):
         """stop() while playing → is_playing() returns False promptly."""
-        block = threading.Event()
+        finish = threading.Event()
         playing = threading.Event()
 
-        def blocking_play(data, samplerate, **kwargs):
+        def make_blocking_proc(*a, **kw):
             playing.set()
-            block.wait(timeout=2.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = blocking_play
+        _popen_mock.side_effect = make_blocking_proc
 
-        # Run in thread so test works with both blocking and non-blocking impl
-        t = threading.Thread(target=audio.play_tone, args=([440], 5000), daemon=True)
-        t.start()
+        audio.play_tone([440], 5000)
         assert playing.wait(timeout=2.0), "play never started"
 
         assert audio.is_playing()
         audio.stop()
-        block.set()
+        finish.set()
 
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after stop()"
@@ -337,23 +342,20 @@ class TestFilePlayback:
     def test_play_file_interrupts_current_playback(self, audio, tmp_path):
         """play_file() called while already playing → stop() halts all audio."""
         wav_path = _make_wav(tmp_path)
-        block = threading.Event()
+        finish = threading.Event()
         first_started = threading.Event()
 
-        def slow_play(data, samplerate, **kwargs):
+        def make_blocking_proc(*a, **kw):
             first_started.set()
-            block.wait(timeout=2.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = slow_play
+        _popen_mock.side_effect = make_blocking_proc
 
-        # Run in thread so test works with both blocking and non-blocking impl
-        t = threading.Thread(target=audio.play_tone, args=([440], 5000), daemon=True)
-        t.start()
+        audio.play_tone([440], 5000)
         assert first_started.wait(timeout=2.0), "first play never started"
 
-        # stop() should clear the queue and halt playback
         audio.stop()
-        block.set()
+        finish.set()
 
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0)
 
@@ -363,23 +365,10 @@ class TestFilePlayback:
 # ---------------------------------------------------------------------------
 
 class TestWorkerThread:
-    """Tests that verify the non-blocking worker-thread design of SounddeviceAudio.
-
-    All play_* calls here use a helper (_enqueue) that dispatches into a
-    background thread so the tests work correctly regardless of whether the
-    implementation is blocking (pre-F04, should FAIL these tests fast) or
-    non-blocking (post-F04, should PASS).
-
-    Tests for the non-blocking property itself use the returned Event to check
-    how quickly the call returned.
-    """
+    """Tests that verify the non-blocking worker-thread design of SounddeviceAudio."""
 
     def _enqueue(self, audio, method, *args):
-        """Call audio.<method>(*args) in a daemon thread; returns (thread, returned_event).
-
-        returned_event is set as soon as the call returns.  Use it to check
-        whether the method returned promptly.
-        """
+        """Call audio.<method>(*args) in a daemon thread; returns (thread, returned_event)."""
         returned = threading.Event()
 
         def run():
@@ -392,110 +381,111 @@ class TestWorkerThread:
 
     def test_play_tone_is_nonblocking(self, audio):
         """play_tone() returns in well under the tone duration."""
-        _sd_mock.play.side_effect = lambda *a, **kw: time.sleep(1.0)
+        finish = threading.Event()
+        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
+
         t, returned = self._enqueue(audio, 'play_tone', [350, 440], 5000)
         assert returned.wait(timeout=0.2), \
             "play_tone blocked for >200ms — should return immediately (non-blocking)"
+        finish.set()
 
     def test_play_file_is_nonblocking(self, audio, tmp_path):
         """play_file() returns immediately without waiting for audio to finish."""
         wav_path = _make_wav(tmp_path)
-        _sd_mock.play.side_effect = lambda *a, **kw: time.sleep(1.0)
+        finish = threading.Event()
+        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
+
         t, returned = self._enqueue(audio, 'play_file', wav_path)
         assert returned.wait(timeout=0.2), \
             "play_file blocked for >200ms — should return immediately (non-blocking)"
+        finish.set()
 
     def test_play_off_hook_tone_is_nonblocking(self, audio):
         """play_off_hook_tone() returns immediately (non-blocking enqueue)."""
-        _sd_mock.play.side_effect = lambda *a, **kw: time.sleep(0.1)
         t, returned = self._enqueue(audio, 'play_off_hook_tone')
         assert returned.wait(timeout=0.2), \
             "play_off_hook_tone blocked for >200ms — should return immediately"
 
     def test_is_playing_true_while_worker_busy(self, audio):
         """is_playing() returns True while worker thread is executing a task."""
-        block = threading.Event()
+        finish = threading.Event()
         started = threading.Event()
 
-        def slow_play(data, samplerate, **kwargs):
+        def make_blocking_proc(*a, **kw):
             started.set()
-            block.wait(timeout=2.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = slow_play
+        _popen_mock.side_effect = make_blocking_proc
+
         self._enqueue(audio, 'play_tone', [440], 5000)
-
         assert started.wait(timeout=2.0), "worker never started the task"
         assert audio.is_playing(), "is_playing() should be True while worker is busy"
 
         audio.stop()
-        block.set()
+        finish.set()
 
     def test_is_playing_false_after_queue_drains(self, audio):
         """is_playing() returns False after all queued tasks complete."""
         done = threading.Event()
 
-        def quick_play(data, samplerate, **kwargs):
+        def make_proc(*a, **kw):
             done.set()
+            return FakeProcess()
 
-        _sd_mock.play.side_effect = quick_play
+        _popen_mock.side_effect = make_proc
+
         self._enqueue(audio, 'play_tone', [440], 50)
-
-        # Wait for the task to execute
         assert done.wait(timeout=2.0), "task never executed"
-        # Allow worker to mark as not-playing
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after queue drains"
 
     def test_stop_while_playing_produces_no_further_audio(self, audio):
-        """Enqueue a long tone, stop() after 100ms → sd.play called only once."""
+        """Enqueue a long tone, stop() after 100ms → aplay called only once."""
         play_count = [0]
-        block = threading.Event()
+        finish = threading.Event()
         started = threading.Event()
 
-        def counting_play(data, samplerate, **kwargs):
+        def make_counting_proc(*a, **kw):
             play_count[0] += 1
             started.set()
-            block.wait(timeout=2.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = counting_play
+        _popen_mock.side_effect = make_counting_proc
 
         self._enqueue(audio, 'play_tone', [350, 440], 5000)
         assert started.wait(timeout=2.0), "play never started"
 
         time.sleep(0.1)
         audio.stop()
-        block.set()
+        finish.set()
 
-        # Let the worker settle
         _wait_for(lambda: not audio.is_playing(), timeout=1.0)
 
         assert play_count[0] == 1, \
-            f"Expected exactly 1 sd.play call, got {play_count[0]}"
+            f"Expected exactly 1 aplay invocation, got {play_count[0]}"
         assert not audio.is_playing()
 
     def test_tasks_execute_in_fifo_order(self, audio):
         """Multiple enqueued tasks play in the order they were submitted."""
         order = []
         sem = threading.Semaphore(0)
-
         calls_made = [0]
         labels = ['first', 'second', 'third']
 
-        def dispatch_play(data, samplerate, **kwargs):
+        def make_counting_proc(*a, **kw):
             idx = calls_made[0]
             if idx < len(labels):
                 order.append(labels[idx])
                 sem.release()
             calls_made[0] += 1
+            return FakeProcess()
 
-        _sd_mock.play.side_effect = dispatch_play
+        _popen_mock.side_effect = make_counting_proc
 
-        # Enqueue 3 short tones back-to-back (non-blocking in new impl)
         self._enqueue(audio, 'play_tone', [350], 20)
         self._enqueue(audio, 'play_tone', [440], 20)
         self._enqueue(audio, 'play_tone', [700], 20)
 
-        # Wait for all three to execute
         for _ in range(3):
             assert sem.acquire(timeout=3.0), "a task never executed"
 
@@ -505,33 +495,29 @@ class TestWorkerThread:
     def test_stop_clears_queued_tasks(self, audio):
         """stop() prevents queued-but-not-yet-started tasks from playing."""
         play_count = [0]
-        block = threading.Event()
+        finish = threading.Event()
         first_started = threading.Event()
 
-        def slow_play(data, samplerate, **kwargs):
+        def make_counting_proc(*a, **kw):
             first_started.set()
             play_count[0] += 1
-            block.wait(timeout=3.0)
+            return FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = slow_play
+        _popen_mock.side_effect = make_counting_proc
 
-        # Enqueue first task (will block worker/sd.play)
         self._enqueue(audio, 'play_tone', [350], 5000)
         assert first_started.wait(timeout=2.0), "first task never started"
 
-        # Enqueue several more while worker is blocked
         self._enqueue(audio, 'play_tone', [440], 5000)
         self._enqueue(audio, 'play_tone', [700], 5000)
 
-        # stop() — should clear the queue AND stop current
         audio.stop()
-        block.set()
+        finish.set()
 
         _wait_for(lambda: not audio.is_playing(), timeout=1.0)
 
-        # Only 1 play call should have happened (the queued ones were cleared)
         assert play_count[0] == 1, \
-            f"Expected 1 play call, got {play_count[0]} — queue was not cleared"
+            f"Expected 1 aplay invocation, got {play_count[0]} — queue was not cleared"
 
     def test_worker_thread_is_daemon(self, audio):
         """The worker thread is a daemon thread (won't prevent interpreter exit)."""
@@ -540,29 +526,174 @@ class TestWorkerThread:
 
     def test_is_playing_true_when_queue_nonempty(self, audio):
         """is_playing() returns True when tasks are queued while worker is busy."""
-        block = threading.Event()
+        finish = threading.Event()
 
-        def slow_play(data, samplerate, **kwargs):
-            block.wait(timeout=2.0)
+        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
 
-        _sd_mock.play.side_effect = slow_play
-
-        # Enqueue first task (will block THIS audio's worker inside sd.play)
         audio.play_tone([350], 5000)
-
-        # Poll until THIS audio's worker is actually busy (not a foreign worker)
         assert _wait_for(lambda: audio.is_playing(), timeout=2.0), \
             "audio.is_playing() never became True after enqueuing a task"
 
-        # While worker is blocked, enqueue another task into the queue
         audio.play_tone([440], 5000)
-
-        # is_playing() should still be True: worker busy and/or queue non-empty
         assert audio.is_playing(), \
             "is_playing() should be True when worker is busy and/or queue is non-empty"
 
         audio.stop()
-        block.set()
+        finish.set()
+
+
+# ---------------------------------------------------------------------------
+# 2.6 Sample format (regression: PortAudio -9994 on I2S hardware)
+# ---------------------------------------------------------------------------
+
+class TestSampleFormat:
+    """Verify that WAV bytes piped to aplay always use 16-bit (int16) samples.
+
+    I2S/ALSA drivers on Raspberry Pi reject float32 with PortAudio error
+    -9994 (paSampleFormatNotSupported).  All audio paths must encode samples
+    as int16 in the WAV bytes sent to aplay.
+    """
+
+    def _get_wav_samplewidth(self, audio, method, *args):
+        """Return the samplewidth (bytes per sample) from the WAV bytes piped to aplay."""
+        wav_bytes = _capture_wav_bytes(audio, method, *args)
+        buf = io.BytesIO(wav_bytes)
+        with wave.open(buf, 'rb') as wf:
+            return wf.getsampwidth()
+
+    def test_play_tone_outputs_int16(self, audio):
+        """play_tone() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
+        sw = self._get_wav_samplewidth(audio, 'play_tone', [350, 440], 100)
+        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
+
+    def test_play_tone_values_in_int16_range(self, audio):
+        """play_tone() samples fit within int16 bounds."""
+        wav_bytes = _capture_wav_bytes(audio, 'play_tone', [350, 440], 100)
+        samples, _ = _parse_wav_samples(wav_bytes)
+        assert samples.min() >= -32768 and samples.max() <= 32767
+
+    def test_play_dtmf_outputs_int16(self, audio):
+        """play_dtmf() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
+        sw = self._get_wav_samplewidth(audio, 'play_dtmf', 5)
+        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
+
+    def test_play_off_hook_tone_outputs_int16(self, audio):
+        """play_off_hook_tone() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
+        sw = self._get_wav_samplewidth(audio, 'play_off_hook_tone')
+        audio.stop()
+        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
+
+    def test_play_file_passes_bytes_unchanged(self, audio, tmp_path):
+        """play_file() passes the WAV file bytes unchanged to aplay."""
+        wav_path = _make_wav(tmp_path)
+        with open(wav_path, 'rb') as f:
+            expected = f.read()
+
+        proc = FakeProcess()
+        _popen_mock.side_effect = lambda *a, **kw: proc
+        audio.play_file(wav_path)
+
+        assert proc.write_called.wait(timeout=2.0), "aplay was never invoked"
+        assert proc.written_bytes == expected, "play_file() altered the WAV bytes"
+
+
+# ---------------------------------------------------------------------------
+# 2.7 stop() / write race condition (BrokenPipeError)
+# ---------------------------------------------------------------------------
+
+class TestStopWriteRace:
+    """stop() can terminate the aplay proc between _play_bytes storing self._proc
+    and calling proc.stdin.write().  The resulting BrokenPipeError must not
+    propagate; is_playing() must settle to False without hanging.
+    """
+
+    def test_broken_pipe_on_write_does_not_raise(self, audio):
+        """BrokenPipeError from stdin.write() is swallowed; is_playing() → False."""
+        def make_broken_proc(*a, **kw):
+            p = FakeProcess()
+            p.stdin.write.side_effect = BrokenPipeError("simulated: proc terminated before write")
+            return p
+
+        _popen_mock.side_effect = make_broken_proc
+
+        audio.play_tone([350, 440], 100)  # must not raise
+
+        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
+            "is_playing() should be False after BrokenPipeError on stdin.write"
+
+    def test_stop_while_proc_starting_does_not_raise(self, audio):
+        """stop() fired in the window between proc creation and stdin.write()
+        — simulated by blocking the write until after stop() has run."""
+        proc_stored = threading.Event()
+        write_gate = threading.Event()
+
+        def make_gated_proc(*a, **kw):
+            p = FakeProcess()
+
+            def gated_write(data):
+                proc_stored.set()
+                write_gate.wait(timeout=1.0)
+                raise BrokenPipeError("proc terminated by stop() before write")
+
+            p.stdin.write.side_effect = gated_write
+            return p
+
+        _popen_mock.side_effect = make_gated_proc
+
+        audio.play_tone([350, 440], 5000)
+        assert proc_stored.wait(timeout=2.0), "proc was never created"
+
+        # Simulate stop() having terminated the proc; now let the write proceed
+        write_gate.set()
+
+        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
+            "is_playing() should be False after concurrent stop()/write race"
+
+    def test_stop_event_set_before_write_exits_cleanly(self, audio):
+        """_stop_event already set when _play_bytes checks: proc is terminated,
+        no write attempted, is_playing() → False without BrokenPipeError."""
+        proc_created = threading.Event()
+        write_called = [False]
+
+        def make_proc(*a, **kw):
+            p = FakeProcess()
+            original = p.stdin.write.side_effect
+
+            def track_write(data):
+                write_called[0] = True
+                if original:
+                    original(data)
+
+            p.stdin.write.side_effect = track_write
+            proc_created.set()
+            return p
+
+        _popen_mock.side_effect = make_proc
+
+        # Force the stop event to be set right after enqueue but before the worker
+        # checks it — achieve this by setting it immediately after play_tone returns
+        # (play_tone is non-blocking; the worker may not have started yet).
+        audio._stop_event.set()
+        audio.play_tone([350, 440], 100)
+
+        assert proc_created.wait(timeout=2.0), "proc was never created"
+
+        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
+            "is_playing() should be False when stop_event was pre-set"
+
+    def test_off_hook_broken_pipe_does_not_raise(self, audio):
+        """BrokenPipeError during _play_off_hook_loop stdin.write() is handled cleanly."""
+        def make_broken_proc(*a, **kw):
+            p = FakeProcess()
+            p.stdin.write.side_effect = BrokenPipeError("simulated broken pipe in off-hook loop")
+            return p
+
+        _popen_mock.side_effect = make_broken_proc
+
+        audio.play_off_hook_tone()  # must not raise
+
+        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
+            "is_playing() should be False after BrokenPipeError in off-hook loop"
 
 
 # ---------------------------------------------------------------------------

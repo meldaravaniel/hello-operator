@@ -11,7 +11,6 @@ import logging
 
 from src.constants import (
     MEDIA_BACKEND,
-    PLEX_URL, PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER,
     MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
@@ -21,7 +20,6 @@ from src.error_queue import SqliteErrorQueue
 from src.phone_book import PhoneBook
 from src.audio import SounddeviceAudio
 from src.tts import PiperTTS
-from src.plex_client import PlexClient
 from src.mpd_client import MPDClient
 from src.media_store import MediaStore
 from src.radio import RtlFmRadio
@@ -45,7 +43,7 @@ from src.menu import (
     SCRIPT_BROWSE_PROMPT_GENRE,
     SCRIPT_BROWSE_PROMPT_ALBUM,
     SCRIPT_BROWSE_PROMPT_NEXT_LETTER,
-    SCRIPT_PLEX_FAILURE,
+    SCRIPT_MEDIA_FAILURE,
     SCRIPT_DB_FAILURE,
     SCRIPT_RETRY_PROMPT,
     SCRIPT_NO_CONTENT,
@@ -96,7 +94,7 @@ _PRERENDER_SCRIPTS = {
     "browse_prompt_genre": SCRIPT_BROWSE_PROMPT_GENRE,
     "browse_prompt_album": SCRIPT_BROWSE_PROMPT_ALBUM,
     "browse_prompt_next_letter": SCRIPT_BROWSE_PROMPT_NEXT_LETTER,
-    "plex_failure": SCRIPT_PLEX_FAILURE,
+    "media_failure": SCRIPT_MEDIA_FAILURE,
     "db_failure": SCRIPT_DB_FAILURE,
     "retry_prompt": SCRIPT_RETRY_PROMPT,
     "no_content": SCRIPT_NO_CONTENT,
@@ -149,16 +147,12 @@ def load_radio_stations(path: str) -> list:
 
 
 def build_media_client() -> MediaClientInterface:
-    """Construct the configured media client (Plex, MPD, or Mopidy)."""
-    if MEDIA_BACKEND == "mpd":
-        log.info("Media backend: MPD (%s:%d)", MPD_HOST, MPD_PORT)
-        return MPDClient(host=MPD_HOST, port=MPD_PORT)
-    elif MEDIA_BACKEND == "mopidy":
+    """Construct the configured media client (MPD or Mopidy)."""
+    if MEDIA_BACKEND == "mopidy":
         log.info("Media backend: Mopidy (%s:%d)", MPD_HOST, MPD_PORT)
-        return MPDClient(host=MPD_HOST, port=MPD_PORT)
     else:
-        log.info("Media backend: Plex (%s)", PLEX_URL)
-        return PlexClient(url=PLEX_URL, token=PLEX_TOKEN, player_identifier=PLEX_PLAYER_IDENTIFIER)
+        log.info("Media backend: MPD (%s:%d)", MPD_HOST, MPD_PORT)
+    return MPDClient(host=MPD_HOST, port=MPD_PORT)
 
 
 def _gpio_cleanup() -> None:

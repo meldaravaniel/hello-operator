@@ -42,7 +42,6 @@ DOC_PAGES = [
     ("Breakbeam Switch", "docs/BREAKBEAM_SETUP.md"),
     ("Hook Switch",      "docs/HOOK_SWITCH_SETUP.md"),
     ("Piper TTS",        "docs/PIPER_SETUP.md"),
-    ("Plex Setup",       "docs/PLEX_SETUP.md"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -52,8 +51,7 @@ DOC_PAGES = [
 # Sections that are only relevant when one of the listed backends is active.
 # Fields in these sections skip required-validation for other backends.
 BACKEND_SECTIONS: dict[str, list[str]] = {
-    "Plex": ["plex"],
-    "MPD":  ["mpd", "mopidy"],
+    "MPD": ["mpd", "mopidy"],
 }
 
 CONFIG_FIELDS = [
@@ -62,41 +60,12 @@ CONFIG_FIELDS = [
         "key": "MEDIA_BACKEND",
         "label": "Media Backend",
         "type": "select",
-        "options": ["plex", "mpd", "mopidy"],
+        "options": ["mpd", "mopidy"],
         "required": False,
         "default": "mpd",
         "help": "Which media player backend to use. "
-                "'plex' connects to a Plex Media Server; "
                 "'mpd' connects to a Music Player Daemon; "
                 "'mopidy' connects to a Mopidy server via its MPD interface.",
-    },
-    {
-        "section": "Plex",
-        "key": "PLEX_TOKEN",
-        "label": "Plex Token",
-        "type": "password",
-        "required": True,
-        "help": "Your Plex authentication token. "
-                "Find it at: Plex Web → Account → Authorized Devices.",
-    },
-    {
-        "section": "Plex",
-        "key": "PLEX_PLAYER_IDENTIFIER",
-        "label": "Plex Player Identifier",
-        "type": "text",
-        "required": True,
-        "help": "Machine identifier of the Plex player to control. "
-                "Find it in Plex Web → Settings → Troubleshooting.",
-    },
-    {
-        "section": "Plex",
-        "key": "PLEX_URL",
-        "label": "Plex Server URL",
-        "type": "url",
-        "required": False,
-        "default": "http://localhost:32400",
-        "help": "Full URL of your Plex Media Server. "
-                "Change this if your Plex server runs on a different machine.",
     },
     {
         "section": "MPD",
@@ -374,7 +343,7 @@ def api_config_env():
     updates: dict = {}
     errors: list = []
 
-    backend = str(payload.get("MEDIA_BACKEND", "mpd")).strip() or "mpd"
+    backend = str(payload.get("MEDIA_BACKEND", "mpd")).strip() or "mpd"  # default: mpd
 
     for field in CONFIG_FIELDS:
         key = field["key"]

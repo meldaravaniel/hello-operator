@@ -17,7 +17,7 @@ from src.constants import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+def make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                  mock_error_queue, tmp_path, mock_radio=None):
     """Build a Session with all mocked dependencies."""
     from src.phone_book import PhoneBook
@@ -29,8 +29,8 @@ def make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
     return Session(
         audio=mock_audio,
         tts=mock_tts,
-        media_client=mock_plex,
-        media_store=mock_plex_store,
+        media_client=mock_media_client,
+        media_store=mock_media_store,
         phone_book=phone_book,
         error_queue=mock_error_queue,
         radio=radio,
@@ -50,22 +50,22 @@ class TestSessionHandset:
     """Handset lift and cradle events."""
 
     def test_handset_lifted_starts_dial_tone(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """HANDSET_LIFTED event → dial tone begins."""
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         # play_tone should have been called
         assert any(c[0] == 'play_tone' for c in mock_audio.calls)
 
     def test_dial_tone_timeout_idle(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """No digit within idle timeout → dial tone stops, idle menu prompt begins."""
         from src.menu import SCRIPT_GREETING
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
@@ -73,11 +73,11 @@ class TestSessionHandset:
         assert any(SCRIPT_GREETING in t for t in texts)
 
     def test_dial_tone_timeout_playing(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """No digit within playing timeout → playing menu prompt begins."""
         from src.menu import SCRIPT_PLAYING_MENU_DEFAULT
-        mock_plex.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_client.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_PLAYING + 1.0)
@@ -85,9 +85,9 @@ class TestSessionHandset:
         assert any("Jazz" in t for t in texts) or any(SCRIPT_PLAYING_MENU_DEFAULT in t for t in texts)
 
     def test_handset_on_cradle_stops_audio(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """HANDSET_ON_CRADLE → all audio stops."""
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         mock_audio.calls.clear()
@@ -95,21 +95,21 @@ class TestSessionHandset:
         assert any(c[0] == 'stop' for c in mock_audio.calls)
 
     def test_handset_on_cradle_does_not_stop_plex(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """HANDSET_ON_CRADLE while music playing → plex_client.stop() NOT called."""
-        mock_plex.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_client.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
-        mock_plex.calls.clear()
+        mock_media_client.calls.clear()
         session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=1.0)
-        stop_calls = [c for c in mock_plex.calls if c[0] == 'stop']
+        stop_calls = [c for c in mock_media_client.calls if c[0] == 'stop']
         assert len(stop_calls) == 0
 
     def test_digit_after_hangup_ignored(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """Digit event after HANDSET_ON_CRADLE → ignored, no state change."""
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=1.0)
@@ -124,9 +124,9 @@ class TestSessionDirectDial:
     """Direct dial via session."""
 
     def test_direct_dial_during_dial_tone(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """Two digits within disambiguation timeout during dial tone → DTMF tones played."""
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=0.5)
@@ -135,13 +135,13 @@ class TestSessionDirectDial:
         assert len(dtmf_calls) >= 2
 
     def test_single_digit_during_dial_tone_treated_as_navigation(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """One digit during dial tone, no second → treated as menu input."""
         from src.menu import SCRIPT_GREETING
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)  # deliver idle menu
@@ -154,20 +154,20 @@ class TestSessionDirectDial:
         assert len(texts) > 0
 
     def test_direct_dial_known_number(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """7-digit number matches phone book entry → plays that media."""
         from src.phone_book import PhoneBook
         db = str(tmp_path / "phone_book.db")
         pb = PhoneBook(db_path=db)
         number = pb.assign_or_get("/pl/1", "playlist", "Jazz")
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
-        mock_plex.calls.clear()
+        mock_media_client.calls.clear()
         # Dial the number
         t = 10.0
         digits = [int(c) for c in number]
@@ -176,17 +176,17 @@ class TestSessionDirectDial:
         for d in digits[2:]:
             t += 0.1
             session.handle_event((GpioEvent.DIGIT_DIALED, d), now=t)
-        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert len(play_calls) >= 1
 
     def test_direct_dial_unknown_number(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """7-digit unknown number → TTS plays SCRIPT_NOT_IN_SERVICE."""
         from src.menu import SCRIPT_NOT_IN_SERVICE
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
@@ -204,12 +204,12 @@ class TestSessionDirectDial:
         assert any(SCRIPT_NOT_IN_SERVICE in txt for txt in texts)
 
     def test_direct_dial_ignores_digits_after_7(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """8th digit after PHONE_NUMBER_LENGTH reached → ignored, no second lookup."""
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
@@ -228,16 +228,16 @@ class TestSessionDirectDial:
         assert not_in_service_count <= 1
 
     def test_direct_dial_hangup_before_7_digits(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store, mock_error_queue, tmp_path):
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """Hang up before PHONE_NUMBER_LENGTH digits → silent cleanup, no lookup."""
-        mock_plex_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_plex_store.set_artists([])
-        mock_plex_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
-        mock_plex.calls.clear()
+        mock_media_client.calls.clear()
         mock_tts.calls.clear()
         # Start dialing 3 digits
         t = 10.0
@@ -247,7 +247,7 @@ class TestSessionDirectDial:
         # Hang up before completing
         session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=t + 0.2)
         # No lookup or not-in-service
-        play_calls = [c for c in mock_plex.calls if c[0] == 'play']
+        play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         not_in_service = [txt for txt in tts_calls(mock_tts) if "not in service" in txt.lower()]
         assert len(play_calls) == 0
         assert len(not_in_service) == 0
@@ -261,9 +261,9 @@ class TestSessionRadio:
     """Session forwards radio to Menu."""
 
     def test_session_passes_radio_to_menu(
-            self, mock_audio, mock_tts, mock_plex, mock_plex_store,
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
             mock_error_queue, mock_radio, tmp_path):
         """Session constructed with mock_radio → session.menu._radio is mock_radio."""
-        session = make_session(mock_audio, mock_tts, mock_plex, mock_plex_store,
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path, mock_radio=mock_radio)
         assert session.menu._radio is mock_radio
