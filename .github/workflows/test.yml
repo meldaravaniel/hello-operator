@@ -24,8 +24,6 @@ jobs:
 
       - name: Run tests
         env:
-          PLEX_TOKEN: ci-placeholder
-          PLEX_PLAYER_IDENTIFIER: ci-placeholder
           ASSISTANT_NUMBER: "5550000"
         run: python -m pytest -m "not integration" -v
 

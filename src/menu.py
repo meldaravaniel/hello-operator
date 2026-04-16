@@ -69,7 +69,7 @@ SCRIPT_PLAYING_MENU_LAST_TRACK = ("To place your call on hold, dial one. "
 SCRIPT_PLAYING_MENU_ON_HOLD_LAST_TRACK = ("To resume your call, dial one. "
                                            "To disconnect your call, dial three. "
                                            "To reach a new party, dial zero.")
-SCRIPT_PLEX_FAILURE = ("I'm sorry, our long-distance exchange appears to be temporarily "
+SCRIPT_MEDIA_FAILURE = ("I'm sorry, our long-distance exchange appears to be temporarily "
                         "out of service. We apologize for the inconvenience.")
 SCRIPT_DB_FAILURE = ("I'm sorry, our directory appears to be temporarily unavailable. "
                      "The switchboard is experiencing an internal fault.")
@@ -237,14 +237,11 @@ class Menu:
         phone_book,    # PhoneBook
         error_queue: ErrorQueueInterface,
         radio=None,    # RadioInterface or MockRadio
-        # Backward-compat aliases
-        plex_client: MediaClientInterface = None,
-        plex_store=None,
     ) -> None:
         self._audio = audio
         self._tts = tts
-        self._media_client = media_client or plex_client
-        self._media_store = media_store or plex_store
+        self._media_client = media_client
+        self._media_store = media_store
         self._phone_book = phone_book
         self._error_queue = error_queue
         self._radio = radio
@@ -263,6 +260,9 @@ class Menu:
         self._handset_up_time: float = 0.0
         self._last_activity_time: float = 0.0
 
+        # Playback state snapshot at handset lift (avoids polling MPD every tick)
+        self._lift_playback: Optional[PlaybackState] = None
+
         # Disambiguation
         self._pending_digit: Optional[int] = None
         self._pending_digit_time: float = 0.0
@@ -274,7 +274,7 @@ class Menu:
         self._nav_stack: List[MenuState] = []
 
         # Failure state (for retry loops)
-        self._failure_mode: Optional[str] = None  # "plex" | "db" | None
+        self._failure_mode: Optional[str] = None  # "media" | "db" | None
 
         # Playing menu: whether we just stopped music
         self._just_stopped_music: bool = False
@@ -316,6 +316,7 @@ class Menu:
         self._dial_digits.clear()
         self._pending_digit = None
         self._failure_mode = None
+        self._lift_playback = self._media_client.now_playing()
         self._audio.play_tone(DIAL_TONE_FREQUENCIES, 500)
 
     def on_handset_on_cradle(self) -> None:
@@ -383,8 +384,9 @@ class Menu:
     def _check_dial_tone_timeout(self, now: float) -> None:
         """Fire the menu prompt after the appropriate dial tone silence."""
         elapsed = now - self._handset_up_time
-        # Determine which timeout applies
-        playback = self._media_client.now_playing()
+        # Use the playback state captured at handset lift to avoid polling
+        # MPD on every tick (200 Hz would open/close a TCP connection each time).
+        playback = self._lift_playback
         radio_active = self._radio is not None and self._radio.is_playing()
         if playback.item is not None or radio_active:
             timeout = DIAL_TONE_TIMEOUT_PLAYING
@@ -421,9 +423,9 @@ class Menu:
                 has_genres = self._media_store.genres_has_content
 
         except (sqlite3.Error, OSError):
-            self._failure_mode = "plex"
+            self._failure_mode = "media"
             self._state = MenuState.IDLE_MENU
-            self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
+            self._tts.speak_and_play(SCRIPT_MEDIA_FAILURE)
             self._tts.speak_and_play(SCRIPT_RETRY_PROMPT)
             return
 
@@ -587,7 +589,7 @@ class Menu:
 
     def _handle_idle_menu_digit(self, digit: int, now: float) -> None:
         """Process digit in IDLE_MENU state."""
-        if self._failure_mode == "plex":
+        if self._failure_mode == "media":
             if digit == 1:
                 # Retry — refresh all categories and check if at least one succeeded
                 result = self._media_store.refresh()
@@ -595,7 +597,7 @@ class Menu:
                     self._failure_mode = None
                     self._deliver_idle_menu(now)
                 else:
-                    self._tts.speak_and_play(SCRIPT_PLEX_FAILURE)
+                    self._tts.speak_and_play(SCRIPT_MEDIA_FAILURE)
                     self._tts.speak_and_play(SCRIPT_RETRY_PROMPT)
             else:
                 self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
@@ -815,12 +817,12 @@ class Menu:
             return
 
         if entry["media_type"] == "radio":
-            # Stop any active Plex session
+            # Stop any active media session
             self._media_client.stop()
             # Stop any existing radio stream
             if self._radio is not None:
                 self._radio.stop()
-            # Parse frequency from plex_key "radio:{frequency_hz}"
+            # Parse frequency from media_key "radio:{frequency_hz}"
             freq_hz = float(entry["media_key"].split("radio:", 1)[1])
             freq_mhz = freq_hz / 1_000_000
             name = entry.get("name", "")

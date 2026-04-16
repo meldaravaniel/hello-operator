@@ -11,11 +11,11 @@ describe('ConfigComponent', () => {
 
   const CONFIG_PAYLOAD = {
     fields: [
-      { section: 'Plex', key: 'PLEX_URL', label: 'Plex URL', type: 'url', required: false, help: '' },
-      { section: 'Plex', key: 'PLEX_TOKEN', label: 'Plex Token', type: 'password', required: true, help: '' },
+      { section: 'MPD', key: 'MPD_HOST', label: 'MPD Host', type: 'text', required: false, help: '' },
+      { section: 'MPD', key: 'MPD_PORT', label: 'MPD Port', type: 'number', required: false, help: '' },
       { section: 'GPIO', key: 'HOOK_SWITCH_PIN', label: 'Hook Switch Pin', type: 'number', required: false, help: '' },
     ],
-    values: { PLEX_URL: 'http://localhost:32400', HOOK_SWITCH_PIN: '17' },
+    values: { MPD_HOST: 'localhost', HOOK_SWITCH_PIN: '17' },
     stations: [
       { name: 'KEXP', frequency_mhz: 90.3, phone_number: '5550903' },
       { name: 'KBCS', frequency_mhz: 91.3, phone_number: '5550913' },
@@ -47,11 +47,11 @@ describe('ConfigComponent', () => {
 
   it('populates fields from the response', () => {
     expect(component.fields).toHaveLength(3);
-    expect(component.fields[0].key).toBe('PLEX_URL');
+    expect(component.fields[0].key).toBe('MPD_HOST');
   });
 
   it('populates values from the response', () => {
-    expect(component.values['PLEX_URL']).toBe('http://localhost:32400');
+    expect(component.values['MPD_HOST']).toBe('localhost');
   });
 
   it('populates stations from the response', () => {
@@ -60,12 +60,12 @@ describe('ConfigComponent', () => {
   });
 
   it('deduplicates sections while preserving order', () => {
-    expect(component.sections).toEqual(['Plex', 'GPIO']);
+    expect(component.sections).toEqual(['MPD', 'GPIO']);
   });
 
   it('makes a deep copy of values so mutations do not affect the original', () => {
-    component.values['PLEX_URL'] = 'http://changed:32400';
-    expect(CONFIG_PAYLOAD.values['PLEX_URL']).toBe('http://localhost:32400');
+    component.values['MPD_HOST'] = 'changed-host';
+    expect(CONFIG_PAYLOAD.values['MPD_HOST']).toBe('localhost');
   });
 
   it('makes a deep copy of stations so mutations do not affect the original', () => {
@@ -77,9 +77,9 @@ describe('ConfigComponent', () => {
 
   describe('fieldsForSection(section)', () => {
     it('returns only fields belonging to the given section', () => {
-      const plexFields = component.fieldsForSection('Plex');
-      expect(plexFields).toHaveLength(2);
-      expect(plexFields.every(f => f.section === 'Plex')).toBe(true);
+      const mpdFields = component.fieldsForSection('MPD');
+      expect(mpdFields).toHaveLength(2);
+      expect(mpdFields.every(f => f.section === 'MPD')).toBe(true);
     });
 
     it('returns an empty array for an unknown section', () => {
@@ -110,24 +110,9 @@ describe('ConfigComponent', () => {
       expect(component.isSectionVisible('Phone System')).toBe(true);
     });
 
-    it("shows Plex section when backend is 'plex'", () => {
-      component.values['MEDIA_BACKEND'] = 'plex';
-      expect(component.isSectionVisible('Plex')).toBe(true);
-    });
-
-    it("hides Plex section when backend is 'mpd'", () => {
-      component.values['MEDIA_BACKEND'] = 'mpd';
-      expect(component.isSectionVisible('Plex')).toBe(false);
-    });
-
     it("shows MPD section when backend is 'mpd'", () => {
       component.values['MEDIA_BACKEND'] = 'mpd';
       expect(component.isSectionVisible('MPD')).toBe(true);
-    });
-
-    it("hides MPD section when backend is 'plex'", () => {
-      component.values['MEDIA_BACKEND'] = 'plex';
-      expect(component.isSectionVisible('MPD')).toBe(false);
     });
 
     it("shows MPD section when backend is 'mopidy'", () => {
@@ -135,15 +120,9 @@ describe('ConfigComponent', () => {
       expect(component.isSectionVisible('MPD')).toBe(true);
     });
 
-    it("hides Plex section when backend is 'mopidy'", () => {
-      component.values['MEDIA_BACKEND'] = 'mopidy';
-      expect(component.isSectionVisible('Plex')).toBe(false);
-    });
-
     it("defaults to showing MPD when MEDIA_BACKEND is unset", () => {
       delete component.values['MEDIA_BACKEND'];
       expect(component.isSectionVisible('MPD')).toBe(true);
-      expect(component.isSectionVisible('Plex')).toBe(false);
     });
   });
 
@@ -219,11 +198,11 @@ describe('ConfigComponent', () => {
 
     it('sets saveErrors and saveSuccess = false on HTTP error', () => {
       fakeApi.saveConfigEnv.mockReturnValue(
-        throwError(() => ({ error: { errors: ['PLEX_URL is required'] } }))
+        throwError(() => ({ error: { errors: ['ASSISTANT_NUMBER is required'] } }))
       );
       component.saveEnv();
       expect(component.saveSuccess).toBe(false);
-      expect(component.saveErrors).toEqual(['PLEX_URL is required']);
+      expect(component.saveErrors).toEqual(['ASSISTANT_NUMBER is required']);
     });
 
     it('sets a generic error message when HTTP error has no errors array', () => {

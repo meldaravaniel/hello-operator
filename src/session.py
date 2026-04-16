@@ -45,15 +45,12 @@ class Session:
         phone_book=None,
         error_queue: ErrorQueueInterface = None,
         radio=None,  # RadioInterface
-        # Backward-compat aliases
-        plex_client: MediaClientInterface = None,
-        plex_store=None,
     ) -> None:
         self._menu = Menu(
             audio=audio,
             tts=tts,
-            media_client=media_client or plex_client,
-            media_store=media_store or plex_store,
+            media_client=media_client,
+            media_store=media_store,
             phone_book=phone_book,
             error_queue=error_queue,
             radio=radio,

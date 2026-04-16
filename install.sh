@@ -53,8 +53,6 @@ apt-get install -y \
     python3 \
     python3-venv \
     python3-pip \
-    libportaudio2 \
-    portaudio19-dev \
     alsa-utils \
     rtl-sdr \
     mpd \
@@ -83,6 +81,15 @@ if [ ! -f "$CONFIG_DIR/radio_stations.json" ]; then
 else
     echo "==> $CONFIG_DIR/radio_stations.json already exists — skipping (not overwritten)."
 fi
+
+# ---------------------------------------------------------------------------
+# Database directory
+# ---------------------------------------------------------------------------
+
+echo "==> Creating database directory /var/lib/hello-operator..."
+mkdir -p /var/lib/hello-operator
+chown "$INSTALL_USER:$INSTALL_USER" /var/lib/hello-operator
+chmod 755 /var/lib/hello-operator
 
 # ---------------------------------------------------------------------------
 # TTS cache directory
@@ -172,6 +179,71 @@ systemctl enable mpd
 systemctl start mpd
 
 # ---------------------------------------------------------------------------
+# MAX98357 I2S amplifier
+# ---------------------------------------------------------------------------
+
+echo "==> Configuring MAX98357 I2S amplifier..."
+
+# config.txt location varies by Raspberry Pi OS version (Bookworm vs Bullseye)
+if [ -f /boot/firmware/config.txt ]; then
+    CONFIG_TXT="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    CONFIG_TXT="/boot/config.txt"
+else
+    CONFIG_TXT=""
+    echo "    WARNING: could not find config.txt — I2S overlay not configured."
+fi
+
+if [ -n "$CONFIG_TXT" ]; then
+    if grep -q "dtoverlay=max98357a" "$CONFIG_TXT"; then
+        echo "==> MAX98357 overlay already present in $CONFIG_TXT — skipping."
+    else
+        # Replace dtparam=audio=on with off, or append audio=off if absent
+        if grep -q "^dtparam=audio=on" "$CONFIG_TXT"; then
+            sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_TXT"
+        elif ! grep -q "^dtparam=audio=off" "$CONFIG_TXT"; then
+            echo "dtparam=audio=off" >> "$CONFIG_TXT"
+        fi
+        echo "dtoverlay=max98357a" >> "$CONFIG_TXT"
+        echo "==> MAX98357 overlay added to $CONFIG_TXT."
+    fi
+fi
+
+cat > /etc/asound.conf << 'ASOUND'
+pcm.speakerbonnet {
+    type hw
+    card 0
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0666
+    slave {
+        pcm "speakerbonnet"
+        period_time 0
+        period_size 1024
+        buffer_size 8192
+        rate 44100
+        channels 2
+    }
+}
+
+pcm.softvol {
+    type softvol
+    slave.pcm "dmixer"
+    control.name "PCM"
+    control.card 0
+}
+
+pcm.!default {
+    type plug
+    slave.pcm "softvol"
+}
+ASOUND
+echo "==> /etc/asound.conf written."
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 
@@ -179,7 +251,12 @@ echo ""
 echo "==> Installation complete."
 echo ""
 echo "Next steps:"
-echo "  1. Edit /etc/hello-operator/config.env and set:"
+echo "  1. Reboot so the MAX98357 I2S overlay takes effect:"
+echo "       sudo reboot"
+echo "     After rebooting, verify with: aplay -l"
+echo "     Adjust volume with: alsamixer"
+echo ""
+echo "  2. Edit /etc/hello-operator/config.env and set:"
 echo "       ASSISTANT_NUMBER   — required for all backends"
 echo ""
 echo "     If using MPD (default, MEDIA_BACKEND=mpd):"
@@ -193,17 +270,14 @@ echo "       Configure Mopidy in /etc/mopidy/mopidy.conf and enable the"
 echo "       mopidy-mpd extension, then:"
 echo "         sudo systemctl enable mopidy && sudo systemctl start mopidy"
 echo ""
-echo "     If using Plex (MEDIA_BACKEND=plex):"
-echo "       PLEX_TOKEN, PLEX_PLAYER_IDENTIFIER"
-echo ""
-echo "  2. (Optional) Edit /etc/hello-operator/radio_stations.json"
+echo "  3. (Optional) Edit /etc/hello-operator/radio_stations.json"
 echo "     to add your local FM stations. Requires an RTL-SDR USB dongle."
 echo ""
-echo "  3. When ready, start the services:"
+echo "  4. When ready, start the services:"
 echo "       sudo systemctl start hello-operator"
 echo "       sudo systemctl start hello-operator-web"
 echo ""
-echo "  4. Open the web interface in a browser on your local network:"
+echo "  5. Open the web interface in a browser on your local network:"
 echo "       http://$(hostname).local:8080"
 echo ""
 echo "  See INSTALL.md for full configuration reference."

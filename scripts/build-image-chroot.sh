@@ -26,8 +26,6 @@ apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
     python3-pip \
-    libportaudio2 \
-    portaudio19-dev \
     alsa-utils \
     rtl-sdr \
     mpd \
@@ -54,6 +52,14 @@ chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
 cp "$INSTALL_DIR/config.env.example"          "$CONFIG_DIR/config.env"
 cp "$INSTALL_DIR/radio_stations.json.example" "$CONFIG_DIR/radio_stations.json"
 chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR/config.env" "$CONFIG_DIR/radio_stations.json"
+
+# ---------------------------------------------------------------------------
+# Database directory
+# ---------------------------------------------------------------------------
+echo "==> Creating database directory /var/lib/hello-operator..."
+mkdir -p /var/lib/hello-operator
+chown "$INSTALL_USER:$INSTALL_USER" /var/lib/hello-operator
+chmod 755 /var/lib/hello-operator
 
 # ---------------------------------------------------------------------------
 # TTS cache directory
@@ -116,6 +122,69 @@ ln -sf /etc/systemd/system/hello-operator-web.service \
         /etc/systemd/system/multi-user.target.wants/hello-operator-web.service
 ln -sf /lib/systemd/system/mpd.service \
         /etc/systemd/system/multi-user.target.wants/mpd.service
+
+# ---------------------------------------------------------------------------
+# MAX98357 I2S amplifier
+# ---------------------------------------------------------------------------
+echo "==> Configuring MAX98357 I2S amplifier..."
+
+# config.txt location varies by Raspberry Pi OS version (Bookworm vs Bullseye)
+if [ -f /boot/firmware/config.txt ]; then
+    CONFIG_TXT="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    CONFIG_TXT="/boot/config.txt"
+else
+    CONFIG_TXT=""
+    echo "    WARNING: could not find config.txt — I2S overlay not configured."
+fi
+
+if [ -n "$CONFIG_TXT" ]; then
+    if grep -q "dtoverlay=max98357a" "$CONFIG_TXT"; then
+        echo "==> MAX98357 overlay already present in $CONFIG_TXT — skipping."
+    else
+        if grep -q "^dtparam=audio=on" "$CONFIG_TXT"; then
+            sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_TXT"
+        elif ! grep -q "^dtparam=audio=off" "$CONFIG_TXT"; then
+            echo "dtparam=audio=off" >> "$CONFIG_TXT"
+        fi
+        echo "dtoverlay=max98357a" >> "$CONFIG_TXT"
+        echo "==> MAX98357 overlay added to $CONFIG_TXT."
+    fi
+fi
+
+cat > /etc/asound.conf << 'ASOUND'
+pcm.speakerbonnet {
+    type hw
+    card 0
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0666
+    slave {
+        pcm "speakerbonnet"
+        period_time 0
+        period_size 1024
+        buffer_size 8192
+        rate 44100
+        channels 2
+    }
+}
+
+pcm.softvol {
+    type softvol
+    slave.pcm "dmixer"
+    control.name "PCM"
+    control.card 0
+}
+
+pcm.!default {
+    type plug
+    slave.pcm "softvol"
+}
+ASOUND
+echo "==> /etc/asound.conf written."
 
 # ---------------------------------------------------------------------------
 # Clean up to reduce image size

@@ -36,7 +36,7 @@ dependency directly. This means:
               ┌──────▼──────────────────────────┐
               │       media_client               │
               │  MediaClientInterface            │
-              │  (PlexClient or MPDClient)       │
+              │  (MPDClient)                     │
               └──────────────────────────────────┘
                      │
               ┌──────▼──────┐   ┌─────────────┐   ┌─────────────┐
@@ -135,7 +135,7 @@ Digit 2 → Browse albums using T9 narrowing (same system as playlists/artists)
 Selection confirmed →
   "Thank you. I'm connecting you to [digit] [digit] [digit] - [digit] [digit] [digit] [digit].
    [media name]."
-  → Plex begins playback
+  → Media backend begins playback
   → Handset can be hung up; music continues
 ```
 
@@ -205,10 +205,10 @@ Calling the assistant number →
     "Hang up" language used for flavor only — actual result is always a menu redirect
   Additional assistant option (always available):
     "To refresh my information from the exchange, dial [n]."
-    → triggers full re-fetch of all categories from Plex
+    → triggers full re-fetch of all categories from media backend
     → updates local store for all successful responses
     → reports back: "All done, I've updated my records." or
-      "I'm sorry, I had some trouble reaching the exchange." if Plex unreachable
+      "I'm sorry, I had some trouble reaching the exchange." if backend unreachable
     → then offers to return to menu or stay in assistant
   Messages are NEVER marked as read via phone interaction.
   Clearing requires manual intervention outside the system.
@@ -249,7 +249,7 @@ continuously until the user physically hangs up.
 **Phone book DB unreadable:**
 - Play distinct vintage message implying internal switchboard failure (not a
   connection/line issue)
-- Offer same retry loop as Plex connection failure
+- Offer same retry loop as media backend connection failure
 - Never force session end
 
 **No playable content at top level:**

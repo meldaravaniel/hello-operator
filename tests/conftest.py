@@ -41,12 +41,6 @@ def tmp_media_store(tmp_path):
     return str(tmp_path / "media_cache.db")
 
 
-# Backward-compat alias
-@pytest.fixture
-def tmp_plex_store(tmp_path):
-    return str(tmp_path / "media_cache.db")
-
-
 @pytest.fixture
 def mock_audio():
     """MockAudio instance for menu/session tests."""
@@ -64,27 +58,13 @@ def mock_tts():
 @pytest.fixture
 def mock_media_client():
     """MockMediaClient instance for menu/session tests."""
-    from src.plex_client import MockMediaClient
-    return MockMediaClient()
-
-
-# Backward-compat alias used by test_menu.py and test_session.py
-@pytest.fixture
-def mock_plex():
-    from src.plex_client import MockMediaClient
+    from src.mpd_client import MockMediaClient
     return MockMediaClient()
 
 
 @pytest.fixture
 def mock_media_store():
     """MockMediaStore instance for menu/session tests."""
-    from src.media_store import MockMediaStore
-    return MockMediaStore()
-
-
-# Backward-compat alias
-@pytest.fixture
-def mock_plex_store():
     from src.media_store import MockMediaStore
     return MockMediaStore()
 

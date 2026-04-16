@@ -24,12 +24,9 @@ def config_file(tmp_path):
     """A pre-populated config.env in tmp_path."""
     p = tmp_path / "config.env"
     p.write_text(
-        "# Plex\n"
-        'PLEX_TOKEN="existingtoken"\n'
-        'PLEX_URL="http://localhost:32400"\n'
-        'PLEX_PLAYER_IDENTIFIER="abc123"\n'
         "# Phone\n"
         'ASSISTANT_NUMBER="5550000"\n'
+        'MEDIA_BACKEND="mpd"\n'
     )
     return p
 
@@ -192,10 +189,10 @@ class TestWriteConfigEnv:
 
     def test_roundtrip_survives_read_write_read(self, monkeypatch, tmp_path):
         p = tmp_path / "config.env"
-        p.write_text('PLEX_URL="http://localhost:32400"\n')
+        p.write_text('MPD_HOST="localhost"\n')
         monkeypatch.setattr(wa, "CONFIG_ENV_PATH", p)
-        wa.write_config_env({"PLEX_URL": "http://192.168.1.10:32400"})
-        assert wa.read_config_env()["PLEX_URL"] == "http://192.168.1.10:32400"
+        wa.write_config_env({"MPD_HOST": "192.168.1.10"})
+        assert wa.read_config_env()["MPD_HOST"] == "192.168.1.10"
 
 
 # ---------------------------------------------------------------------------
@@ -441,17 +438,17 @@ class TestRouteApiConfig:
     def test_fields_includes_all_config_fields(self, client):
         fields = client.get("/api/config").get_json()["fields"]
         keys = [f["key"] for f in fields]
-        assert "PLEX_TOKEN" in keys
         assert "ASSISTANT_NUMBER" in keys
+        assert "MPD_HOST" in keys
         assert "PIPER_BINARY" in keys
 
     def test_values_includes_non_password_fields(self, client):
         values = client.get("/api/config").get_json()["values"]
-        assert values.get("PLEX_PLAYER_IDENTIFIER") == "abc123"
+        assert values.get("ASSISTANT_NUMBER") == "5550000"
 
-    def test_values_excludes_password_fields(self, client):
+    def test_values_reflects_config_file(self, client):
         values = client.get("/api/config").get_json()["values"]
-        assert "PLEX_TOKEN" not in values
+        assert values.get("MEDIA_BACKEND") == "mpd"
 
     def test_stations_reflects_radio_file(self, client):
         stations = client.get("/api/config").get_json()["stations"]
@@ -466,9 +463,9 @@ class TestRouteApiConfig:
 
 class TestRouteApiConfigEnv:
     _base = {
-        "PLEX_TOKEN": "",           # blank = keep existing
-        "PLEX_PLAYER_IDENTIFIER": "player-xyz",
-        "PLEX_URL": "http://localhost:32400",
+        "MEDIA_BACKEND": "mpd",
+        "MPD_HOST": "localhost",
+        "MPD_PORT": "6600",
         "ASSISTANT_NUMBER": "5550001",
         "HOOK_SWITCH_PIN": "17",
         "PULSE_SWITCH_PIN": "27",
@@ -484,16 +481,6 @@ class TestRouteApiConfigEnv:
         resp = client.post("/api/config/env", json=self._payload())
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
-
-    def test_blank_password_does_not_produce_error(self, client):
-        resp = client.post("/api/config/env", json=self._payload(PLEX_TOKEN=""))
-        data = resp.get_json()
-        assert data["ok"] is True
-        assert not data.get("errors")
-
-    def test_provided_password_written_to_file(self, client, config_file):
-        client.post("/api/config/env", json=self._payload(PLEX_TOKEN="brandnewtoken"))
-        assert "brandnewtoken" in config_file.read_text()
 
     def test_missing_required_field_returns_422(self, client):
         resp = client.post("/api/config/env", json=self._payload(ASSISTANT_NUMBER=""))
@@ -516,7 +503,7 @@ class TestRouteApiConfigEnv:
         restart.assert_not_called()
 
     def test_valid_submission_updates_config_file(self, client, config_file):
-        client.post("/api/config/env", json=self._payload(PLEX_URL="http://192.168.1.5:32400"))
+        client.post("/api/config/env", json=self._payload(MPD_HOST="192.168.1.5"))
         assert "192.168.1.5" in config_file.read_text()
 
     def test_valid_submission_calls_restart(self, client, monkeypatch):
@@ -537,19 +524,6 @@ class TestRouteApiConfigEnv:
         assert resp.status_code == 200
         assert data["ok"] is True
         assert "restart failed" in data["message"].lower()
-
-    def test_plex_required_fields_not_validated_for_mpd_backend(self, client):
-        payload = self._payload(MEDIA_BACKEND="mpd", PLEX_PLAYER_IDENTIFIER="", PLEX_TOKEN="")
-        resp = client.post("/api/config/env", json=payload)
-        assert resp.status_code == 200
-        assert resp.get_json()["ok"] is True
-
-    def test_plex_required_fields_validated_for_plex_backend(self, client):
-        payload = self._payload(MEDIA_BACKEND="plex", PLEX_PLAYER_IDENTIFIER="")
-        resp = client.post("/api/config/env", json=payload)
-        assert resp.status_code == 422
-        data = resp.get_json()
-        assert any("Plex Player Identifier" in e for e in data["errors"])
 
     def test_non_json_body_returns_400(self, client):
         resp = client.post("/api/config/env", data="not json", content_type="text/plain")

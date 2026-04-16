@@ -8,6 +8,8 @@ during object construction.
 F-03: Verifies that run() creates the database directory before instantiating
 any SQLite-backed classes, so startup does not raise OperationalError on a
 fresh system.
+
+F-18: Verifies GPIO.cleanup() is called on clean shutdown.
 """
 
 import pytest
@@ -28,15 +30,6 @@ def test_piper_tts_accepts_piper_model_kwarg(mock_audio, mock_error_queue, tmp_p
         error_queue=mock_error_queue,
     )
     assert tts is not None
-
-
-def test_plex_client_accepts_url_kwarg():
-    """PlexClient constructor must accept url= (not base_url=)."""
-    from src.plex_client import PlexClient
-
-    # Should not raise TypeError
-    client = PlexClient(url="http://localhost:32400", token="dummy-token")
-    assert client is not None
 
 
 def test_gpio_handler_accepts_pin_reader_kwargs():
@@ -83,14 +76,6 @@ def test_piper_tts_rejects_old_model_path_kwarg(mock_audio, mock_error_queue, tm
         )
 
 
-def test_plex_client_rejects_old_base_url_kwarg():
-    """PlexClient must NOT accept base_url= (the old wrong keyword name)."""
-    from src.plex_client import PlexClient
-
-    with pytest.raises(TypeError):
-        PlexClient(base_url="http://localhost:32400", token="dummy-token")
-
-
 # ---------------------------------------------------------------------------
 # F-03: Database directory creation on startup
 # ---------------------------------------------------------------------------
@@ -109,7 +94,6 @@ def _run_with_stubs(makedirs_mock=None):
         patch("src.main.PhoneBook", MagicMock()),
         patch("src.main.SounddeviceAudio", MagicMock()),
         patch("src.main.PiperTTS", MagicMock()),
-        patch("src.main.PlexClient", MagicMock()),
         patch("src.main.MediaStore", MagicMock()),
         patch("src.main.build_gpio_handler", MagicMock()),
         patch("src.main.Session", MagicMock()),
@@ -133,7 +117,7 @@ def _run_with_stubs(makedirs_mock=None):
 
 def test_run_calls_makedirs_before_db_instantiation():
     """run() must call os.makedirs(_DB_DIR, exist_ok=True) before
-    instantiating SqliteErrorQueue, PhoneBook, or PlexStore."""
+    instantiating SqliteErrorQueue or PhoneBook."""
     from src.main import _DB_DIR
 
     makedirs_mock = MagicMock()
@@ -158,7 +142,6 @@ def test_run_makedirs_called_before_sqlite_error_queue():
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
-         patch("src.main.PlexClient", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
@@ -189,7 +172,6 @@ def test_run_makedirs_exist_ok_true():
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
-         patch("src.main.PlexClient", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
@@ -225,7 +207,6 @@ def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
-         patch("src.main.PlexClient", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler",
                MagicMock(side_effect=build_gpio_side_effect)), \
@@ -271,7 +252,6 @@ def test_gpio_cleanup_called_after_audio_stop():
          patch("src.main.PhoneBook", MagicMock()), \
          patch("src.main.SounddeviceAudio", audio_class_mock), \
          patch("src.main.PiperTTS", MagicMock()), \
-         patch("src.main.PlexClient", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
          patch("src.main.build_gpio_handler", MagicMock()), \
          patch("src.main.Session", MagicMock()), \
@@ -350,16 +330,6 @@ def test_radio_playing_menu_script_in_prerender():
 # build_media_client() — backend selection
 # ---------------------------------------------------------------------------
 
-def test_build_media_client_plex():
-    """MEDIA_BACKEND=plex → PlexClient is instantiated."""
-    import src.main as main_mod
-    plex_mock = MagicMock()
-    with patch("src.main.MEDIA_BACKEND", "plex"), \
-         patch("src.main.PlexClient", plex_mock):
-        main_mod.build_media_client()
-    plex_mock.assert_called_once()
-
-
 def test_build_media_client_mpd():
     """MEDIA_BACKEND=mpd → MPDClient is instantiated."""
     import src.main as main_mod
@@ -380,12 +350,3 @@ def test_build_media_client_mopidy():
     mpd_mock.assert_called_once()
 
 
-def test_build_media_client_mopidy_not_plex():
-    """MEDIA_BACKEND=mopidy must not instantiate PlexClient."""
-    import src.main as main_mod
-    plex_mock = MagicMock()
-    with patch("src.main.MEDIA_BACKEND", "mopidy"), \
-         patch("src.main.MPDClient", MagicMock()), \
-         patch("src.main.PlexClient", plex_mock):
-        main_mod.build_media_client()
-    plex_mock.assert_not_called()

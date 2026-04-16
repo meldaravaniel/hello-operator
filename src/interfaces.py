@@ -83,7 +83,7 @@ class TTSInterface(ABC):
 
 
 class MediaClientInterface(ABC):
-    """Abstracts all media player API calls (Plex, MPD, etc.)."""
+    """Abstracts all media player API calls (MPD, Mopidy, etc.)."""
 
     @abstractmethod
     def get_playlists(self) -> list:
@@ -140,10 +140,6 @@ class MediaClientInterface(ABC):
     @abstractmethod
     def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
         """Create a play queue from track keys and start playback."""
-
-
-# Backward-compat alias — use MediaClientInterface in new code
-PlexClientInterface = MediaClientInterface
 
 
 class ErrorQueueInterface(ABC):

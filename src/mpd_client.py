@@ -158,7 +158,7 @@ class MPDClient(MediaClientInterface):
     def get_queue_position(self) -> tuple:
         with self._connection() as c:
             status = c.status()
-        # MPD song position is 0-indexed; convert to 1-indexed to match Plex convention
+        # MPD song position is 0-indexed; convert to 1-indexed
         pos = int(status.get("song", 0)) + 1
         total = int(status.get("playlistlength", 0))
         return (pos, total)
@@ -182,3 +182,91 @@ class MPDClient(MediaClientInterface):
             if shuffle:
                 c.shuffle()
             c.play()
+
+
+class MockMediaClient(MediaClientInterface):
+    """Configurable mock for unit tests; records all calls."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+        self._playlists: list = []
+        self._artists: list = []
+        self._genres: list = []
+        self._albums: dict = {}  # artist_media_key -> list
+        self._now_playing: PlaybackState = PlaybackState(item=None, is_paused=False)
+        self._queue_position: tuple = (0, 0)
+        self._tracks_for_genre: dict = {}  # genre_media_key -> list of track keys
+
+    # -- Configuration methods (test-only) ------------------------------------
+
+    def set_playlists(self, playlists: list) -> None:
+        self._playlists = playlists
+
+    def set_artists(self, artists: list) -> None:
+        self._artists = artists
+
+    def set_genres(self, genres: list) -> None:
+        self._genres = genres
+
+    def set_albums_for_artist(self, artist_media_key: str, albums: list) -> None:
+        self._albums[artist_media_key] = albums
+
+    def set_tracks_for_genre(self, genre_media_key: str, tracks: list) -> None:
+        self._tracks_for_genre[genre_media_key] = tracks
+
+    def set_now_playing(self, state: PlaybackState) -> None:
+        self._now_playing = state
+
+    def set_queue_position(self, current: int, total: int) -> None:
+        self._queue_position = (current, total)
+
+    # -- MediaClientInterface --------------------------------------------------
+
+    def get_playlists(self) -> list:
+        self.calls.append(('get_playlists',))
+        return list(self._playlists)
+
+    def get_artists(self) -> list:
+        self.calls.append(('get_artists',))
+        return list(self._artists)
+
+    def get_genres(self) -> list:
+        self.calls.append(('get_genres',))
+        return list(self._genres)
+
+    def get_albums_for_artist(self, artist_media_key: str) -> list:
+        self.calls.append(('get_albums_for_artist', artist_media_key))
+        return list(self._albums.get(artist_media_key, []))
+
+    def play(self, media_key: str) -> None:
+        self.calls.append(('play', media_key))
+
+    def shuffle_all(self) -> None:
+        self.calls.append(('shuffle_all',))
+
+    def pause(self) -> None:
+        self.calls.append(('pause',))
+
+    def unpause(self) -> None:
+        self.calls.append(('unpause',))
+
+    def skip(self) -> None:
+        self.calls.append(('skip',))
+
+    def stop(self) -> None:
+        self.calls.append(('stop',))
+
+    def now_playing(self) -> PlaybackState:
+        self.calls.append(('now_playing',))
+        return self._now_playing
+
+    def get_queue_position(self) -> tuple:
+        self.calls.append(('get_queue_position',))
+        return self._queue_position
+
+    def get_tracks_for_genre(self, genre_media_key: str) -> list:
+        self.calls.append(('get_tracks_for_genre', genre_media_key))
+        return list(self._tracks_for_genre.get(genre_media_key, []))
+
+    def play_tracks(self, track_keys: list, shuffle: bool = True) -> None:
+        self.calls.append(('play_tracks', track_keys, shuffle))
