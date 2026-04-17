@@ -14,6 +14,7 @@ from src.constants import (
     MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
+    HOOK_DEBOUNCE,
     RADIO_CONFIG_PATH,
 )
 from src.error_queue import SqliteErrorQueue
@@ -37,22 +38,18 @@ from src.menu import (
     SCRIPT_PLAYING_MENU_LAST_TRACK,
     SCRIPT_PLAYING_MENU_ON_HOLD_LAST_TRACK,
     SCRIPT_NOT_IN_SERVICE,
-    SCRIPT_SERVICE_DEGRADATION,
     SCRIPT_BROWSE_PROMPT_PLAYLIST,
     SCRIPT_BROWSE_PROMPT_ARTIST,
     SCRIPT_BROWSE_PROMPT_GENRE,
     SCRIPT_BROWSE_PROMPT_ALBUM,
     SCRIPT_BROWSE_PROMPT_NEXT_LETTER,
     SCRIPT_MEDIA_FAILURE,
-    SCRIPT_DB_FAILURE,
     SCRIPT_RETRY_PROMPT,
     SCRIPT_NO_CONTENT,
-    SCRIPT_TERMINAL_FALLBACK,
     SCRIPT_ASSISTANT_ALL_CLEAR,
     SCRIPT_ASSISTANT_STATUS_INTRO,
     SCRIPT_ASSISTANT_END_OF_MESSAGES,
     SCRIPT_ASSISTANT_NAVIGATION,
-    SCRIPT_ASSISTANT_VALEDICTION_CLEAR,
     SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     SCRIPT_ASSISTANT_REFRESH_FAILURE,
@@ -88,22 +85,18 @@ _PRERENDER_SCRIPTS = {
     "playing_menu_last_track": SCRIPT_PLAYING_MENU_LAST_TRACK,
     "playing_menu_on_hold_last_track": SCRIPT_PLAYING_MENU_ON_HOLD_LAST_TRACK,
     "not_in_service": SCRIPT_NOT_IN_SERVICE,
-    "service_degradation": SCRIPT_SERVICE_DEGRADATION,
     "browse_prompt_playlist": SCRIPT_BROWSE_PROMPT_PLAYLIST,
     "browse_prompt_artist": SCRIPT_BROWSE_PROMPT_ARTIST,
     "browse_prompt_genre": SCRIPT_BROWSE_PROMPT_GENRE,
     "browse_prompt_album": SCRIPT_BROWSE_PROMPT_ALBUM,
     "browse_prompt_next_letter": SCRIPT_BROWSE_PROMPT_NEXT_LETTER,
     "media_failure": SCRIPT_MEDIA_FAILURE,
-    "db_failure": SCRIPT_DB_FAILURE,
     "retry_prompt": SCRIPT_RETRY_PROMPT,
     "no_content": SCRIPT_NO_CONTENT,
-    "terminal_fallback": SCRIPT_TERMINAL_FALLBACK,
     "assistant_all_clear": SCRIPT_ASSISTANT_ALL_CLEAR,
     "assistant_status_intro": SCRIPT_ASSISTANT_STATUS_INTRO,
     "assistant_end_of_messages": SCRIPT_ASSISTANT_END_OF_MESSAGES,
     "assistant_navigation": SCRIPT_ASSISTANT_NAVIGATION,
-    "assistant_valediction_clear": SCRIPT_ASSISTANT_VALEDICTION_CLEAR,
     "assistant_valediction_messages": SCRIPT_ASSISTANT_VALEDICTION_MESSAGES,
     "assistant_refresh_success": SCRIPT_ASSISTANT_REFRESH_SUCCESS,
     "assistant_refresh_failure": SCRIPT_ASSISTANT_REFRESH_FAILURE,
@@ -192,6 +185,44 @@ def build_gpio_handler() -> GPIOHandler:
     )
 
 
+def _setup_hook_interrupt(hook_pin: int, audio, tts) -> None:
+    """Register a GPIO edge-detect interrupt for immediate audio cutoff on hang-up.
+
+    Supplements the polling loop so that audio.stop() and tts.abort() are called
+    the instant the hook switch fires, without waiting for the event loop to
+    unblock from any ongoing TTS synthesis (e.g. a blocking piper subprocess).
+
+    The callback runs in RPi.GPIO's event thread.  Both audio.stop() and
+    tts.abort() are thread-safe.  If RPi.GPIO is unavailable (non-Pi
+    environment) this function does nothing.
+
+    Parameters
+    ----------
+    hook_pin:
+        BCM pin number for the hook switch (HIGH = on cradle).
+    audio:
+        AudioInterface implementation to stop immediately.
+    tts:
+        TTSInterface implementation to abort immediately.
+    """
+    try:
+        import RPi.GPIO as GPIO
+        bouncetime_ms = max(1, int(HOOK_DEBOUNCE * 1000))
+
+        def _on_cradle(channel):
+            if GPIO.input(channel) == 1:  # HIGH = handset on cradle
+                audio.stop()
+                tts.abort()
+
+        GPIO.add_event_detect(hook_pin, GPIO.RISING,
+                              callback=_on_cradle,
+                              bouncetime=bouncetime_ms)
+        log.info("Hook-switch interrupt registered on BCM %d (bouncetime %d ms)",
+                 hook_pin, bouncetime_ms)
+    except (ImportError, RuntimeError):
+        pass  # Non-Pi environment — polling loop handles events alone
+
+
 def run() -> None:
     """Main entry point — wire all components and start the event loop."""
     log.info("hello-operator starting up")
@@ -225,7 +256,8 @@ def run() -> None:
 
     # Media client + local cache
     media_client = build_media_client()
-    media_store = MediaStore(db_path=_MEDIA_STORE_DB, media_client=media_client)
+    media_store = MediaStore(db_path=_MEDIA_STORE_DB, media_client=media_client,
+                             error_queue=error_queue)
 
     # Radio
     radio = RtlFmRadio()
@@ -240,6 +272,7 @@ def run() -> None:
     _gpio_ready = False
     gpio = build_gpio_handler()
     _gpio_ready = True
+    _setup_hook_interrupt(HOOK_SWITCH_PIN, audio, tts)
 
     # Session
     session = Session(

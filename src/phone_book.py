@@ -1,10 +1,13 @@
 """Phone number registry — maps media keys to 7-digit phone numbers."""
 
+import logging
 import random
 import sqlite3
 from typing import Optional
 
 from src.constants import PHONE_NUMBER_LENGTH, PHONE_NUMBER_GENERATE_MAX_ATTEMPTS, ASSISTANT_NUMBER
+
+logger = logging.getLogger(__name__)
 
 
 class PhoneBook:
@@ -103,11 +106,17 @@ class PhoneBook:
                 "SELECT 1 FROM phone_book WHERE phone_number = ?", (phone_number,)
             ).fetchone()
             if not exists:
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT OR IGNORE INTO phone_book "
                     "(media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
                     (media_key, media_type, name, phone_number)
                 )
+                if cursor.rowcount == 0:
+                    logger.warning(
+                        "seed(): phone_number %s for media_key %r was not registered "
+                        "— media_key is already assigned a different number",
+                        phone_number, media_key
+                    )
 
     def get_all(self) -> list:
         """Return all entries as a list of dicts."""

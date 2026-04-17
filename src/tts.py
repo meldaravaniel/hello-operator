@@ -28,6 +28,7 @@ import glob as _glob
 import hashlib
 import os
 import subprocess
+import threading
 import time
 import uuid
 from typing import Optional
@@ -64,6 +65,8 @@ class PiperTTS(TTSInterface):
         self._error_queue = error_queue
         # Map from normalized text → script_name (populated by prerender)
         self._text_to_script: dict[str, str] = {}
+        # Threading event set by abort(); cleared by resume(); checked in speak_and_play()
+        self._abort = threading.Event()
         os.makedirs(cache_dir, exist_ok=True)
         # Create and clear the live-synthesis scratch directory
         self._live_dir = os.path.join(cache_dir, "live")
@@ -79,36 +82,55 @@ class PiperTTS(TTSInterface):
         return self._synthesize(text)
 
     def speak_and_play(self, text: str) -> None:
-        """Synthesize (or use cache) and play via AudioInterface."""
+        """Synthesize (or use cache) and play via AudioInterface.
+
+        If abort() was called before this method returns from synthesis
+        (e.g. by a GPIO interrupt when the handset is replaced), playback
+        is suppressed.  Synthesis itself is not interrupted.
+        """
         # Check if this text was pre-rendered
         script_name = self._text_to_script.get(text)
         if script_name is not None:
             wav_path = self._wav_path(script_name)
             if os.path.exists(wav_path):
-                self._audio.play_file(wav_path)
+                if not self._abort.is_set():
+                    self._audio.play_file(wav_path)
                 return
             # Cache miss
             self._error_queue.log(_SOURCE, "warning", f"Cache miss for {script_name}")
             # Attempt repopulation
             repopulated = self._repopulate(script_name, text)
             if repopulated:
-                self._audio.play_file(self._wav_path(script_name))
+                if not self._abort.is_set():
+                    self._audio.play_file(self._wav_path(script_name))
                 return
             # Fall back to live synthesis
             path = self._synthesize(text)
-            if path:
+            if path and not self._abort.is_set():
                 self._play_and_cleanup(path)
             return
 
         # Not a pre-rendered script — live synthesis
         path = self._synthesize(text)
-        if path:
+        if path and not self._abort.is_set():
             self._play_and_cleanup(path)
 
     def speak_digits(self, digits: str) -> None:
         """Speak each digit character individually."""
         words = " ".join(DIGIT_WORDS.get(c, c) for c in digits)
         self.speak_and_play(words)
+
+    def abort(self) -> None:
+        """Suppress the next play_file call in speak_and_play().
+
+        Thread-safe; intended to be called from a GPIO interrupt callback
+        when the handset is replaced mid-synthesis.
+        """
+        self._abort.set()
+
+    def resume(self) -> None:
+        """Clear the abort signal so subsequent speak_and_play() calls play normally."""
+        self._abort.clear()
 
     def prerender(self, prompts: dict) -> None:
         """Pre-synthesize fixed strings to cached audio files.
@@ -236,3 +258,9 @@ class MockTTS(TTSInterface):
 
     def prerender(self, prompts: dict) -> None:
         self.calls.append(('prerender', prompts))
+
+    def abort(self) -> None:
+        self.calls.append(('abort',))
+
+    def resume(self) -> None:
+        self.calls.append(('resume',))

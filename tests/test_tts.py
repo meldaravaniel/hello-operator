@@ -794,3 +794,80 @@ class TestMockTTS:
         assert ('speak_and_play', 'hello') in mock.calls
         assert ('speak_digits', '123') in mock.calls
         assert ('prerender', {"GREETING": "hello"}) in mock.calls
+
+    def test_mock_tts_records_abort_and_resume(self, tmp_path):
+        mock = MockTTS()
+        mock.abort()
+        mock.resume()
+        assert ('abort',) in mock.calls
+        assert ('resume',) in mock.calls
+
+
+# ---------------------------------------------------------------------------
+# Abort flag — suppress playback when handset is replaced during synthesis
+# ---------------------------------------------------------------------------
+
+class TestAbortFlag:
+    """PiperTTS.abort() suppresses play_file; resume() re-enables it."""
+
+    def test_abort_suppresses_live_synthesis_playback(self, tmp_path):
+        """abort() before synthesis completes → play_file never called."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        tts.abort()
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("some dynamic text not in cache")
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert play_calls == [], "play_file should be suppressed after abort()"
+
+    def test_abort_suppresses_prerendered_playback(self, tmp_path):
+        """abort() suppresses playback even for pre-rendered (cached) scripts."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        text = "Hello, operator."
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.prerender({"greeting": text})
+        audio.calls.clear()
+        tts.abort()
+        tts.speak_and_play(text)
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert play_calls == [], "play_file should be suppressed after abort() (pre-rendered path)"
+
+    def test_abort_suppresses_cache_miss_repopulation_playback(self, tmp_path):
+        """abort() suppresses playback even after successful cache repopulation."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        text = "Cache me."
+        script_name = "s_cache"
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.prerender({script_name: text})
+        os.remove(os.path.join(cache_dir, f"{script_name}.wav"))
+        audio.calls.clear()
+        tts.abort()
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play(text)
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert play_calls == [], "play_file should be suppressed after abort() (cache-miss path)"
+
+    def test_resume_allows_playback_after_abort(self, tmp_path):
+        """abort() then resume() → speak_and_play plays normally."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        tts.abort()
+        tts.resume()
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("hello again")
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert len(play_calls) == 1, "play_file should be called after resume()"
+
+    def test_no_abort_plays_normally(self, tmp_path):
+        """Regression: without abort, speak_and_play plays as usual."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            tts.speak_and_play("hello world")
+        play_calls = [c for c in audio.calls if c[0] == 'play_file']
+        assert len(play_calls) == 1, "play_file must be called when abort is not set"
+
+    def test_abort_does_not_affect_speak_synthesis_only(self, tmp_path):
+        """speak() (synthesis only) is unaffected by abort — only play_file is suppressed."""
+        tts, audio, eq, cache_dir = make_tts(tmp_path)
+        tts.abort()
+        with patch('subprocess.Popen', side_effect=_make_file_based_piper()):
+            path = tts.speak("some text")
+        assert path is not None, "speak() should still synthesize even after abort()"

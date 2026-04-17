@@ -81,6 +81,19 @@ class TTSInterface(ABC):
     def prerender(self, prompts: dict) -> None:
         """Pre-synthesize fixed strings to cached audio files."""
 
+    @abstractmethod
+    def abort(self) -> None:
+        """Suppress playback at the end of any in-progress synthesis.
+
+        Safe to call from any thread (e.g. a GPIO interrupt callback).
+        Has no effect on speak() (synthesis only); only speak_and_play()
+        checks this flag before calling play_file().
+        """
+
+    @abstractmethod
+    def resume(self) -> None:
+        """Clear the abort signal so subsequent speak_and_play() calls play normally."""
+
 
 class MediaClientInterface(ABC):
     """Abstracts all media player API calls (MPD, Mopidy, etc.)."""

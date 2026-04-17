@@ -16,8 +16,7 @@ ASSISTANT        — diagnostic status readout
 OFF_HOOK         — terminal state; off-hook warning tone playing
 
 Reserved digits (all states except DIRECT_DIAL):
-    0 → return to top-level menu
-    9 → go back one level (or stay at top)
+    0 → go back one level (or stay at top)
 """
 
 import sqlite3
@@ -71,16 +70,10 @@ SCRIPT_PLAYING_MENU_ON_HOLD_LAST_TRACK = ("To resume your call, dial one. "
                                            "To reach a new party, dial zero.")
 SCRIPT_MEDIA_FAILURE = ("I'm sorry, our long-distance exchange appears to be temporarily "
                         "out of service. We apologize for the inconvenience.")
-SCRIPT_DB_FAILURE = ("I'm sorry, our directory appears to be temporarily unavailable. "
-                     "The switchboard is experiencing an internal fault.")
 SCRIPT_RETRY_PROMPT = ("If you'd like me to try the exchange again, dial one. "
                         "Otherwise, you may replace your handset and try your call again later.")
 SCRIPT_NO_CONTENT = ("We're sorry. There are no parties available on this exchange at this time. "
                       "Please replace your handset.")
-SCRIPT_TERMINAL_FALLBACK = ("We're sorry. Your call cannot be completed as dialed. "
-                              "Please replace your handset and try again later.")
-SCRIPT_SERVICE_DEGRADATION = ("I beg your pardon — we're experiencing some difficulty "
-                               "on the line. One moment please.")
 SCRIPT_BROWSE_PROMPT_NEXT_LETTER = ("I have quite a few parties on that exchange. "
                                      "Please dial the next letter of your party's name to "
                                      "narrow the connection.")
@@ -89,7 +82,6 @@ SCRIPT_BROWSE_AUTO_SELECT_TEMPLATE = ("One moment — I have exactly one match. 
                                        "Connecting you to {name} now.")
 SCRIPT_ARTIST_SUBMENU_TEMPLATE = "To speak to {artist}, dial one."
 SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX = " For a particular album, dial two."
-SCRIPT_ARTIST_SINGLE_ALBUM_TEMPLATE = "To call {album}, dial one."
 SCRIPT_CONNECTING_TEMPLATE = ("Thank you for your patience. I'm connecting your call to "
                                "{digits} — {name}. Please hold.")
 SCRIPT_SHUFFLE_CONNECTING = ("One moment, please — I'm putting you through to the general exchange. "
@@ -104,7 +96,6 @@ SCRIPT_ASSISTANT_STATUS_INTRO = "I do have a few things here for you. Let me see
 SCRIPT_ASSISTANT_END_OF_MESSAGES = "And that's the last of them. Is there anything else I can help you with?"
 SCRIPT_ASSISTANT_NAVIGATION = ("To hear that again, dial one. For the previous menu, dial nine. "
                                 "To go back to the switchboard, dial zero.")
-SCRIPT_ASSISTANT_VALEDICTION_CLEAR = "Right then, I'll put you back through to the switchboard. Have a wonderful day!"
 SCRIPT_ASSISTANT_VALEDICTION_MESSAGES = "I'll put you back through now. Do give a shout if you need anything else!"
 SCRIPT_ASSISTANT_REFRESH_SUCCESS = ("All done! I've gone ahead and updated all my records from the exchange. "
                                      "Everything's shipshape.")
@@ -113,8 +104,6 @@ SCRIPT_ASSISTANT_REFRESH_FAILURE = ("I'm afraid I had some trouble reaching the 
 SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE = ("That's {page_size}. Shall I go on? "
                                               "Dial one to continue, or dial zero to go back to the switchboard.")
 SCRIPT_ASSISTANT_REFRESH_PROMPT = "To refresh my records from the exchange, dial {n}."
-# Alias used by tests
-SCRIPT_ASSISTANT_CONTINUE_PROMPT = SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE
 
 # Radio scripts
 SCRIPT_RADIO_CONNECTING = (
@@ -140,7 +129,7 @@ _T9_GROUPS = {
     8: set("VWXYZvwxyz"),
 }
 
-# Digits that map to themselves
+# Digit characters; '0' maps to group 9, others map to their face value
 _T9_DIGIT_CHARS = set("0123456789")
 
 _ARTICLES = ("the ", "a ", "an ")
@@ -156,17 +145,17 @@ def _strip_article(name: str) -> str:
 
 
 def _t9_digit_for_name(name: str) -> int:
-    """Return the T9 digit (1–8) for the first indexable character of name."""
+    """Return the T9 digit (1–9) for the first indexable character of name."""
     stripped = _strip_article(name)
     if not stripped:
-        return 8
+        return 9
     first = stripped[0]
     if first in _T9_DIGIT_CHARS:
-        return int(first) if first != '0' else 8  # '0' falls under 8
+        return int(first) if first != '0' else 9  # '0' maps to group 9 (keypad 0 is navigation)
     for digit, chars in _T9_GROUPS.items():
         if first in chars:
             return digit
-    return 8  # special chars → 8
+    return 9  # special chars → group 9
 
 
 def _filter_by_t9_prefix(items: List[MediaItem], prefix: List[int]) -> List[MediaItem]:
@@ -196,11 +185,11 @@ def _filter_by_t9_prefix(items: List[MediaItem], prefix: List[int]) -> List[Medi
 def _t9_digit_for_char(ch: str) -> int:
     """Return T9 digit for a single character."""
     if ch in _T9_DIGIT_CHARS:
-        return int(ch) if ch != '0' else 8
+        return int(ch) if ch != '0' else 9  # '0' maps to group 9 (keypad 0 is navigation)
     for digit, chars in _T9_GROUPS.items():
         if ch in chars:
             return digit
-    return 8
+    return 9  # special chars → group 9
 
 
 
@@ -270,14 +259,11 @@ class Menu:
         # Direct dial accumulator
         self._dial_digits: List[int] = []
 
-        # Navigation stack (for '9' = back)
+        # Navigation stack (for '0' = back/top)
         self._nav_stack: List[MenuState] = []
 
         # Failure state (for retry loops)
-        self._failure_mode: Optional[str] = None  # "media" | "db" | None
-
-        # Playing menu: whether we just stopped music
-        self._just_stopped_music: bool = False
+        self._failure_mode: Optional[str] = None  # "media" | None
 
         # Browse state
         self._browse_prefix: List[int] = []          # accumulated T9 digits
@@ -307,8 +293,8 @@ class Menu:
         if now is None:
             now = time.monotonic()
         self._handset_up = True
+        self._tts.resume()
         self._opener_spoken = False
-        self._just_stopped_music = False
         self._handset_up_time = now
         self._last_activity_time = now
         self._state = MenuState.IDLE_DIAL_TONE
@@ -323,11 +309,13 @@ class Menu:
         """Called when the handset is replaced."""
         self._handset_up = False
         self._audio.stop()
+        self._tts.abort()
         self._state = MenuState.IDLE_DIAL_TONE
         self._nav_stack.clear()
         self._dial_digits.clear()
         self._pending_digit = None
         self._pre_dial_state = None
+        self._current_artist = None
 
     def on_digit(self, digit: int, now: Optional[float] = None) -> None:
         """Called when a digit is decoded."""
@@ -512,7 +500,16 @@ class Menu:
         self._tts.speak_and_play(SCRIPT_RADIO_PLAYING_MENU)
 
     def _handle_radio_playing_menu_digit(self, digit: int, now: float) -> None:
-        """Handle digit in RADIO_PLAYING_MENU state."""
+        """Handle digit in RADIO_PLAYING_MENU state.
+
+        This handler is called by _dispatch_navigation_digit *before* the
+        global 0/9 nav-stack rules are evaluated (see the early-return at the
+        top of that method).  The bypass is intentional: RADIO_PLAYING_MENU is
+        a terminal state with no nav-stack entry, so popping the stack would be
+        meaningless.  Digit 0 is re-used here to mean "go to top" (same effect
+        as digit 3 — stop radio and deliver the idle menu) rather than
+        triggering the generic nav-stack pop.
+        """
         if digit == 3 or digit == 0:
             if self._radio is not None:
                 self._radio.stop()
@@ -551,21 +548,15 @@ class Menu:
             return
 
         if digit == 0:
-            # Return to top-level menu (always idle, even if music is playing)
-            self._nav_stack.clear()
-            self._deliver_idle_menu(now)
-            return
-
-        if digit == 9:
-            # Go back one level
+            # Go back one level; if already at top, re-deliver the top-level menu
             if self._nav_stack:
                 self._state = self._nav_stack.pop()
-                # Re-deliver the menu for that state
                 self._re_deliver_current_state(now)
             else:
-                # Already at top level; stay
                 self._go_top_level(now)
             return
+
+        # digit 9 is a regular T9 browse group — falls through to state-specific handling
 
         # State-specific digit handling
         if self._state == MenuState.IDLE_MENU:
@@ -659,7 +650,6 @@ class Menu:
                 self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
         elif digit == 3:
             self._media_client.stop()
-            self._just_stopped_music = True
             self._state = MenuState.IDLE_MENU
             # Go to idle menu without re-delivering opener
             # deliver idle menu directly (opener already spoken)

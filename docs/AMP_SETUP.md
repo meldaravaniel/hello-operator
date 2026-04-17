@@ -165,7 +165,7 @@ Power-cycle the board after changing the gain wiring.
 
 ## Channel selection (SD pin)
 
-The breakout board's SD pin has a 1MΩ pull-up to Vin, which selects **stereo average** output `(L+R)/2` by default — appropriate for mono use with a stereo audio source. No changes are needed for hello-operator.
+The breakout board's SD pin has a 1MΩ pull-up to Vin, which selects **stereo average** output `(L+R)/2` by default — appropriate for mono use with a stereo audio source.
 
 For reference, the SD pin voltage ranges are:
 
@@ -175,6 +175,35 @@ For reference, the SD pin voltage ranges are:
 | 0.16V – 0.77V | Stereo average (L+R)/2 |
 | 0.77V – 1.4V | Right channel only |
 | > 1.4V | Left channel only |
+
+The SD pin is also used for instant audio cutoff — see Step 5 below.
+
+---
+
+## Step 5 — Wire instant audio cutoff via hook switch (recommended)
+
+Without this step, audio may continue briefly after the handset is replaced during live TTS synthesis (artist names, browse lists, connecting announcements). The hardware fix cuts the amplifier at the analog level — instantly and unconditionally — regardless of software state.
+
+**How it works:** Pulling the SD pin below 0.16V shuts the amplifier down immediately. hello-operator drives a GPIO pin LOW when the handset is on the cradle and releases it to high impedance when the handset is lifted. The existing 1MΩ pull-up on the breakout board maintains stereo average mode during normal operation.
+
+### Additional parts needed
+
+- One 100Ω resistor (current-limiting protection for the GPIO pin)
+- One additional jumper wire
+
+### Wiring
+
+| MAX98357 pin | Connection |
+|---|---|
+| SD | GPIO 22 (BCM) via 100Ω series resistor — Physical pin 15 |
+
+Connect the 100Ω resistor in series between physical pin 15 on the Pi's GPIO header and the SD pin on the MAX98357 breakout board.
+
+> **Do not drive GPIO 22 HIGH.** Driving 3.3V onto the SD pin would override the 1MΩ pull-up and force left-channel-only output. The pin is toggled between `OUTPUT LOW` (amp off) and high impedance / `INPUT` (amp on, pull-up controls mode). hello-operator handles this automatically.
+
+### Behaviour without this step
+
+For pre-rendered TTS (most menu prompts) the difference is negligible — one polling cycle (~5 ms). For live synthesis the gap can be up to ~1–2 seconds depending on how long piper takes to finish.
 
 ---
 

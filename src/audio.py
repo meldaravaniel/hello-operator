@@ -48,10 +48,6 @@ _DTMF_FREQ = {
 # Off-hook warning tone frequencies (alternating cadence — standard US ROH).
 _OFF_HOOK_FREQ = [1400, 2060, 2450, 2600]
 
-# Sentinel object used to signal the worker thread to exit cleanly.
-_STOP_SENTINEL = object()
-
-
 def _generate_tone(frequencies: list, duration_ms: int, sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
     """Generate a normalized sine wave mix for the given frequencies."""
     n_samples = int(sample_rate * duration_ms / 1000)
@@ -183,9 +179,6 @@ class SounddeviceAudio(AudioInterface):
         """Daemon worker: dequeue tasks and execute them sequentially."""
         while True:
             task = self._queue.get()
-            if task is _STOP_SENTINEL:
-                self._queue.task_done()
-                break
             with self._lock:
                 self._busy = True
             try:

@@ -5,10 +5,10 @@ All tests use injected mocks; no hardware or network required.
 
 import time
 import pytest
-from src.menu import Menu, MenuState
+from src.menu import Menu, MenuState, _t9_digit_for_char, _t9_digit_for_name, _filter_by_t9_prefix
 from src.interfaces import MediaItem, PlaybackState
 from src.constants import (
-    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, INACTIVITY_TIMEOUT,
+    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, DIAL_TONE_TIMEOUT_IDLE, INACTIVITY_TIMEOUT,
     ASSISTANT_NUMBER, ASSISTANT_MESSAGE_PAGE_SIZE, PHONE_NUMBER_LENGTH,
 )
 
@@ -60,39 +60,59 @@ def tts_calls(mock_tts):
 
 class TestReservedDigitsAndDisambiguation:
 
-    def test_digit_0_single_goes_to_top_level(self, mock_audio, mock_tts, mock_media_client,
-                                               mock_media_store, mock_error_queue, tmp_path):
-        """Digit 0 alone → state resets to top-level menu."""
+    def test_digit_0_goes_back_one_level_or_top(self, mock_audio, mock_tts, mock_media_client,
+                                                 mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 alone → go back one level; at root delivers the top-level menu."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
         menu.on_digit(0, now=0.0)
-        # After disambiguation timeout: should be at top level
+        # After disambiguation timeout: no history at root → delivers top-level menu
         menu.tick(now=0.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
 
-    def test_digit_9_single_goes_back_one_level(self, mock_audio, mock_tts, mock_media_client,
-                                                 mock_media_store, mock_error_queue, tmp_path):
-        """Digit 9 alone → state moves up one level."""
-        mock_media_store.set_playlists([
-            MediaItem("/p/1", "Jazz Mix", "playlist")
-        ])
+    def test_digit_0_goes_back_from_browse(self, mock_audio, mock_tts, mock_media_client,
+                                            mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 from inside a browse state → go back one level to IDLE_MENU."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        # Enter idle menu
-        menu.tick(now=10.0)  # past dial tone timeout
+        menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
         # Navigate into playlist browse
         menu.on_digit(1, now=10.1)
         menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        # Now press 9 to go back
-        menu.on_digit(9, now=11.0)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS
+        # Digit 0 → back one level
+        menu.on_digit(0, now=11.0)
         menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
 
-    def test_digit_9_at_top_level(self, mock_audio, mock_tts, mock_media_client,
-                                   mock_media_store, mock_error_queue, tmp_path):
-        """Digit 9 at top level → no crash, stays at top level."""
+    def test_digit_9_is_not_navigation_in_browse(self, mock_audio, mock_tts, mock_media_client,
+                                                   mock_media_store, mock_error_queue, tmp_path):
+        """Digit 9 is a T9 browse group, not a navigation key — pressing it narrows browse."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)
+        # Navigate into playlist browse
+        menu.on_digit(1, now=10.1)
+        menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS
+        # Digit 9 → T9 narrowing attempt, stays in browse (no match for "Jazz Mix" in group 9)
+        menu.on_digit(9, now=11.0)
+        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_PLAYLISTS, (
+            "Digit 9 should be a T9 browse digit, not navigation-back. "
+            f"State is {menu.state!r}; expected BROWSE_PLAYLISTS."
+        )
+
+    def test_digit_9_at_top_level_is_treated_as_menu_digit(self, mock_audio, mock_tts,
+                                                             mock_media_client, mock_media_store,
+                                                             mock_error_queue, tmp_path):
+        """Digit 9 at IDLE_MENU is treated as a menu option digit, not navigation."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
@@ -100,7 +120,8 @@ class TestReservedDigitsAndDisambiguation:
         menu.tick(now=10.0)
         menu.on_digit(9, now=10.1)
         menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
+        # Option 9 doesn't exist → "not in service", stays at IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
 
     def test_disambiguation_timeout_single_digit_is_navigation(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -175,7 +196,6 @@ SCRIPT_NOT_IN_SERVICE = "not in service"
 SCRIPT_MEDIA_FAILURE = "long-distance exchange appears to be temporarily out of service"
 SCRIPT_RETRY_PROMPT = "dial one"
 SCRIPT_NO_CONTENT = "no parties available"
-SCRIPT_TERMINAL_FALLBACK = "Your call cannot be completed"
 
 
 @pytest.fixture
@@ -652,12 +672,12 @@ class TestPlayingMenu:
         assert any(c[0] == 'stop' for c in mock_media_client.calls)
         assert playing_menu.state == MenuState.IDLE_MENU
 
-    def test_playing_menu_option_0_go_to_idle_menu(self, playing_menu):
-        """Digit 0 → transitions to idle top-level menu."""
+    def test_playing_menu_option_0_re_delivers_playing_menu(self, playing_menu):
+        """Digit 0 from PLAYING_MENU (no nav history) → re-delivers PLAYING_MENU (top-level back)."""
         self._advance_to_playing_menu(playing_menu)
         playing_menu.on_digit(0, now=11.0)
         playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        assert playing_menu.state == MenuState.IDLE_MENU
+        assert playing_menu.state == MenuState.PLAYING_MENU
 
     def test_playing_menu_now_playing_idle_at_speak_time(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -705,7 +725,6 @@ class TestPlayingMenu:
 SCRIPT_BROWSE_PROMPT_NEXT_LETTER = "quite a few parties"
 SCRIPT_BROWSE_LIST_INTRO = "parties on the line"
 SCRIPT_BROWSE_AUTO_SELECT = "exactly one match"
-SCRIPT_SERVICE_DEGRADATION = "experiencing some difficulty"
 
 
 def _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path,
@@ -785,16 +804,16 @@ class TestT9Browsing:
         full = " ".join(texts)
         assert "30 Seconds to Mars" in full
 
-    def test_browse_t9_special_chars_under_8(self, mock_audio, mock_tts, mock_media_client,
+    def test_browse_t9_special_chars_under_9(self, mock_audio, mock_tts, mock_media_client,
                                               mock_media_store, mock_error_queue, tmp_path):
-        """Item starting with '!' → matched by digit 8."""
+        """Item starting with '!' → matched by digit 9 (special chars are group 9)."""
         items = [
             MediaItem("/p/1", "!Mix", "playlist"),
             MediaItem("/p/2", "Jazz", "playlist"),
         ]
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
-        menu.on_digit(8, now=12.0)
+        menu.on_digit(9, now=12.0)
         menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
         texts = tts_calls(mock_tts)
         assert "!Mix" in " ".join(texts)
@@ -1191,9 +1210,9 @@ class TestDiagnosticAssistant:
 
     def test_assistant_reads_first_page_then_asks(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """More than PAGE_SIZE messages → first PAGE_SIZE read, then SCRIPT_ASSISTANT_CONTINUE_PROMPT."""
+        """More than PAGE_SIZE messages → first PAGE_SIZE read, then SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE."""
         from src.interfaces import ErrorEntry
-        from src.menu import SCRIPT_ASSISTANT_CONTINUE_PROMPT
+        from src.menu import SCRIPT_ASSISTANT_CONTINUE_PROMPT_TEMPLATE
         menu = self._menu_with_handset_up(mock_audio, mock_tts, mock_media_client,
                                            mock_media_store, mock_error_queue, tmp_path)
         # More than PAGE_SIZE errors
@@ -2851,3 +2870,217 @@ class TestDirectDialFailureReturn:
         menu.on_handset_on_cradle()
         assert menu._pre_dial_state is None, \
             f"Expected _pre_dial_state=None after cradle; got {menu._pre_dial_state}"
+
+    def test_failed_direct_dial_from_playing_menu_re_delivers_playing_menu(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Failed direct dial from PLAYING_MENU → speaks not-in-service then re-delivers playing menu."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        playing_item = MediaItem("/t/1", "Some Song", "track")
+        mock_media_client.set_now_playing(PlaybackState(item=playing_item, is_paused=False))
+        mock_media_client.set_queue_position(1, 5)
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver playing menu; state = PLAYING_MENU
+        assert menu.state == MenuState.PLAYING_MENU
+        mock_tts.calls.clear()
+
+        self._dial_unknown_number(menu, start_time=15.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE after failed dial; got: {texts}"
+        assert menu.state == MenuState.PLAYING_MENU, \
+            f"Expected PLAYING_MENU after failed dial from PLAYING_MENU; got {menu.state}"
+        # Playing menu must be re-announced so user knows their options
+        assert any(playing_item.name in t for t in texts), \
+            f"Expected playing menu re-delivered (song name in TTS); got: {texts}"
+
+    def test_db_error_during_lookup_speaks_not_in_service_and_re_delivers_menu(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """SQLite error during phone book lookup → speaks not-in-service and re-delivers prior menu."""
+        import sqlite3
+        from unittest.mock import patch
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        mock_media_store.set_artists([])
+        mock_media_store.set_genres([])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+
+        with patch.object(menu._phone_book, 'lookup_by_phone_number',
+                          side_effect=sqlite3.Error("simulated DB failure")):
+            self._dial_unknown_number(menu, start_time=15.0)
+
+        texts = tts_calls(mock_tts)
+        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
+            f"Expected SCRIPT_NOT_IN_SERVICE after DB error; got: {texts}"
+        assert menu.state == MenuState.IDLE_MENU, \
+            f"Expected IDLE_MENU after DB error; got {menu.state}"
+        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
+            f"Expected idle menu re-delivered after DB error; texts: {texts}"
+
+
+# ---------------------------------------------------------------------------
+# T9 group semantics: group 8 = V-Z + digit '8'; group 9 = digit '9' + digit '0' + specials
+# ---------------------------------------------------------------------------
+
+class TestT9Groups:
+    """T9 character→group mapping for the new design.
+
+    Group 8: letters V W X Y Z (upper + lower) and the digit character '8'.
+    Group 9: digit character '9', digit character '0', and all special/punctuation chars.
+    Navigation: digit 0 (keypad press) is the sole navigation key (back one level or top).
+                digit 9 (keypad press) is a regular T9 browse group.
+    """
+
+    def test_group_8_contains_v_through_z_and_digit_8(self):
+        for ch in 'VWXYZvwxyz8':
+            result = _t9_digit_for_char(ch)
+            assert result == 8, f"Expected '{ch}' → group 8, got {result}"
+
+    def test_group_9_contains_digit_9(self):
+        assert _t9_digit_for_char('9') == 9
+
+    def test_group_9_contains_digit_0(self):
+        """The character '0' in a name must map to group 9, not group 8."""
+        result = _t9_digit_for_char('0')
+        assert result == 9, f"'0' should map to group 9, got {result}"
+
+    def test_group_9_contains_special_characters(self):
+        """Special/punctuation characters must map to group 9 (not group 8)."""
+        for ch in '#@!$%-+':
+            result = _t9_digit_for_char(ch)
+            assert result == 9, f"Special char '{ch}' should map to group 9, got {result}"
+
+    def test_group_8_does_not_contain_digit_0(self):
+        assert _t9_digit_for_char('0') != 8
+
+    def test_filter_item_starting_with_9_via_digit_9(self):
+        item = MediaItem("key:9lives", "9Lives", "album")
+        assert _filter_by_t9_prefix([item], [9]) == [item]
+
+    def test_filter_item_starting_with_0_via_digit_9_not_digit_8(self):
+        """Items starting with '0' must be findable via digit 9, not digit 8."""
+        item = MediaItem("key:0day", "0-Day", "album")
+        assert item in _filter_by_t9_prefix([item], [9]), "0-Day must be in group 9"
+        assert item not in _filter_by_t9_prefix([item], [8]), "0-Day must not be in group 8"
+
+    def test_t9_digit_for_name_starting_with_9(self):
+        assert _t9_digit_for_name("9Lives") == 9
+
+    def test_t9_digit_for_name_starting_with_0(self):
+        """Names starting with '0' must map to group 9."""
+        result = _t9_digit_for_name("0-Day")
+        assert result == 9, f"'0-Day' should map to group 9, got {result}"
+
+
+
+# ---------------------------------------------------------------------------
+# Bug regression: stale _current_artist after hangup
+# ---------------------------------------------------------------------------
+
+class TestArtistSubMenuStateBug:
+    """Bug: _current_artist is not cleared in on_handset_on_cradle().
+
+    If the handset is lifted again and the state machine somehow re-enters
+    ARTIST_SUBMENU (e.g. via _re_deliver_current_state from a failed direct-dial
+    that had _pre_dial_state=ARTIST_SUBMENU), _current_artist still references
+    the artist from the previous session.
+    """
+
+    def test_current_artist_cleared_on_handset_on_cradle(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """_current_artist must be None after on_handset_on_cradle()."""
+        # Only artists available so option 1 = artists (no playlists/genres to shift numbering)
+        led_zeppelin = MediaItem("/a/1", "Led Zeppelin", "artist")
+        mock_media_store.set_artists([led_zeppelin])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+
+        menu.on_handset_lifted(now=0.0)
+        # Advance past dial-tone timeout → idle menu
+        menu.tick(now=DIAL_TONE_TIMEOUT_IDLE + 0.1)
+        assert menu.state == MenuState.IDLE_MENU
+
+        # Digit 1 → browse artists (only option)
+        t = DIAL_TONE_TIMEOUT_IDLE + 0.2
+        menu.on_digit(1, now=t)
+        menu.tick(now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.BROWSE_ARTISTS
+
+        # Digit 4 (T9 for 'L') → single match → auto-selects Led Zeppelin → ARTIST_SUBMENU
+        t2 = t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.5
+        menu.on_digit(4, now=t2)
+        menu.tick(now=t2 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.ARTIST_SUBMENU
+        assert menu._current_artist is not None, "precondition: artist must be set"
+
+        # Hang up
+        menu.on_handset_on_cradle()
+
+        assert menu._current_artist is None, (
+            f"Expected _current_artist=None after hangup, "
+            f"but it still references {menu._current_artist!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Audio cutoff when handset is replaced during TTS synthesis
+# ---------------------------------------------------------------------------
+
+class TestHandsetReplacedDuringSynthesis:
+    """Menu routes abort/resume through TTSInterface to suppress stale playback."""
+
+    def test_on_handset_on_cradle_calls_tts_abort(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """on_handset_on_cradle() must call tts.abort() to suppress any
+        playback that piper may enqueue after the blocking synthesis returns."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        mock_tts.calls.clear()
+        menu.on_handset_on_cradle()
+        abort_calls = [c for c in mock_tts.calls if c[0] == 'abort']
+        assert abort_calls, "on_handset_on_cradle() must call tts.abort()"
+
+    def test_on_handset_lifted_calls_tts_resume(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """on_handset_lifted() must call tts.resume() so speech works after
+        a prior hang-up set the abort flag."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        resume_calls = [c for c in mock_tts.calls if c[0] == 'resume']
+        assert resume_calls, "on_handset_lifted() must call tts.resume()"
+
+    def test_abort_called_even_without_prior_lift(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """on_handset_on_cradle() with no prior lift must not raise and must still abort."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_on_cradle()
+        abort_calls = [c for c in mock_tts.calls if c[0] == 'abort']
+        assert abort_calls, "abort() must be safe to call before any handset lift"
+
+    def test_audio_stop_still_called_on_hangup(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """Regression: audio.stop() must still be called on hang-up alongside tts.abort()."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        mock_audio.calls.clear()
+        menu.on_handset_on_cradle()
+        stop_calls = [c for c in mock_audio.calls if c[0] == 'stop']
+        assert stop_calls, "audio.stop() must still be called on hang-up"

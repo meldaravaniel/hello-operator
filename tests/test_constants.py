@@ -201,3 +201,28 @@ class TestDigitWords:
         src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(src_root, "src", "menu.py")) as f:
             assert "_DIGIT_WORDS" not in f.read()
+
+
+class TestAssistantNumberFormat:
+    """Bug: ASSISTANT_NUMBER is required but its format is never validated.
+
+    A value that is not exactly PHONE_NUMBER_LENGTH digits will be accepted at
+    import time but the assistant will be silently unreachable: the direct-dial
+    comparisons in menu.py check len(digits) == PHONE_NUMBER_LENGTH, so a
+    shorter or longer number never matches.
+    """
+
+    def test_assistant_number_too_short_raises(self):
+        """ASSISTANT_NUMBER with fewer than 7 digits must raise RuntimeError at import."""
+        with pytest.raises(RuntimeError, match="ASSISTANT_NUMBER"):
+            _reimport_constants({"ASSISTANT_NUMBER": "12345"})  # 5 digits
+
+    def test_assistant_number_too_long_raises(self):
+        """ASSISTANT_NUMBER with more than 7 digits must raise RuntimeError at import."""
+        with pytest.raises(RuntimeError, match="ASSISTANT_NUMBER"):
+            _reimport_constants({"ASSISTANT_NUMBER": "12345678"})  # 8 digits
+
+    def test_assistant_number_non_numeric_raises(self):
+        """ASSISTANT_NUMBER containing non-digit characters must raise RuntimeError."""
+        with pytest.raises(RuntimeError, match="ASSISTANT_NUMBER"):
+            _reimport_constants({"ASSISTANT_NUMBER": "555ABCD"})

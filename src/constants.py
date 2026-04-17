@@ -50,6 +50,10 @@ if not _assistant_number:
         "Choose a 7-digit number not used by any media entry "
         "(e.g. export ASSISTANT_NUMBER=5550000)."
     )
+if not _assistant_number.isdigit() or len(_assistant_number) != PHONE_NUMBER_LENGTH:
+    raise RuntimeError(
+        f"ASSISTANT_NUMBER must be exactly {PHONE_NUMBER_LENGTH} digits (got {_assistant_number!r})."
+    )
 ASSISTANT_NUMBER: str = _assistant_number
 
 # GPIO debounce windows (in seconds)

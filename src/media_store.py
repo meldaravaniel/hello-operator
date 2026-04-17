@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from src.interfaces import MediaItem, MediaClientInterface
+from src.interfaces import MediaItem, MediaClientInterface, ErrorQueueInterface
 
 
 def _now_iso() -> str:
@@ -117,9 +117,11 @@ class MockMediaStore:
 class MediaStore:
     """Persistent local cache of media browse data."""
 
-    def __init__(self, db_path: str, media_client: MediaClientInterface) -> None:
+    def __init__(self, db_path: str, media_client: MediaClientInterface,
+                 error_queue: ErrorQueueInterface) -> None:
         self._db_path = db_path
         self._media_client = media_client
+        self._error_queue = error_queue
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -261,7 +263,12 @@ class MediaStore:
                 items = fetch_fn()
                 self._write(cache_key, items)
                 summary[category_name] = "ok"
-            except Exception:
+            except Exception as exc:
+                self._error_queue.log(
+                    source="media_store",
+                    severity="error",
+                    message=f"{category_name} refresh failed: {exc}",
+                )
                 summary[category_name] = "error"
 
         for album_key in self._all_album_keys():
@@ -269,7 +276,11 @@ class MediaStore:
             try:
                 items = self._media_client.get_albums_for_artist(artist_key)
                 self._write(album_key, items)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._error_queue.log(
+                    source="media_store",
+                    severity="error",
+                    message=f"album refresh failed for {artist_key}: {exc}",
+                )
 
         return summary

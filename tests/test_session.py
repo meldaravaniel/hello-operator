@@ -267,3 +267,86 @@ class TestSessionRadio:
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path, mock_radio=mock_radio)
         assert session.menu._radio is mock_radio
+
+
+# ---------------------------------------------------------------------------
+# Required constructor parameters
+# ---------------------------------------------------------------------------
+
+class TestSessionRequiredParameters:
+    """Session must reject construction when required dependencies are omitted.
+
+    media_client, media_store, phone_book, and error_queue are not truly
+    optional — the session cannot function without them.  Removing their
+    = None defaults causes Python to raise TypeError at the call site instead
+    of letting a broken Session reach runtime.
+
+    radio is intentionally optional (hardware-dependent; all usages are
+    guarded with ``if self._radio is not None``).
+    """
+
+    def _make_phone_book(self, tmp_path):
+        from src.phone_book import PhoneBook
+        return PhoneBook(db_path=str(tmp_path / "pb.db"))
+
+    def test_missing_media_client_raises_type_error(
+            self, mock_audio, mock_tts, mock_media_store, mock_error_queue, tmp_path):
+        from src.session import Session
+        with pytest.raises(TypeError):
+            Session(
+                audio=mock_audio,
+                tts=mock_tts,
+                media_store=mock_media_store,
+                phone_book=self._make_phone_book(tmp_path),
+                error_queue=mock_error_queue,
+            )
+
+    def test_missing_media_store_raises_type_error(
+            self, mock_audio, mock_tts, mock_media_client, mock_error_queue, tmp_path):
+        from src.session import Session
+        with pytest.raises(TypeError):
+            Session(
+                audio=mock_audio,
+                tts=mock_tts,
+                media_client=mock_media_client,
+                phone_book=self._make_phone_book(tmp_path),
+                error_queue=mock_error_queue,
+            )
+
+    def test_missing_phone_book_raises_type_error(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        from src.session import Session
+        with pytest.raises(TypeError):
+            Session(
+                audio=mock_audio,
+                tts=mock_tts,
+                media_client=mock_media_client,
+                media_store=mock_media_store,
+                error_queue=mock_error_queue,
+            )
+
+    def test_missing_error_queue_raises_type_error(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, tmp_path):
+        from src.session import Session
+        with pytest.raises(TypeError):
+            Session(
+                audio=mock_audio,
+                tts=mock_tts,
+                media_client=mock_media_client,
+                media_store=mock_media_store,
+                phone_book=self._make_phone_book(tmp_path),
+            )
+
+    def test_radio_is_still_optional(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """radio has no = None default — confirm Session builds without it."""
+        from src.session import Session
+        session = Session(
+            audio=mock_audio,
+            tts=mock_tts,
+            media_client=mock_media_client,
+            media_store=mock_media_store,
+            phone_book=self._make_phone_book(tmp_path),
+            error_queue=mock_error_queue,
+        )
+        assert session.menu._radio is None

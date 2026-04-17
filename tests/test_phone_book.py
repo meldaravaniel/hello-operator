@@ -195,3 +195,32 @@ def test_valid_media_types_accepted(tmp_phone_book):
                 "INSERT INTO phone_book (media_key, media_type, name, phone_number) VALUES (?, ?, ?, ?)",
                 (f"/k/{i}", media_type, f"Name {i}", f"555000{i}")
             )
+
+
+# ---------------------------------------------------------------------------
+# Bug regression: seed() silently drops entry when media_key already exists
+# ---------------------------------------------------------------------------
+
+def test_seed_logs_warning_when_media_key_already_assigned(tmp_phone_book, caplog):
+    """seed() must log a warning when INSERT OR IGNORE silently drops the entry.
+
+    If assign_or_get() has already given a media_key a random phone number, a
+    subsequent seed() call for that media_key finds the phone_number slot free
+    but the INSERT OR IGNORE silently fails on the media_key PRIMARY KEY
+    conflict.  The desired vanity number is never registered, and without a
+    warning the operator has no way to know the seed was ineffective.
+    """
+    import logging
+    pb = PhoneBook(tmp_phone_book)
+
+    # Assign a random number to the media_key before the seed runs
+    pb.assign_or_get("radio:90300000.0", "radio", "KEXP")
+
+    # seed() with the desired phone number — INSERT will silently fail
+    with caplog.at_level(logging.WARNING, logger="src.phone_book"):
+        pb.seed("5550903", "radio:90300000.0", "radio", "KEXP")
+
+    assert any("radio:90300000.0" in record.message for record in caplog.records), (
+        "seed() should emit a warning when the media_key already has a phone number "
+        "and the seeded entry is silently dropped, but no warning was logged."
+    )

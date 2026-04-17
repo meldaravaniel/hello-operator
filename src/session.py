@@ -40,10 +40,10 @@ class Session:
         self,
         audio: AudioInterface,
         tts: TTSInterface,
-        media_client: MediaClientInterface = None,
-        media_store=None,
-        phone_book=None,
-        error_queue: ErrorQueueInterface = None,
+        media_client: MediaClientInterface,
+        media_store,
+        phone_book,
+        error_queue: ErrorQueueInterface,
         radio=None,  # RadioInterface
     ) -> None:
         self._menu = Menu(
