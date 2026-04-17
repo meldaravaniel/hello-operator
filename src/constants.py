@@ -17,6 +17,18 @@ import os
 MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "mpd")  # "mpd" | "mopidy"
 
 # ---------------------------------------------------------------------------
+# Audio output device (ALSA device name passed to aplay -D)
+# ---------------------------------------------------------------------------
+
+ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "plughw:MAX98357A")
+
+# Software volume multiplier applied to all audio output (0.0–1.0).
+# Reduce if the amp clips or buzzes; increase if output is too quiet.
+# The MAX98357A GAIN pin floating = 15 dB hardware gain, so a lower
+# default is appropriate to avoid clipping.
+AUDIO_VOLUME = float(os.environ.get("AUDIO_VOLUME", "0.4"))
+
+# ---------------------------------------------------------------------------
 # MPD / Mopidy — only used when MEDIA_BACKEND=mpd or MEDIA_BACKEND=mopidy
 # ---------------------------------------------------------------------------
 
@@ -72,6 +84,14 @@ TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 # GPIO pin assignments (BCM numbering) — optional; defaults match recommended wiring docs
 HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
 PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
+
+# BCM GPIO pin connected to MAX98357A SD (shutdown/enable) pin — optional.
+# When set, SounddeviceAudio drives SD LOW before starting aplay, then HIGH
+# after silence is flowing, eliminating the amplifier startup transient.
+# Wire MAX98357A SD to this GPIO pin (e.g. GPIO 22, physical pin 15).
+# If unset, connect SD directly to Vin on the amp board instead.
+_amp_sd_pin = os.environ.get("AMP_SD_PIN")
+AMP_SD_PIN = int(_amp_sd_pin) if _amp_sd_pin else None
 
 # Radio configuration
 RADIO_CONFIG_PATH = "/etc/hello-operator/radio_stations.json"

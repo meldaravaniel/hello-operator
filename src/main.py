@@ -16,6 +16,9 @@ from src.constants import (
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
     HOOK_DEBOUNCE,
     RADIO_CONFIG_PATH,
+    ALSA_DEVICE,
+    AUDIO_VOLUME,
+    AMP_SD_PIN,
 )
 from src.error_queue import SqliteErrorQueue
 from src.phone_book import PhoneBook
@@ -245,7 +248,7 @@ def run() -> None:
         )
 
     # Hardware interfaces
-    audio = SounddeviceAudio()
+    audio = SounddeviceAudio(device=ALSA_DEVICE, volume=AUDIO_VOLUME, sd_pin=AMP_SD_PIN)
     tts = PiperTTS(
         piper_binary=PIPER_BINARY,
         piper_model=PIPER_MODEL,
