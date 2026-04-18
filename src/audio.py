@@ -106,7 +106,7 @@ class SounddeviceAudio(AudioInterface):
         self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
-		self._proc = None
+        self._proc = None
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
 
