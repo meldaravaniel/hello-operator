@@ -69,12 +69,6 @@ cd web/angular && npm install && npm run build
 
 Edit `/etc/hello-operator/config.env`. The file is pre-populated from `config.env.example` with comments explaining each variable.
 
-### Always required
-
-| Variable | Description |
-|---|---|
-| `ASSISTANT_NUMBER` | 7-digit reserved number for the diagnostic assistant (must not conflict with any media entry) |
-
 ### MPD and Mopidy backends
 
 Set `MEDIA_BACKEND=mpd` to connect to a Music Player Daemon instance, or `MEDIA_BACKEND=mopidy` to connect to a Mopidy server. Both use the same `MPD_HOST` and `MPD_PORT` variables — Mopidy implements the MPD wire protocol via its `mopidy-mpd` extension.
@@ -104,6 +98,7 @@ These have sensible defaults matching the install script's paths and the hardwar
 
 | Variable | Default | Description |
 |---|---|---|
+| `ASSISTANT_NUMBER` | '5550000' | 7-digit reserved number for the diagnostic assistant |
 | `MEDIA_BACKEND` | `mpd` | Media player backend: `mpd` or `mopidy` |
 | `MPD_HOST` | `localhost` | MPD/Mopidy server hostname or IP |
 | `MPD_PORT` | `6600` | MPD/Mopidy TCP port (MPD and Mopidy backends) |
@@ -220,7 +215,6 @@ sudo systemctl restart hello-operator-web
 | Handset lift not detected | `docs/HOOK_SWITCH_SETUP.md` |
 | Service fails to start | `sudo journalctl -u hello-operator -n 50` |
 | Web interface unreachable | Check `sudo systemctl status hello-operator-web`; confirm port 8080 is not blocked |
-| Error about `ASSISTANT_NUMBER` at startup | Set `ASSISTANT_NUMBER` in `/etc/hello-operator/config.env` |
 | Radio plays no audio | Confirm RTL-SDR dongle is plugged in; run `rtl_test` to verify it is detected |
 | MPD connection refused | Confirm MPD is running (`systemctl status mpd`) and `MPD_HOST`/`MPD_PORT` match |
 | Mopidy connection refused | Confirm Mopidy is running (`systemctl status mopidy`) and the MPD extension is enabled (`mopidy-mpd`); check `MPD_HOST`/`MPD_PORT` match Mopidy's MPD frontend (default port 6600) |

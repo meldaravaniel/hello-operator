@@ -106,7 +106,22 @@ class SounddeviceAudio(AudioInterface):
         self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
-        self._proc = None
+
+        self._proc = self._popen(
+            ['aplay', '-q', '-D', self._device,
+             '-f', 'S16_LE', '-r', str(self._sample_rate), '-c', '1'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        _warmup_frames = int(self._sample_rate * _WARMUP_MS / 1000)
+        _warmup_silence = np.zeros(_warmup_frames, dtype=np.int16).tobytes()
+        try:
+            self._proc.stdin.write(_warmup_silence)
+        except (BrokenPipeError, OSError):
+            pass
+
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
 

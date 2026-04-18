@@ -164,7 +164,7 @@ main.py
 | `MEDIA_BACKEND` | `os.environ.get("MEDIA_BACKEND", "mpd")` — `"mpd"` or `"mopidy"` |
 | `MPD_HOST` | `os.environ.get("MPD_HOST", "localhost")` |
 | `MPD_PORT` | `int(os.environ.get("MPD_PORT", "6600"))` |
-| `ASSISTANT_NUMBER` | `os.environ["ASSISTANT_NUMBER"]` (always required; raises `RuntimeError` if absent) |
+| `ASSISTANT_NUMBER` | `os.environ["ASSISTANT_NUMBER", "5550000"]` |
 | `HOOK_SWITCH_PIN` | `int(os.environ.get("HOOK_SWITCH_PIN", "17"))` — BCM pin; non-integer value raises `ValueError` at import |
 | `PULSE_SWITCH_PIN` | `int(os.environ.get("PULSE_SWITCH_PIN", "27"))` — BCM pin; non-integer value raises `ValueError` at import |
 | `PIPER_BINARY` | `os.environ.get("PIPER_BINARY", "/usr/local/bin/piper")` |
@@ -175,9 +175,8 @@ main.py
 
 ### Secrets and environment variables
 
-- **No hardcoded secrets** — `ASSISTANT_NUMBER` is always required; the app raises `RuntimeError` if absent
+- **No hardcoded secrets**
 - **`config.env.example`** at the repo root documents all environment variables accepted by `constants.py` with placeholder or default values; copy it to `/etc/hello-operator/config.env` for deployment; never commit a real `.env` file
-- **Tests that import `src.constants`** must set `ASSISTANT_NUMBER` in the environment; the CI/test runner command should include: `ASSISTANT_NUMBER=5550000 python -m pytest`
 
 ## Development Process
 
