@@ -105,8 +105,8 @@ class SounddeviceAudio(AudioInterface):
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
-        self._busy = False # True while worker is executing a task
-		self._proc = None # Currently running aplay subprocess (if any)
+        self._busy = False
+		self._proc = None
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
 
