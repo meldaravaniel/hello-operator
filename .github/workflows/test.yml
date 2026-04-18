@@ -23,8 +23,6 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        env:
-          ASSISTANT_NUMBER: "5550000"
         run: python -m pytest -m "not integration" -v
 
   test-angular:
