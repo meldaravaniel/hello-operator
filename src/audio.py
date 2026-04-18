@@ -92,20 +92,12 @@ class SounddeviceAudio(AudioInterface):
     aplay is invoked as:
         aplay -q -D <device> -f S16_LE -r <sample_rate> -c 1
 
-    The _popen and _gpio_output parameters are injectable for unit testing.
+    The _popen parameter is injectable for unit testing.
 
-    SD pin control (optional):
-        If sd_pin is set, __init__ drives it LOW before starting aplay (keeping
-        the amp in shutdown while the I2S clock starts), writes warmup silence,
-        waits _SD_SETTLE_MS for the silence to reach the hardware, then drives
-        SD HIGH so the amp powers up into a stable, silent stream — eliminating
-        the startup transient entirely.  _gpio_output(pin, value) is the
-        callable used to drive the pin; when None a lazy RPi.GPIO import is used.
     """
 
     def __init__(self, sample_rate: int = _SAMPLE_RATE, device: str = "default",
-                 volume: float = 1.0, sd_pin: int = None,
-                 _popen=None, _gpio_output=None) -> None:
+                 volume: float = 1.0, _popen=None) -> None:
         self._sample_rate = sample_rate
         self._device = device
         self._volume = max(0.0, min(1.0, volume))
@@ -113,52 +105,8 @@ class SounddeviceAudio(AudioInterface):
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
-        self._busy = False
-
-        # Resolve SD pin GPIO callable.
-        self._sd_pin = sd_pin
-        self._gpio_output = None
-        if sd_pin is not None:
-            if _gpio_output is not None:
-                self._gpio_output = _gpio_output
-            else:
-                try:
-                    import RPi.GPIO as GPIO  # type: ignore[import]
-                    GPIO.setmode(GPIO.BCM)
-                    GPIO.setup(sd_pin, GPIO.OUT, initial=GPIO.LOW)
-                    self._gpio_output = lambda pin, val: GPIO.output(pin, val)
-                except (ImportError, RuntimeError):
-                    self._sd_pin = None  # GPIO unavailable; SD control disabled
-
-        # Drive SD LOW (amp shutdown) before aplay starts so the I2S clock
-        # cannot trigger a power-up transient during process launch.
-        if self._sd_pin is not None:
-            self._gpio_output(self._sd_pin, 0)
-
-        self._proc = self._popen(
-            ['aplay', '-q', '-D', self._device,
-             '-f', 'S16_LE', '-r', str(self._sample_rate), '-c', '1'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        # Write warmup silence so the I2S clock is running and the pipe buffer
-        # is loaded before the amp is allowed to power up.
-        _warmup_frames = int(self._sample_rate * _WARMUP_MS / 1000)
-        _warmup_silence = np.zeros(_warmup_frames, dtype=np.int16).tobytes()
-        try:
-            self._proc.stdin.write(_warmup_silence)
-        except (BrokenPipeError, OSError):
-            pass
-
-        # Raise SD so the amp powers up into a stable, silent I2S stream.
-        # The settle delay gives aplay time to read from the pipe and push
-        # samples to the hardware before the amp initialises.
-        if self._sd_pin is not None:
-            time.sleep(_SD_SETTLE_MS / 1000)
-            self._gpio_output(self._sd_pin, 1)
-
+        self._busy = False # True while worker is executing a task
+		self._proc = None # Currently running aplay subprocess (if any)
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
 
