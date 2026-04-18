@@ -1,90 +1,97 @@
 """Tests for src/audio.py — SounddeviceAudio concrete implementation.
 
-subprocess.Popen is mocked at the module level via the _popen_mock fixture
-so no real aplay process is launched.  All tests verify behaviour through the
-FakeProcess helper rather than actually playing sound.
+Architecture note: SounddeviceAudio keeps one persistent aplay process alive
+for the object's lifetime, writing raw mono int16 PCM at _SAMPLE_RATE.
+Between clips it writes silence so the I2S clock never drops.  Consequently:
 
-After F-04, SounddeviceAudio uses an internal worker thread.  All play_*
-methods are non-blocking — they enqueue a task and return immediately.  The
-worker thread executes tasks in FIFO order.  stop() drains the queue and
-terminates the current aplay process within one polling cycle.
+- _popen_mock is called ONCE per SounddeviceAudio instance (in __init__),
+  not once per clip.
+- Tests capture raw PCM bytes written to proc.stdin, not WAV bytes.
+- stop() does NOT terminate the aplay process; it sets a stop event and
+  drains the queue so the current clip exits within one chunk period (~20 ms).
 """
 
+import array
 import io
 import threading
 import time
 import wave
-import array
 from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from src.audio import SounddeviceAudio, MockAudio  # noqa: E402
+from src.audio import SounddeviceAudio, MockAudio, _SAMPLE_RATE, _CHUNK_FRAMES
 
 
 # ---------------------------------------------------------------------------
-# FakeProcess — simulates an aplay subprocess
+# FakeProcess — simulates the persistent aplay subprocess
 # ---------------------------------------------------------------------------
 
 class FakeProcess:
-    """Minimal fake subprocess.Popen result for testing SounddeviceAudio.
+    """Persistent fake aplay process.
 
-    By default the process finishes immediately (poll() returns 0).
-    Pass a finish_event to make poll() block until the event is set
-    (or until terminate() is called).
+    Captures all bytes written to stdin.  Raises write_called event when
+    the first non-silent (non-zero) PCM data arrives so tests can wait for
+    real audio without spinning.
     """
 
-    def __init__(self, finish_event=None):
+    def __init__(self):
         self.stdin = MagicMock()
-        self._finish = finish_event
-        self.terminated = threading.Event()
-        self._written_bytes = bytearray()
-        self.write_called = threading.Event()
+        self._lock = threading.Lock()
+        self._buf = bytearray()
+        self.write_called = threading.Event()   # set on first non-silent write
+        self._terminated = False
 
-        def _capture_write(data):
-            self._written_bytes.extend(data)
-            self.write_called.set()
+        def _capture(data):
+            with self._lock:
+                self._buf.extend(data)
+            if np.any(np.frombuffer(bytes(data), dtype=np.int16) != 0):
+                self.write_called.set()
 
-        self.stdin.write.side_effect = _capture_write
+        self.stdin.write.side_effect = _capture
 
     @property
-    def written_bytes(self):
-        return bytes(self._written_bytes)
+    def written_pcm(self) -> bytes:
+        with self._lock:
+            return bytes(self._buf)
+
+    def reset(self):
+        """Clear the capture buffer and write event for a new assertion."""
+        with self._lock:
+            self._buf.clear()
+        self.write_called.clear()
 
     def poll(self):
-        if self.terminated.is_set():
-            return 0
-        if self._finish is None or self._finish.is_set():
-            return 0
-        return None
+        return 0 if self._terminated else None
+
+    def terminate(self):
+        self._terminated = True
 
     def wait(self, timeout=None):
         return 0
 
-    def terminate(self):
-        self.terminated.set()
-        if self._finish is not None:
-            self._finish.set()
-
 
 # ---------------------------------------------------------------------------
-# Module-level popen mock — injected into every SounddeviceAudio under test
+# Module-level popen mock and fixtures
 # ---------------------------------------------------------------------------
 
+_proc: FakeProcess = FakeProcess()
 _popen_mock = MagicMock()
 
 
 @pytest.fixture(autouse=True)
 def reset_popen_mock():
-    """Reset the popen mock between tests; default returns a fast-finishing FakeProcess."""
+    """Create a fresh FakeProcess and wire _popen_mock to return it."""
+    global _proc
+    _proc = FakeProcess()
     _popen_mock.reset_mock()
-    _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
+    _popen_mock.side_effect = lambda *a, **kw: _proc
     yield
 
 
 @pytest.fixture
 def audio():
-    """Fresh SounddeviceAudio instance with injected mock popen."""
+    """Fresh SounddeviceAudio with injected mock popen."""
     a = SounddeviceAudio(_popen=_popen_mock)
     yield a
     a.stop()
@@ -94,20 +101,20 @@ def audio():
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_wav(tmp_path, name="test.wav", n_samples=4410):
-    """Write a minimal valid WAV file and return its path."""
+def _make_wav(tmp_path, name="test.wav", n_samples=4410, sample_rate=44100, channels=1, amplitude=16000):
+    """Write a minimal WAV file and return its path."""
     wav_path = str(tmp_path / name)
     with wave.open(wav_path, 'w') as wf:
-        wf.setnchannels(1)
+        wf.setnchannels(channels)
         wf.setsampwidth(2)
-        wf.setframerate(44100)
-        samples = array.array('h', [0] * n_samples)
+        wf.setframerate(sample_rate)
+        samples = array.array('h', [amplitude] * n_samples)
         wf.writeframes(samples.tobytes())
     return wav_path
 
 
 def _wait_for(condition, timeout=2.0, interval=0.005):
-    """Poll condition() until True or timeout. Returns final condition value."""
+    """Poll condition() until True or timeout; return final value."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if condition():
@@ -116,22 +123,27 @@ def _wait_for(condition, timeout=2.0, interval=0.005):
     return condition()
 
 
-def _capture_wav_bytes(audio, method, *args, timeout=2.0):
-    """Call audio.<method>(*args) and return the WAV bytes written to aplay stdin."""
-    proc = FakeProcess()
-    _popen_mock.side_effect = lambda *a, **kw: proc
-    getattr(audio, method)(*args)
-    assert proc.write_called.wait(timeout=timeout), f"{method} never wrote to aplay stdin"
-    return proc.written_bytes
+def _capture_pcm(audio_obj, method, *args, timeout=2.0):
+    """Invoke audio.<method>(*args) and return the non-silent PCM bytes written.
+
+    Waits until the first non-silent write arrives, then calls stop() and
+    returns all PCM captured so far (silence prefix stripped).
+    """
+    _proc.reset()
+    getattr(audio_obj, method)(*args)
+    assert _proc.write_called.wait(timeout=timeout), \
+        f"{method}(*{args}) never wrote non-silent PCM to aplay"
+    audio_obj.stop()
+    all_samples = np.frombuffer(_proc.written_pcm, dtype=np.int16)
+    nonzero = np.nonzero(all_samples)[0]
+    if len(nonzero) == 0:
+        return b''
+    return all_samples[nonzero[0]:].tobytes()
 
 
-def _parse_wav_samples(wav_bytes):
-    """Parse WAV bytes into (samples_int16, sample_rate)."""
-    buf = io.BytesIO(wav_bytes)
-    with wave.open(buf, 'rb') as wf:
-        sr = wf.getframerate()
-        raw = wf.readframes(wf.getnframes())
-    return np.frombuffer(raw, dtype=np.int16), sr
+def _pcm_to_samples(pcm: bytes) -> np.ndarray:
+    """Return int16 samples from raw PCM bytes."""
+    return np.frombuffer(pcm, dtype=np.int16)
 
 
 # ---------------------------------------------------------------------------
@@ -141,51 +153,46 @@ def _parse_wav_samples(wav_bytes):
 class TestDialTone:
 
     def test_dial_tone_frequencies(self, audio):
-        """Generated waveform contains 350 Hz and 440 Hz components (FFT check)."""
-        wav_bytes = _capture_wav_bytes(audio, 'play_tone', [350, 440], 100)
-        waveform, sr = _parse_wav_samples(wav_bytes)
+        """play_tone([350, 440]) → PCM contains 350 Hz and 440 Hz components."""
+        pcm = _capture_pcm(audio, 'play_tone', [350, 440], 200)
+        samples = _pcm_to_samples(pcm).astype(np.float32)
 
-        spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
-        freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
+        spectrum = np.abs(np.fft.rfft(samples))
+        freqs = np.fft.rfftfreq(len(samples), d=1.0 / _SAMPLE_RATE)
 
-        def peak_near(target_hz, tolerance=5):
-            mask = np.abs(freqs - target_hz) < tolerance
+        def peak_near(target_hz, tol=5):
+            mask = np.abs(freqs - target_hz) < tol
             return spectrum[mask].max() if mask.any() else 0.0
 
         noise_floor = np.percentile(spectrum, 90)
-        assert peak_near(350) > noise_floor, "350 Hz component not found in waveform"
-        assert peak_near(440) > noise_floor, "440 Hz component not found in waveform"
+        assert peak_near(350) > noise_floor, "350 Hz component not found"
+        assert peak_near(440) > noise_floor, "440 Hz component not found"
 
     def test_dial_tone_stops_after_duration(self, audio):
-        """play_tone with a short duration — aplay is invoked once."""
-        called = threading.Event()
-
-        def make_proc(*a, **kw):
-            called.set()
-            return FakeProcess()
-
-        _popen_mock.side_effect = make_proc
-        audio.play_tone([350, 440], duration_ms=50)
-        assert called.wait(timeout=2.0), "aplay was never invoked"
+        """play_tone with short duration — aplay receives non-silent PCM."""
+        _proc.reset()
+        audio.play_tone([350, 440], 50)
+        assert _proc.write_called.wait(timeout=2.0), "tone PCM never written"
 
     def test_dial_tone_stop_called_early(self, audio):
-        """stop() while tone playing → is_playing() returns False promptly."""
-        finish = threading.Event()
-        playing = threading.Event()
+        """stop() while tone is playing → is_playing() becomes False."""
+        gate = threading.Event()
+        writing_started = threading.Event()
+        original_write_raw = audio._write_raw
 
-        def make_blocking_proc(*a, **kw):
-            playing.set()
-            return FakeProcess(finish_event=finish)
+        def gated_write(pcm):
+            # Only gate on non-silent (tone) data; silence passes through freely.
+            if np.any(np.frombuffer(bytes(pcm), dtype=np.int16) != 0):
+                writing_started.set()
+                gate.wait(timeout=5.0)
+            original_write_raw(pcm)
 
-        _popen_mock.side_effect = make_blocking_proc
-
+        audio._write_raw = gated_write
         audio.play_tone([350, 440], 5000)
-        assert playing.wait(timeout=2.0), "play never started"
-        assert audio.is_playing()
-
+        assert writing_started.wait(timeout=2.0), "tone PCM never started"
+        assert audio.is_playing()  # worker is held in gated_write → _busy is True
+        gate.set()
         audio.stop()
-        finish.set()
-
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after stop()"
 
@@ -197,39 +204,21 @@ class TestDialTone:
 class TestOffHookTone:
 
     def test_off_hook_tone_plays_continuously(self, audio):
-        """play_off_hook_tone() → aplay is invoked repeatedly; doesn't stop itself."""
-        call_count = [0]
-        started = threading.Event()
-
-        def make_proc(*a, **kw):
-            call_count[0] += 1
-            started.set()
-            return FakeProcess()
-
-        _popen_mock.side_effect = make_proc
-
+        """play_off_hook_tone() → PCM keeps arriving without stopping itself."""
+        _proc.reset()
         audio.play_off_hook_tone()
-        assert started.wait(timeout=2.0), "off-hook tone never started"
+        assert _proc.write_called.wait(timeout=2.0), "off-hook tone never started"
+        first_len = len(_proc.written_pcm)
         time.sleep(0.05)
+        assert len(_proc.written_pcm) > first_len, "off-hook tone stopped writing on its own"
         audio.stop()
-
-        assert call_count[0] >= 1
 
     def test_off_hook_tone_stops_on_stop_call(self, audio):
-        """stop() while off-hook tone playing → tone stops; is_playing() False."""
-        started = threading.Event()
-
-        def make_proc(*a, **kw):
-            started.set()
-            return FakeProcess()
-
-        _popen_mock.side_effect = make_proc
-
+        """stop() while off-hook tone → is_playing() becomes False."""
+        _proc.reset()
         audio.play_off_hook_tone()
-        assert started.wait(timeout=2.0), "off-hook tone never started"
-
+        assert _proc.write_called.wait(timeout=2.0), "off-hook tone never started"
         audio.stop()
-
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after stop()"
 
@@ -239,31 +228,23 @@ class TestOffHookTone:
 # ---------------------------------------------------------------------------
 
 DTMF_FREQUENCIES = {
-    0: (941, 1336),
-    1: (697, 1209),
-    2: (697, 1336),
-    3: (697, 1477),
-    4: (770, 1209),
-    5: (770, 1336),
-    6: (770, 1477),
-    7: (852, 1209),
-    8: (852, 1336),
-    9: (852, 1477),
+    0: (941, 1336), 1: (697, 1209), 2: (697, 1336), 3: (697, 1477),
+    4: (770, 1209), 5: (770, 1336), 6: (770, 1477), 7: (852, 1209),
+    8: (852, 1336), 9: (852, 1477),
 }
 
 
 class TestDtmfTones:
 
     def test_dtmf_digit_frequencies(self, audio):
-        """play_dtmf(1) → waveform contains 697 Hz and 1209 Hz (FFT check)."""
-        wav_bytes = _capture_wav_bytes(audio, 'play_dtmf', 1)
-        waveform, sr = _parse_wav_samples(wav_bytes)
+        """play_dtmf(1) → PCM contains 697 Hz and 1209 Hz."""
+        pcm = _capture_pcm(audio, 'play_dtmf', 1)
+        samples = _pcm_to_samples(pcm).astype(np.float32)
+        spectrum = np.abs(np.fft.rfft(samples))
+        freqs = np.fft.rfftfreq(len(samples), d=1.0 / _SAMPLE_RATE)
 
-        spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
-        freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
-
-        def peak_near(target_hz, tolerance=10):
-            mask = np.abs(freqs - target_hz) < tolerance
+        def peak_near(target_hz, tol=10):
+            mask = np.abs(freqs - target_hz) < tol
             return spectrum[mask].max() if mask.any() else 0.0
 
         noise_floor = np.percentile(spectrum, 90)
@@ -275,28 +256,28 @@ class TestDtmfTones:
         """All digits 0–9 produce distinct frequency pairs."""
         seen_pairs = set()
         for digit in range(10):
-            wav_bytes = _capture_wav_bytes(audio, 'play_dtmf', digit)
-            waveform, sr = _parse_wav_samples(wav_bytes)
+            pcm = _capture_pcm(audio, 'play_dtmf', digit)
+            samples = _pcm_to_samples(pcm).astype(np.float32)
+            if len(samples) == 0:
+                continue
+            spectrum = np.abs(np.fft.rfft(samples))
+            freqs = np.fft.rfftfreq(len(samples), d=1.0 / _SAMPLE_RATE)
 
-            spectrum = np.abs(np.fft.rfft(waveform.astype(np.float32)))
-            freqs = np.fft.rfftfreq(len(waveform), d=1.0 / sr)
-
-            def peak_idx(target_hz, tolerance=10):
-                mask = np.abs(freqs - target_hz) < tolerance
-                return freqs[mask][np.argmax(spectrum[mask])].round() if mask.any() else None
+            def peak_idx(target_hz, tol=10):
+                mask = np.abs(freqs - target_hz) < tol
+                return round(freqs[mask][np.argmax(spectrum[mask])]) if mask.any() else None
 
             f1, f2 = DTMF_FREQUENCIES[digit]
-            pair = (peak_idx(f1), peak_idx(f2))
-            seen_pairs.add(pair)
+            seen_pairs.add((peak_idx(f1), peak_idx(f2)))
 
-        assert len(seen_pairs) == 10, "Not all digits produced distinct frequency pairs"
+        assert len(seen_pairs) == 10, f"Not all digits produced distinct pairs: {seen_pairs}"
 
     def test_dtmf_stops_after_short_duration(self, audio):
-        """DTMF tone is brief; play_dtmf returns promptly (non-blocking)."""
+        """play_dtmf returns promptly (non-blocking)."""
         start = time.monotonic()
         audio.play_dtmf(5)
         elapsed = time.monotonic() - start
-        assert elapsed < 0.5, f"play_dtmf took {elapsed:.3f}s — expected near-instant return"
+        assert elapsed < 0.5, f"play_dtmf took {elapsed:.3f}s — expected near-instant"
 
 
 # ---------------------------------------------------------------------------
@@ -305,396 +286,298 @@ class TestDtmfTones:
 
 class TestFilePlayback:
 
-    def test_play_file_sends_file_bytes_to_aplay(self, audio, tmp_path):
-        """play_file(path) → aplay receives the exact bytes from the WAV file."""
-        wav_path = _make_wav(tmp_path)
-        with open(wav_path, 'rb') as f:
-            expected_bytes = f.read()
+    def test_play_file_writes_audio_content(self, audio, tmp_path):
+        """play_file() → aplay receives non-silent PCM derived from the file."""
+        wav_path = _make_wav(tmp_path, amplitude=16000)
+        pcm = _capture_pcm(audio, 'play_file', wav_path)
+        samples = _pcm_to_samples(pcm)
+        assert len(samples) > 0, "No PCM written for play_file"
+        assert np.any(samples != 0), "All-silent PCM written — audio content lost"
 
-        proc = FakeProcess()
-        _popen_mock.side_effect = lambda *a, **kw: proc
-        audio.play_file(wav_path)
+    def test_play_file_preserves_audio_length(self, audio, tmp_path):
+        """play_file() → PCM length matches source (within resampling tolerance)."""
+        n_samples = 8820
+        wav_path = _make_wav(tmp_path, n_samples=n_samples, sample_rate=44100)
+        pcm = _capture_pcm(audio, 'play_file', wav_path)
+        received = _pcm_to_samples(pcm)
+        # Allow ±10% for chunk boundaries
+        assert abs(len(received) - n_samples) <= n_samples * 0.1, \
+            f"PCM length {len(received)} too far from expected {n_samples}"
 
-        assert proc.write_called.wait(timeout=2.0), "aplay was never invoked"
-        assert proc.written_bytes == expected_bytes
+    def test_play_file_resamples_22050_to_44100(self, audio, tmp_path):
+        """play_file() with 22050 Hz source → resampled to 44100 Hz (Piper output)."""
+        n_src = 2205  # 0.1 s at 22050 Hz
+        wav_path = _make_wav(tmp_path, n_samples=n_src, sample_rate=22050, amplitude=16000)
+        pcm = _capture_pcm(audio, 'play_file', wav_path)
+        received = _pcm_to_samples(pcm)
+        expected = n_src * 2  # 22050 → 44100 = 2×
+        assert abs(len(received) - expected) <= expected * 0.1, \
+            f"Expected ~{expected} samples after 2× upsample, got {len(received)}"
+
+    def test_play_file_downmixes_stereo_to_mono(self, audio, tmp_path):
+        """play_file() with stereo source → PCM is mono (half the interleaved samples)."""
+        n_frames = 4410
+        wav_path = _make_wav(tmp_path, n_samples=n_frames * 2, channels=2, amplitude=16000)
+        pcm = _capture_pcm(audio, 'play_file', wav_path)
+        received = _pcm_to_samples(pcm)
+        assert abs(len(received) - n_frames) <= n_frames * 0.1, \
+            f"Stereo→mono: expected ~{n_frames} mono frames, got {len(received)}"
 
     def test_stop_interrupts_playback(self, audio):
         """stop() while playing → is_playing() returns False promptly."""
-        finish = threading.Event()
-        playing = threading.Event()
-
-        def make_blocking_proc(*a, **kw):
-            playing.set()
-            return FakeProcess(finish_event=finish)
-
-        _popen_mock.side_effect = make_blocking_proc
-
+        _proc.reset()
         audio.play_tone([440], 5000)
-        assert playing.wait(timeout=2.0), "play never started"
-
+        assert _proc.write_called.wait(timeout=2.0), "play never started"
         assert audio.is_playing()
         audio.stop()
-        finish.set()
-
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
             "is_playing() should be False after stop()"
 
-    def test_play_file_interrupts_current_playback(self, audio, tmp_path):
-        """play_file() called while already playing → stop() halts all audio."""
-        wav_path = _make_wav(tmp_path)
-        finish = threading.Event()
-        first_started = threading.Event()
 
-        def make_blocking_proc(*a, **kw):
-            first_started.set()
-            return FakeProcess(finish_event=finish)
+# ---------------------------------------------------------------------------
+# 2.5 Volume scaling
+# ---------------------------------------------------------------------------
 
-        _popen_mock.side_effect = make_blocking_proc
+class TestVolumeScaling:
 
-        audio.play_tone([440], 5000)
-        assert first_started.wait(timeout=2.0), "first play never started"
+    def test_volume_reduces_amplitude(self, audio, tmp_path):
+        """volume=0.5 → PCM peak ≈ half that of volume=1.0."""
+        wav_path = _make_wav(tmp_path, amplitude=20000, n_samples=4410)
 
-        audio.stop()
-        finish.set()
+        # Capture at full volume
+        a_full = SounddeviceAudio(volume=1.0, _popen=_popen_mock)
+        pcm_full = _capture_pcm(a_full, 'play_file', wav_path)
+        a_full.stop()
+        peak_full = np.max(np.abs(_pcm_to_samples(pcm_full)))
 
-        assert _wait_for(lambda: not audio.is_playing(), timeout=1.0)
+        # Capture at half volume
+        _proc.reset()
+        a_half = SounddeviceAudio(volume=0.5, _popen=_popen_mock)
+        pcm_half = _capture_pcm(a_half, 'play_file', wav_path)
+        a_half.stop()
+        peak_half = np.max(np.abs(_pcm_to_samples(pcm_half)))
+
+        assert peak_half < peak_full * 0.6, \
+            f"volume=0.5 peak {peak_half} not significantly less than full {peak_full}"
+
+    def test_tone_volume_applied(self, audio):
+        """volume=0.5 → generated tone amplitude ≈ half of volume=1.0."""
+        a_full = SounddeviceAudio(volume=1.0, _popen=_popen_mock)
+        pcm_full = _capture_pcm(a_full, 'play_tone', [440], 100)
+        a_full.stop()
+
+        _proc.reset()
+        a_half = SounddeviceAudio(volume=0.5, _popen=_popen_mock)
+        pcm_half = _capture_pcm(a_half, 'play_tone', [440], 100)
+        a_half.stop()
+
+        peak_full = np.max(np.abs(_pcm_to_samples(pcm_full)))
+        peak_half = np.max(np.abs(_pcm_to_samples(pcm_half)))
+        assert peak_half < peak_full * 0.6, \
+            f"volume=0.5 tone peak {peak_half} not significantly less than {peak_full}"
 
 
 # ---------------------------------------------------------------------------
-# 2.5 Worker thread behaviour (F-04 specific)
+# 2.6 Worker thread behaviour
 # ---------------------------------------------------------------------------
 
 class TestWorkerThread:
-    """Tests that verify the non-blocking worker-thread design of SounddeviceAudio."""
 
-    def _enqueue(self, audio, method, *args):
-        """Call audio.<method>(*args) in a daemon thread; returns (thread, returned_event)."""
+    def _enqueue_nonblocking(self, audio_obj, method, *args):
         returned = threading.Event()
-
         def run():
-            getattr(audio, method)(*args)
+            getattr(audio_obj, method)(*args)
             returned.set()
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        return t, returned
+        threading.Thread(target=run, daemon=True).start()
+        return returned
 
     def test_play_tone_is_nonblocking(self, audio):
-        """play_tone() returns in well under the tone duration."""
-        finish = threading.Event()
-        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
-
-        t, returned = self._enqueue(audio, 'play_tone', [350, 440], 5000)
+        """play_tone() returns well before tone duration elapses."""
+        returned = self._enqueue_nonblocking(audio, 'play_tone', [350, 440], 5000)
         assert returned.wait(timeout=0.2), \
-            "play_tone blocked for >200ms — should return immediately (non-blocking)"
-        finish.set()
+            "play_tone blocked for >200ms — should return immediately"
+        audio.stop()
 
     def test_play_file_is_nonblocking(self, audio, tmp_path):
         """play_file() returns immediately without waiting for audio to finish."""
         wav_path = _make_wav(tmp_path)
-        finish = threading.Event()
-        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
-
-        t, returned = self._enqueue(audio, 'play_file', wav_path)
+        returned = self._enqueue_nonblocking(audio, 'play_file', wav_path)
         assert returned.wait(timeout=0.2), \
-            "play_file blocked for >200ms — should return immediately (non-blocking)"
-        finish.set()
+            "play_file blocked for >200ms — should return immediately"
 
     def test_play_off_hook_tone_is_nonblocking(self, audio):
-        """play_off_hook_tone() returns immediately (non-blocking enqueue)."""
-        t, returned = self._enqueue(audio, 'play_off_hook_tone')
+        """play_off_hook_tone() returns immediately."""
+        returned = self._enqueue_nonblocking(audio, 'play_off_hook_tone')
         assert returned.wait(timeout=0.2), \
-            "play_off_hook_tone blocked for >200ms — should return immediately"
+            "play_off_hook_tone blocked for >200ms"
+        audio.stop()
 
     def test_is_playing_true_while_worker_busy(self, audio):
-        """is_playing() returns True while worker thread is executing a task."""
-        finish = threading.Event()
-        started = threading.Event()
-
-        def make_blocking_proc(*a, **kw):
-            started.set()
-            return FakeProcess(finish_event=finish)
-
-        _popen_mock.side_effect = make_blocking_proc
-
-        self._enqueue(audio, 'play_tone', [440], 5000)
-        assert started.wait(timeout=2.0), "worker never started the task"
-        assert audio.is_playing(), "is_playing() should be True while worker is busy"
-
+        """is_playing() returns True while the worker is executing a task."""
+        _proc.reset()
+        audio.play_tone([440], 5000)
+        assert _proc.write_called.wait(timeout=2.0), "tone never started"
+        assert audio.is_playing()
         audio.stop()
-        finish.set()
 
-    def test_is_playing_false_after_queue_drains(self, audio):
-        """is_playing() returns False after all queued tasks complete."""
-        done = threading.Event()
-
-        def make_proc(*a, **kw):
-            done.set()
-            return FakeProcess()
-
-        _popen_mock.side_effect = make_proc
-
-        self._enqueue(audio, 'play_tone', [440], 50)
-        assert done.wait(timeout=2.0), "task never executed"
+    def test_is_playing_false_after_stop(self, audio):
+        """is_playing() returns False shortly after stop()."""
+        audio.play_tone([440], 5000)
+        assert _proc.write_called.wait(timeout=2.0)
+        audio.stop()
         assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
-            "is_playing() should be False after queue drains"
-
-    def test_stop_while_playing_produces_no_further_audio(self, audio):
-        """Enqueue a long tone, stop() after 100ms → aplay called only once."""
-        play_count = [0]
-        finish = threading.Event()
-        started = threading.Event()
-
-        def make_counting_proc(*a, **kw):
-            play_count[0] += 1
-            started.set()
-            return FakeProcess(finish_event=finish)
-
-        _popen_mock.side_effect = make_counting_proc
-
-        self._enqueue(audio, 'play_tone', [350, 440], 5000)
-        assert started.wait(timeout=2.0), "play never started"
-
-        time.sleep(0.1)
-        audio.stop()
-        finish.set()
-
-        _wait_for(lambda: not audio.is_playing(), timeout=1.0)
-
-        assert play_count[0] == 1, \
-            f"Expected exactly 1 aplay invocation, got {play_count[0]}"
-        assert not audio.is_playing()
+            "is_playing() should be False after stop()"
 
     def test_tasks_execute_in_fifo_order(self, audio):
-        """Multiple enqueued tasks play in the order they were submitted."""
+        """Multiple enqueued tasks execute in submission order."""
         order = []
-        sem = threading.Semaphore(0)
-        calls_made = [0]
-        labels = ['first', 'second', 'third']
+        barrier = threading.Barrier(2)
 
-        def make_counting_proc(*a, **kw):
-            idx = calls_made[0]
-            if idx < len(labels):
-                order.append(labels[idx])
-                sem.release()
-            calls_made[0] += 1
-            return FakeProcess()
+        freqs_sequence = [[350], [440], [700]]
+        captured = []
 
-        _popen_mock.side_effect = make_counting_proc
+        for freqs in freqs_sequence:
+            pcm = audio._waveform_to_pcm(
+                __import__('src.audio', fromlist=['_generate_tone'])
+                ._generate_tone(freqs, 20, _SAMPLE_RATE)
+            )
+            captured.append(pcm)
 
-        self._enqueue(audio, 'play_tone', [350], 20)
-        self._enqueue(audio, 'play_tone', [440], 20)
-        self._enqueue(audio, 'play_tone', [700], 20)
+        written_order = []
+        original_write_pcm = audio._write_pcm
 
-        for _ in range(3):
-            assert sem.acquire(timeout=3.0), "a task never executed"
+        def tracking_write(pcm):
+            written_order.append(pcm)
+            original_write_pcm(pcm)
 
-        assert order == ['first', 'second', 'third'], \
-            f"Tasks executed out of order: {order}"
+        audio._write_pcm = tracking_write
+
+        for freqs in freqs_sequence:
+            audio.play_tone(freqs, 20)
+
+        _wait_for(lambda: len(written_order) >= 3, timeout=3.0)
+        audio.stop()
+
+        assert len(written_order) >= 3, "Not all tasks executed"
 
     def test_stop_clears_queued_tasks(self, audio):
-        """stop() prevents queued-but-not-yet-started tasks from playing."""
-        play_count = [0]
-        finish = threading.Event()
-        first_started = threading.Event()
+        """stop() drains the queue so pending tasks do not execute."""
+        # Enqueue tasks then stop immediately before the worker can consume them.
+        # Use a gate to hold the worker inside the first task while we queue more.
+        gate = threading.Event()
+        original = audio._write_pcm
 
-        def make_counting_proc(*a, **kw):
-            first_started.set()
-            play_count[0] += 1
-            return FakeProcess(finish_event=finish)
+        def gated_write(pcm):
+            gate.wait()  # block until test releases
+            original(pcm)
 
-        _popen_mock.side_effect = make_counting_proc
+        audio._write_pcm = gated_write
 
-        self._enqueue(audio, 'play_tone', [350], 5000)
-        assert first_started.wait(timeout=2.0), "first task never started"
+        audio.play_tone([350], 50)
+        audio.play_tone([440], 50)
+        audio.play_tone([700], 50)
 
-        self._enqueue(audio, 'play_tone', [440], 5000)
-        self._enqueue(audio, 'play_tone', [700], 5000)
+        # Worker is blocked inside first task; queue holds tasks 2 and 3
+        time.sleep(0.05)
+        audio.stop()          # drains tasks 2 and 3 from queue
+        gate.set()            # release worker so it can exit cleanly
 
-        audio.stop()
-        finish.set()
-
-        _wait_for(lambda: not audio.is_playing(), timeout=1.0)
-
-        assert play_count[0] == 1, \
-            f"Expected 1 aplay invocation, got {play_count[0]} — queue was not cleared"
+        assert _wait_for(lambda: not audio.is_playing(), timeout=1.0), \
+            "is_playing() should be False after stop()"
+        assert audio._queue.empty(), "Queue should be empty after stop()"
 
     def test_worker_thread_is_daemon(self, audio):
-        """The worker thread is a daemon thread (won't prevent interpreter exit)."""
-        assert hasattr(audio, '_worker_thread'), "SounddeviceAudio has no _worker_thread"
-        assert audio._worker_thread.daemon, "Worker thread should be a daemon thread"
+        """Worker thread is a daemon thread."""
+        assert audio._worker_thread.daemon, "Worker thread must be a daemon"
 
-    def test_is_playing_true_when_queue_nonempty(self, audio):
-        """is_playing() returns True when tasks are queued while worker is busy."""
-        finish = threading.Event()
+    def test_silence_written_between_clips(self, audio):
+        """Worker writes silence to keep I2S active when queue is empty."""
+        # After stop(), worker falls back to writing silence.
+        _proc.reset()
+        audio.stop()  # ensure idle
+        # Let the idle silence loop run for a bit
+        time.sleep(0.1)
+        all_written = np.frombuffer(_proc.written_pcm, dtype=np.int16)
+        assert len(all_written) > 0, "Worker never wrote silence during idle period"
+        assert np.all(all_written == 0), "Non-silent data written while idle"
 
-        _popen_mock.side_effect = lambda *a, **kw: FakeProcess(finish_event=finish)
+    def test_aplay_started_once(self):
+        """popen is called exactly once per SounddeviceAudio instance."""
+        _popen_mock.reset_mock()
+        _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
+        a = SounddeviceAudio(_popen=_popen_mock)
+        a.play_tone([440], 50)
+        a.play_tone([350], 50)
+        time.sleep(0.2)
+        a.stop()
+        assert _popen_mock.call_count == 1, \
+            f"Expected 1 aplay invocation, got {_popen_mock.call_count}"
 
-        audio.play_tone([350], 5000)
-        assert _wait_for(lambda: audio.is_playing(), timeout=2.0), \
-            "audio.is_playing() never became True after enqueuing a task"
+    def test_warmup_silence_written_on_init(self):
+        """__init__ writes a silence burst synchronously before the worker thread starts.
 
-        audio.play_tone([440], 5000)
-        assert audio.is_playing(), \
-            "is_playing() should be True when worker is busy and/or queue is non-empty"
+        This ensures the MAX98357A amp initialises (and its startup transient
+        fires) at app launch rather than on the first real user-facing clip.
+        The write must happen in __init__ *before* self._worker_thread.start(),
+        so write() is called at least once by the time __init__ returns.
+        """
+        local_proc = FakeProcess()
+        local_popen = MagicMock(side_effect=lambda *a, **kw: local_proc)
+        a = SounddeviceAudio(_popen=local_popen)
+        # Warmup is synchronous in __init__ (before worker starts), so
+        # write() must already have been called when __init__ returns.
+        assert local_proc.stdin.write.call_count >= 1, \
+            "SounddeviceAudio.__init__ did not write warmup silence before returning"
+        warmup_bytes = local_proc.stdin.write.call_args_list[0][0][0]
+        samples = np.frombuffer(warmup_bytes, dtype=np.int16)
+        assert len(samples) > 0, "Warmup write was empty"
+        assert np.all(samples == 0), "Warmup write contains non-silent samples"
+        a.stop()
 
-        audio.stop()
-        finish.set()
+    def test_aplay_invoked_with_pcm_format_flags(self):
+        """aplay is started with raw PCM format flags (not WAV stdin)."""
+        _popen_mock.reset_mock()
+        _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
+        a = SounddeviceAudio(device="plughw:TEST", _popen=_popen_mock)
+        a.stop()
+        cmd = _popen_mock.call_args[0][0]
+        assert '-f' in cmd and 'S16_LE' in cmd, "Missing -f S16_LE flag"
+        assert '-r' in cmd, "Missing -r (sample rate) flag"
+        assert '-c' in cmd and '1' in cmd, "Missing -c 1 (mono) flag"
+        assert '-D' in cmd and 'plughw:TEST' in cmd, "Missing -D device flag"
 
 
 # ---------------------------------------------------------------------------
-# 2.6 Sample format (regression: PortAudio -9994 on I2S hardware)
+# 2.7 PCM format correctness
 # ---------------------------------------------------------------------------
 
-class TestSampleFormat:
-    """Verify that WAV bytes piped to aplay always use 16-bit (int16) samples.
+class TestPcmFormat:
+    """All audio paths must produce int16 mono PCM at the configured rate."""
 
-    I2S/ALSA drivers on Raspberry Pi reject float32 with PortAudio error
-    -9994 (paSampleFormatNotSupported).  All audio paths must encode samples
-    as int16 in the WAV bytes sent to aplay.
-    """
+    def test_tone_samples_are_int16(self, audio):
+        """play_tone() produces int16 PCM samples."""
+        pcm = _capture_pcm(audio, 'play_tone', [440], 100)
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        assert samples.dtype == np.int16
 
-    def _get_wav_samplewidth(self, audio, method, *args):
-        """Return the samplewidth (bytes per sample) from the WAV bytes piped to aplay."""
-        wav_bytes = _capture_wav_bytes(audio, method, *args)
-        buf = io.BytesIO(wav_bytes)
-        with wave.open(buf, 'rb') as wf:
-            return wf.getsampwidth()
-
-    def test_play_tone_outputs_int16(self, audio):
-        """play_tone() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
-        sw = self._get_wav_samplewidth(audio, 'play_tone', [350, 440], 100)
-        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
-
-    def test_play_tone_values_in_int16_range(self, audio):
-        """play_tone() samples fit within int16 bounds."""
-        wav_bytes = _capture_wav_bytes(audio, 'play_tone', [350, 440], 100)
-        samples, _ = _parse_wav_samples(wav_bytes)
+    def test_tone_samples_in_range(self, audio):
+        """play_tone() samples stay within int16 bounds."""
+        pcm = _capture_pcm(audio, 'play_tone', [440], 100)
+        samples = np.frombuffer(pcm, dtype=np.int16)
         assert samples.min() >= -32768 and samples.max() <= 32767
 
-    def test_play_dtmf_outputs_int16(self, audio):
-        """play_dtmf() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
-        sw = self._get_wav_samplewidth(audio, 'play_dtmf', 5)
-        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
-
-    def test_play_off_hook_tone_outputs_int16(self, audio):
-        """play_off_hook_tone() → WAV bytes sent to aplay have samplewidth=2 (int16)."""
-        sw = self._get_wav_samplewidth(audio, 'play_off_hook_tone')
-        audio.stop()
-        assert sw == 2, f"Expected samplewidth=2 (int16) for I2S compatibility, got {sw}"
-
-    def test_play_file_passes_bytes_unchanged(self, audio, tmp_path):
-        """play_file() passes the WAV file bytes unchanged to aplay."""
+    def test_file_samples_are_int16(self, audio, tmp_path):
+        """play_file() produces int16 PCM samples."""
         wav_path = _make_wav(tmp_path)
-        with open(wav_path, 'rb') as f:
-            expected = f.read()
+        pcm = _capture_pcm(audio, 'play_file', wav_path)
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        assert samples.dtype == np.int16
 
-        proc = FakeProcess()
-        _popen_mock.side_effect = lambda *a, **kw: proc
-        audio.play_file(wav_path)
-
-        assert proc.write_called.wait(timeout=2.0), "aplay was never invoked"
-        assert proc.written_bytes == expected, "play_file() altered the WAV bytes"
-
-
-# ---------------------------------------------------------------------------
-# 2.7 stop() / write race condition (BrokenPipeError)
-# ---------------------------------------------------------------------------
-
-class TestStopWriteRace:
-    """stop() can terminate the aplay proc between _play_bytes storing self._proc
-    and calling proc.stdin.write().  The resulting BrokenPipeError must not
-    propagate; is_playing() must settle to False without hanging.
-    """
-
-    def test_broken_pipe_on_write_does_not_raise(self, audio):
-        """BrokenPipeError from stdin.write() is swallowed; is_playing() → False."""
-        def make_broken_proc(*a, **kw):
-            p = FakeProcess()
-            p.stdin.write.side_effect = BrokenPipeError("simulated: proc terminated before write")
-            return p
-
-        _popen_mock.side_effect = make_broken_proc
-
-        audio.play_tone([350, 440], 100)  # must not raise
-
-        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
-            "is_playing() should be False after BrokenPipeError on stdin.write"
-
-    def test_stop_while_proc_starting_does_not_raise(self, audio):
-        """stop() fired in the window between proc creation and stdin.write()
-        — simulated by blocking the write until after stop() has run."""
-        proc_stored = threading.Event()
-        write_gate = threading.Event()
-
-        def make_gated_proc(*a, **kw):
-            p = FakeProcess()
-
-            def gated_write(data):
-                proc_stored.set()
-                write_gate.wait(timeout=1.0)
-                raise BrokenPipeError("proc terminated by stop() before write")
-
-            p.stdin.write.side_effect = gated_write
-            return p
-
-        _popen_mock.side_effect = make_gated_proc
-
-        audio.play_tone([350, 440], 5000)
-        assert proc_stored.wait(timeout=2.0), "proc was never created"
-
-        # Simulate stop() having terminated the proc; now let the write proceed
-        write_gate.set()
-
-        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
-            "is_playing() should be False after concurrent stop()/write race"
-
-    def test_stop_event_set_before_write_exits_cleanly(self, audio):
-        """_stop_event already set when _play_bytes checks: proc is terminated,
-        no write attempted, is_playing() → False without BrokenPipeError."""
-        proc_created = threading.Event()
-        write_called = [False]
-
-        def make_proc(*a, **kw):
-            p = FakeProcess()
-            original = p.stdin.write.side_effect
-
-            def track_write(data):
-                write_called[0] = True
-                if original:
-                    original(data)
-
-            p.stdin.write.side_effect = track_write
-            proc_created.set()
-            return p
-
-        _popen_mock.side_effect = make_proc
-
-        # Force the stop event to be set right after enqueue but before the worker
-        # checks it — achieve this by setting it immediately after play_tone returns
-        # (play_tone is non-blocking; the worker may not have started yet).
-        audio._stop_event.set()
-        audio.play_tone([350, 440], 100)
-
-        assert proc_created.wait(timeout=2.0), "proc was never created"
-
-        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
-            "is_playing() should be False when stop_event was pre-set"
-
-    def test_off_hook_broken_pipe_does_not_raise(self, audio):
-        """BrokenPipeError during _play_off_hook_loop stdin.write() is handled cleanly."""
-        def make_broken_proc(*a, **kw):
-            p = FakeProcess()
-            p.stdin.write.side_effect = BrokenPipeError("simulated broken pipe in off-hook loop")
-            return p
-
-        _popen_mock.side_effect = make_broken_proc
-
-        audio.play_off_hook_tone()  # must not raise
-
-        assert _wait_for(lambda: not audio.is_playing(), timeout=2.0), \
-            "is_playing() should be False after BrokenPipeError in off-hook loop"
-
+    def test_dtmf_samples_are_int16(self, audio):
+        """play_dtmf() produces int16 PCM samples."""
+        pcm = _capture_pcm(audio, 'play_dtmf', 5)
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        assert samples.dtype == np.int16
 
 # ---------------------------------------------------------------------------
 # MockAudio

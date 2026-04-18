@@ -17,6 +17,18 @@ import os
 MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "mpd")  # "mpd" | "mopidy"
 
 # ---------------------------------------------------------------------------
+# Audio output device (ALSA device name passed to aplay -D)
+# ---------------------------------------------------------------------------
+
+ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "plughw:MAX98357A")
+
+# Software volume multiplier applied to all audio output (0.0–1.0).
+# Reduce if the amp clips or buzzes; increase if output is too quiet.
+# The MAX98357A GAIN pin floating = 15 dB hardware gain, so a lower
+# default is appropriate to avoid clipping.
+AUDIO_VOLUME = float(os.environ.get("AUDIO_VOLUME", "0.4"))
+
+# ---------------------------------------------------------------------------
 # MPD / Mopidy — only used when MEDIA_BACKEND=mpd or MEDIA_BACKEND=mopidy
 # ---------------------------------------------------------------------------
 
@@ -43,7 +55,7 @@ PHONE_NUMBER_GENERATE_MAX_ATTEMPTS = 1000  # Max retries before raising RuntimeE
 ASSISTANT_MESSAGE_PAGE_SIZE = 3  # Messages read aloud per page in assistant
 
 # Reserved phone number for the diagnostic assistant — required
-_assistant_number = os.environ.get("ASSISTANT_NUMBER")
+_assistant_number = os.environ.get("ASSISTANT_NUMBER", "5550000")
 if not _assistant_number:
     raise RuntimeError(
         "Required environment variable ASSISTANT_NUMBER is not set. "

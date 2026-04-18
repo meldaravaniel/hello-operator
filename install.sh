@@ -68,19 +68,11 @@ mkdir -p "$CONFIG_DIR"
 chmod 755 "$CONFIG_DIR"
 chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
 
-if [ ! -f "$CONFIG_DIR/config.env" ]; then
-    echo "==> Copying config.env.example to $CONFIG_DIR/config.env..."
-    cp "$INSTALL_DIR/config.env.example" "$CONFIG_DIR/config.env"
-else
-    echo "==> $CONFIG_DIR/config.env already exists — skipping (not overwritten)."
-fi
+echo "==> Copying config.env.example to $CONFIG_DIR/config.env..."
+cp "$INSTALL_DIR/config.env.example" "$CONFIG_DIR/config.env"
 
-if [ ! -f "$CONFIG_DIR/radio_stations.json" ]; then
-    echo "==> Copying radio_stations.json.example to $CONFIG_DIR/radio_stations.json..."
-    cp "$INSTALL_DIR/radio_stations.json.example" "$CONFIG_DIR/radio_stations.json"
-else
-    echo "==> $CONFIG_DIR/radio_stations.json already exists — skipping (not overwritten)."
-fi
+echo "==> Copying radio_stations.json.example to $CONFIG_DIR/radio_stations.json..."
+cp "$INSTALL_DIR/radio_stations.json.example" "$CONFIG_DIR/radio_stations.json"
 
 # ---------------------------------------------------------------------------
 # Database directory
@@ -134,9 +126,9 @@ echo "==> Piper available at $PIPER_BIN_DIR/piper."
 # Angular frontend
 # ---------------------------------------------------------------------------
 
-if command -v npm >/dev/null 2>&1; then
+if command -v nvm >/dev/null 2>&1; then
     echo "==> Building Angular frontend..."
-    (cd "$INSTALL_DIR/web/angular" && npm ci --quiet && npx ng build)
+    (cd "$INSTALL_DIR/web/angular" && nvm use && npm ci --quiet && npx ng build)
     echo "==> Angular frontend built."
 else
     echo "==> Node.js/npm not found — skipping Angular build."
@@ -174,6 +166,12 @@ echo "==> Configuring MPD music directory..."
 MUSIC_DIR="/home/$INSTALL_USER/Music"
 sed -i "s|^music_directory.*|music_directory \"$MUSIC_DIR\"|" /etc/mpd.conf
 
+# Grant mpd read access to the user's home directory.
+# mpd runs as the system 'mpd' user; without group execute on ~ it cannot
+# traverse into ~/Music even if the Music dir itself is world-readable.
+usermod -aG "$INSTALL_USER" mpd
+chmod g+x "/home/$INSTALL_USER"
+
 echo "==> Enabling and starting MPD..."
 systemctl enable mpd
 systemctl start mpd
@@ -195,18 +193,14 @@ else
 fi
 
 if [ -n "$CONFIG_TXT" ]; then
-    if grep -q "dtoverlay=max98357a" "$CONFIG_TXT"; then
-        echo "==> MAX98357 overlay already present in $CONFIG_TXT — skipping."
-    else
-        # Replace dtparam=audio=on with off, or append audio=off if absent
-        if grep -q "^dtparam=audio=on" "$CONFIG_TXT"; then
-            sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_TXT"
-        elif ! grep -q "^dtparam=audio=off" "$CONFIG_TXT"; then
-            echo "dtparam=audio=off" >> "$CONFIG_TXT"
-        fi
-        echo "dtoverlay=max98357a" >> "$CONFIG_TXT"
-        echo "==> MAX98357 overlay added to $CONFIG_TXT."
+    # Replace dtparam=audio=on with off, or append audio=off if absent
+    if grep -q "^dtparam=audio=on" "$CONFIG_TXT"; then
+        sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_TXT"
+    elif ! grep -q "^dtparam=audio=off" "$CONFIG_TXT"; then
+        echo "dtparam=audio=off" >> "$CONFIG_TXT"
     fi
+    echo "dtoverlay=max98357a" >> "$CONFIG_TXT"
+    echo "==> MAX98357 overlay added to $CONFIG_TXT."
 fi
 
 cat > /etc/asound.conf << 'ASOUND'
@@ -257,7 +251,6 @@ echo "     After rebooting, verify with: aplay -l"
 echo "     Adjust volume with: alsamixer"
 echo ""
 echo "  2. Edit /etc/hello-operator/config.env and set:"
-echo "       ASSISTANT_NUMBER   — required for all backends"
 echo ""
 echo "     If using MPD (default, MEDIA_BACKEND=mpd):"
 echo "       MPD is already enabled and running. If the audio output device"
