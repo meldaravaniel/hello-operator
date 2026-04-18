@@ -32,11 +32,8 @@ Connect the MAX98357 to the Pi's 40-pin GPIO header using the following table. P
 | DIN | GPIO 21 | Pin 40 |
 | BCLK | GPIO 18 | Pin 12 |
 | LRCLK | GPIO 19 | Pin 35 |
-| SD | GPIO 22 | Pin 15 |
 
 Leave **MCLK** unconnected — the MAX98357 does not require it.
-
-> **SD pin:** connecting SD to GPIO 22 enables software-controlled startup sequencing that eliminates the amplifier's power-on transient (see [SD pin control](#sd-pin-gpio-control-startup-transient-elimination) below). If you prefer simpler wiring, connect SD directly to Vin instead — the amp will always be on, and a brief transient will occur when hello-operator starts.
 
 > **Tip:** Use [pinout.xyz](https://pinout.xyz) to locate pins on your specific Pi revision.
 
@@ -166,32 +163,9 @@ Power-cycle the board after changing the gain wiring.
 
 ---
 
-## SD pin GPIO control (startup transient elimination)
+## Channel selection (SD pin)
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-The breakout board's SD pin has a 1MΩ pull-up to Vin, which selects **stereo average** output `(L+R)/2` by default — appropriate for mono use with a stereo audio source.
-=======
-The MAX98357A's SD pin controls both the amp's enabled/shutdown state and its channel selection. When SD is driven LOW (< 0.16 V) the amp is in shutdown; when HIGH (> 1.4 V, e.g. 3.3 V from a Pi GPIO) the amp is active on the left channel — which is what aplay sends for mono output.
->>>>>>> Stashed changes
-=======
-The MAX98357A's SD pin controls both the amp's enabled/shutdown state and its channel selection. When SD is driven LOW (< 0.16 V) the amp is in shutdown; when HIGH (> 1.4 V, e.g. 3.3 V from a Pi GPIO) the amp is active on the left channel — which is what aplay sends for mono output.
->>>>>>> Stashed changes
-
-### Why there is a startup transient
-
-When aplay launches, the I2S clock starts and the amp's internal charge pump powers up. This power-up sequence produces a brief audible pop regardless of the PCM data being fed in — it is a hardware event, not a software one.
-
-### Eliminating it with GPIO control
-
-hello-operator can sequence the startup to prevent the transient:
-
-1. **SD LOW** — amp held in shutdown before aplay starts.
-2. **aplay starts** — I2S clock begins; silence flows through the pipe.
-3. **Settle delay (100 ms)** — silence reaches the I2S hardware.
-4. **SD HIGH** — amp powers up into a stable, silent I2S stream → no transient.
-
-To enable this:
+For reference, the SD pin voltage ranges are:
 
 1. Wire MAX98357A **SD** to **GPIO 22** (physical pin 15) instead of Vin.
 2. Set `AMP_SD_PIN=22` in `/etc/hello-operator/config.env`.
@@ -200,15 +174,12 @@ hello-operator handles the rest automatically at startup.
 
 ### SD pin voltage reference
 
-| SD pin voltage | State |
+| SD pin voltage | Outage |
 |---|---|
 | < 0.16 V | Shutdown |
 | 0.16 V – 0.77 V | Stereo average (L+R)/2 |
 | 0.77 V – 1.4 V | Right channel only |
-| > 1.4 V | Left channel only (3.3 V Pi GPIO output) |
-
-hello-operator uses mono output (`aplay -c 1`), so left-channel-only mode is correct.
-<<<<<<< Updated upstream
+| > 1.4 V | Left channel only |
 
 The SD pin is also used for instant audio cutoff — see Step 5 below.
 
@@ -238,8 +209,6 @@ Connect the 100Ω resistor in series between physical pin 15 on the Pi's GPIO he
 ### Behaviour without this step
 
 For pre-rendered TTS (most menu prompts) the difference is negligible — one polling cycle (~5 ms). For live synthesis the gap can be up to ~1–2 seconds depending on how long piper takes to finish.
-=======
->>>>>>> Stashed changes
 
 ---
 
@@ -255,7 +224,4 @@ Lower the PCM level in `alsamixer`. At 5V the amp delivers up to 3.2W into 4Ω �
 The I2S overlay did not load. Double-check `config.txt`, then run `dmesg | grep -i max98357` to see if the driver reported an error.
 
 **hello-operator produces no audio**
-Confirm `ALSA_DEVICE=plughw:MAX98357A` is set in `/etc/hello-operator/config.env`. If `AMP_SD_PIN` is set, verify the SD wire is connected to the correct GPIO pin and that the pin number in config.env matches.
-
-**Startup transient (pop when hello-operator starts)**
-Wire SD to a GPIO pin and set `AMP_SD_PIN` in config.env — see [SD pin GPIO control](#sd-pin-gpio-control-startup-transient-elimination) above.
+Confirm that `sounddevice` is using the correct output device. The ALSA default configured in `/etc/asound.conf` routes to the MAX98357; if another device is selected explicitly in code, override it or remove the explicit device selection.

@@ -85,14 +85,6 @@ TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
 PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
 
-# BCM GPIO pin connected to MAX98357A SD (shutdown/enable) pin — optional.
-# When set, SounddeviceAudio drives SD LOW before starting aplay, then HIGH
-# after silence is flowing, eliminating the amplifier startup transient.
-# Wire MAX98357A SD to this GPIO pin (e.g. GPIO 22, physical pin 15).
-# If unset, connect SD directly to Vin on the amp board instead.
-_amp_sd_pin = os.environ.get("AMP_SD_PIN")
-AMP_SD_PIN = int(_amp_sd_pin) if _amp_sd_pin else None
-
 # Radio configuration
 RADIO_CONFIG_PATH = "/etc/hello-operator/radio_stations.json"
 

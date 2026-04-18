@@ -229,9 +229,9 @@ class MediaStore:
         return self._get_or_fetch(key, lambda: self._media_client.get_albums_for_artist(artist_media_key))
 
     def _get_or_fetch(self, cache_key: str, fetch_fn) -> List[MediaItem]:
-        """Return local data if available and non-empty; otherwise fetch, store, and return."""
+        """Return local data if available; otherwise fetch, store, and return."""
         cached = self._read(cache_key)
-        if cached:
+        if cached is not None:
             return cached
         items = fetch_fn()
         self._write(cache_key, items)

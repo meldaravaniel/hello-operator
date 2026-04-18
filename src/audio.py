@@ -67,16 +67,6 @@ _DTMF_FREQ = {
 # Off-hook warning tone frequencies (alternating cadence — standard US ROH).
 _OFF_HOOK_FREQ = [1400, 2060, 2450, 2600]
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> Stashed changes
-# Sentinel used to shut down the worker thread cleanly.
-_STOP_SENTINEL = object()
-
-
->>>>>>> Stashed changes
 def _generate_tone(frequencies: list, duration_ms: int, sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
     """Generate a normalised sine wave mix for the given frequencies (float32, mono)."""
     n_samples = int(sample_rate * duration_ms / 1000)
@@ -240,22 +230,12 @@ class SounddeviceAudio(AudioInterface):
         chunk_duration = _CHUNK_FRAMES / self._sample_rate
         silence = np.zeros(_CHUNK_FRAMES, dtype=np.int16).tobytes()
         while True:
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-            task = self._queue.get()
-=======
-=======
->>>>>>> Stashed changes
             try:
                 task = self._queue.get(timeout=chunk_duration)
             except queue.Empty:
                 # Keep I2S clock alive between clips.
                 self._write_raw(silence)
                 continue
-            if task is _STOP_SENTINEL:
-                self._queue.task_done()
-                break
->>>>>>> Stashed changes
             with self._lock:
                 self._busy = True
             try:
