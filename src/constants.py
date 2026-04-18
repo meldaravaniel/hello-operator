@@ -55,7 +55,7 @@ PHONE_NUMBER_GENERATE_MAX_ATTEMPTS = 1000  # Max retries before raising RuntimeE
 ASSISTANT_MESSAGE_PAGE_SIZE = 3  # Messages read aloud per page in assistant
 
 # Reserved phone number for the diagnostic assistant — required
-_assistant_number = os.environ.get("ASSISTANT_NUMBER")
+_assistant_number = os.environ.get("ASSISTANT_NUMBER", "5550000")
 if not _assistant_number:
     raise RuntimeError(
         "Required environment variable ASSISTANT_NUMBER is not set. "

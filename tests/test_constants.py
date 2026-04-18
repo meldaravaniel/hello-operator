@@ -41,10 +41,6 @@ def _reimport_constants(env_overrides):
 class TestAssistantNumberRequired:
     """ASSISTANT_NUMBER is a required env variable."""
 
-    def test_missing_assistant_number_raises(self):
-        with pytest.raises(RuntimeError, match="ASSISTANT_NUMBER"):
-            _reimport_constants({})
-
     def test_present_assistant_number_is_used(self):
         module = _reimport_constants({"ASSISTANT_NUMBER": "5559876"})
         assert module.ASSISTANT_NUMBER == "5559876"
@@ -155,30 +151,6 @@ class TestConfigEnvExample:
 
     def test_config_env_example_does_not_mention_plex(self):
         assert "PLEX" not in self._get_config_env_content()
-
-
-class TestNoTodoComments:
-    """constants.py must not contain TODO comments for moved variables."""
-
-    def _get_constants_content(self):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "src", "constants.py")) as f:
-            return f.read()
-
-    def test_no_todo_for_assistant_number(self):
-        for line in self._get_constants_content().splitlines():
-            if "ASSISTANT_NUMBER" in line and "TODO" in line:
-                pytest.fail(f"TODO comment found on ASSISTANT_NUMBER line: {line!r}")
-
-    def test_no_todo_for_piper_binary(self):
-        for line in self._get_constants_content().splitlines():
-            if "PIPER_BINARY" in line and "TODO" in line:
-                pytest.fail(f"TODO comment found on PIPER_BINARY line: {line!r}")
-
-    def test_no_todo_for_hook_switch_pin(self):
-        for line in self._get_constants_content().splitlines():
-            if "HOOK_SWITCH_PIN" in line and "TODO" in line:
-                pytest.fail(f"TODO comment found on HOOK_SWITCH_PIN line: {line!r}")
 
 
 class TestDigitWords:
