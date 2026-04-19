@@ -20,7 +20,7 @@ MEDIA_BACKEND = os.environ.get("MEDIA_BACKEND", "mpd")  # "mpd" | "mopidy"
 # Audio output device (ALSA device name passed to aplay -D)
 # ---------------------------------------------------------------------------
 
-ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "plughw:MAX98357A")
+ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "hw:2,0")
 
 # Software volume multiplier applied to all audio output (0.0–1.0).
 # Reduce if the amp clips or buzzes; increase if output is too quiet.
@@ -39,7 +39,7 @@ MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
 # Timing constants (in seconds unless noted)
 # ---------------------------------------------------------------------------
 
-DIAL_TONE_TIMEOUT_IDLE = 5       # Silence before idle operator prompt
+DIAL_TONE_TIMEOUT_IDLE = 3       # Silence before idle operator prompt
 DIAL_TONE_TIMEOUT_PLAYING = 2    # Silence before playing-state prompt
 INTER_DIGIT_TIMEOUT = 0.3        # Gap after last pulse → digit complete (300 ms)
 DIRECT_DIAL_DISAMBIGUATION_TIMEOUT = 1.5  # TODO: tune on hardware — wait after first digit before treating as single nav input
@@ -84,6 +84,8 @@ TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 # GPIO pin assignments (BCM numbering) — optional; defaults match recommended wiring docs
 HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
 PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
+_sd_amp_pin_env = os.environ.get("SD_AMP_PIN")
+SD_AMP_PIN: int | None = int(_sd_amp_pin_env) if _sd_amp_pin_env is not None else None
 
 # Radio configuration
 RADIO_CONFIG_PATH = "/etc/hello-operator/radio_stations.json"

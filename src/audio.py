@@ -17,6 +17,7 @@ process.
 """
 
 import io
+import logging
 import queue
 import subprocess
 import threading
@@ -25,6 +26,8 @@ import wave
 import numpy as np
 
 from src.interfaces import AudioInterface
+
+log = logging.getLogger(__name__)
 
 # Sample rate for the persistent aplay stream.  All audio is converted to
 # this rate before being written.
@@ -97,7 +100,8 @@ class SounddeviceAudio(AudioInterface):
     """
 
     def __init__(self, sample_rate: int = _SAMPLE_RATE, device: str = "default",
-                 volume: float = 1.0, _popen=None) -> None:
+                 volume: float = 1.0, sd_pin: int = None,
+                 _popen=None, _gpio_output=None) -> None:
         self._sample_rate = sample_rate
         self._device = device
         self._volume = max(0.0, min(1.0, volume))
@@ -107,20 +111,37 @@ class SounddeviceAudio(AudioInterface):
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
 
-        self._proc = self._popen(
-            ['aplay', '-q', '-D', self._device,
-             '-f', 'S16_LE', '-r', str(self._sample_rate), '-c', '1'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # SD pin: drive LOW to cut amp instantly; release to INPUT to re-enable.
+        # Both callables are None when sd_pin is not configured.
+        self._amp_off = None
+        self._amp_on = None
+        if sd_pin is not None:
+            if _gpio_output is not None:
+                self._amp_off = lambda: _gpio_output(sd_pin, False)
+                self._amp_on = lambda: _gpio_output(sd_pin, None)
+            else:
+                try:
+                    import RPi.GPIO as GPIO  # type: ignore[import]
+                    _pin = sd_pin
+                    GPIO.setmode(GPIO.BCM)
+                    GPIO.setup(_pin, GPIO.IN)
 
-        _warmup_frames = int(self._sample_rate * _WARMUP_MS / 1000)
-        _warmup_silence = np.zeros(_warmup_frames, dtype=np.int16).tobytes()
-        try:
-            self._proc.stdin.write(_warmup_silence)
-        except (BrokenPipeError, OSError):
-            pass
+                    def _amp_off(_p=_pin, _g=GPIO):
+                        log.info("SD pin %d → OUTPUT LOW (amp off)", _p)
+                        _g.setup(_p, _g.OUT)
+                        _g.output(_p, _g.LOW)
+
+                    def _amp_on(_p=_pin, _g=GPIO):
+                        log.debug("SD pin %d → INPUT (amp on)", _p)
+                        _g.setup(_p, _g.IN)
+
+                    self._amp_off = _amp_off
+                    self._amp_on = _amp_on
+                    log.info("SD amp pin configured: BCM %d", sd_pin)
+                except Exception as exc:
+                    log.warning("SD amp pin setup failed (pin %d): %s", sd_pin, exc)
+
+        self._proc = None
 
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
@@ -156,6 +177,37 @@ class SounddeviceAudio(AudioInterface):
         waveform = _generate_tone(_OFF_HOOK_FREQ, _OFF_HOOK_SEGMENT_MS, self._sample_rate)
         pcm = self._waveform_to_pcm(waveform)
         self._enqueue(lambda: self._write_pcm_loop(pcm))
+
+    def amp_off(self) -> None:
+        """Cut the amp and terminate aplay. Call only from the hook watcher."""
+        if self._amp_off:
+            self._amp_off()
+        self.stop()
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+    def amp_on(self) -> None:
+        """Start aplay and enable the amp. Call only from the hook watcher."""
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = self._popen(
+                ['aplay', '-q', '-D', self._device,
+                 '-f', 'S16_LE', '-r', str(self._sample_rate), '-c', '1'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _warmup_frames = int(self._sample_rate * _WARMUP_MS / 1000)
+            _warmup_silence = np.zeros(_warmup_frames, dtype=np.int16).tobytes()
+            try:
+                self._proc.stdin.write(_warmup_silence)
+            except (BrokenPipeError, OSError):
+                pass
+        if self._amp_on:
+            self._amp_on()
 
     def stop(self) -> None:
         """Stop current playback and clear all queued tasks.
@@ -209,9 +261,12 @@ class SounddeviceAudio(AudioInterface):
                     self._busy = False
 
     def _write_raw(self, pcm: bytes) -> None:
-        """Write raw PCM bytes to the persistent aplay stdin; swallow broken pipe."""
+        """Write raw PCM bytes to aplay stdin; no-op if aplay is not running."""
+        proc = self._proc
+        if proc is None:
+            return
         try:
-            self._proc.stdin.write(pcm)
+            proc.stdin.write(pcm)
         except (BrokenPipeError, OSError):
             pass
 

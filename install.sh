@@ -47,17 +47,17 @@ echo ""
 # System packages
 # ---------------------------------------------------------------------------
 
-echo "==> Installing system packages..."
-apt-get update -qq
-apt-get install -y \
-    python3 \
-    python3-venv \
-    python3-pip \
-    alsa-utils \
-    rtl-sdr \
-    mpd \
-    mpc \
-    mopidy
+# echo "==> Installing system packages..."
+# apt-get update -qq
+# apt-get install -y \
+#     python3 \
+#     python3-venv \
+#     python3-pip \
+#     alsa-utils \
+#     rtl-sdr \
+#     mpd \
+#     mpc \
+#     mopidy
 
 # ---------------------------------------------------------------------------
 # Config directory and files

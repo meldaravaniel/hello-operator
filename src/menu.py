@@ -303,7 +303,7 @@ class Menu:
         self._pending_digit = None
         self._failure_mode = None
         self._lift_playback = self._media_client.now_playing()
-        self._audio.play_tone(DIAL_TONE_FREQUENCIES, 500)
+        self._audio.play_tone(DIAL_TONE_FREQUENCIES, 2000)
 
     def on_handset_on_cradle(self) -> None:
         """Called when the handset is replaced."""
