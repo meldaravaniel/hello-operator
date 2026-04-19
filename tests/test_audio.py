@@ -91,10 +91,11 @@ def reset_popen_mock():
 
 @pytest.fixture
 def audio():
-    """Fresh SounddeviceAudio with injected mock popen."""
+    """Fresh SounddeviceAudio with injected mock popen, handset lifted."""
     a = SounddeviceAudio(_popen=_popen_mock)
+    a.amp_on()
     yield a
-    a.stop()
+    a.amp_off()
 
 
 # ---------------------------------------------------------------------------
@@ -126,13 +127,14 @@ def _wait_for(condition, timeout=2.0, interval=0.005):
 def _capture_pcm(audio_obj, method, *args, timeout=2.0):
     """Invoke audio.<method>(*args) and return the non-silent PCM bytes written.
 
-    Waits until the first non-silent write arrives, then calls stop() and
-    returns all PCM captured so far (silence prefix stripped).
+    Waits for the task to complete naturally before collecting PCM so that the
+    full clip is captured regardless of how fast the mock writes execute.
     """
     _proc.reset()
     getattr(audio_obj, method)(*args)
     assert _proc.write_called.wait(timeout=timeout), \
         f"{method}(*{args}) never wrote non-silent PCM to aplay"
+    _wait_for(lambda: not audio_obj.is_playing(), timeout=timeout)
     audio_obj.stop()
     all_samples = np.frombuffer(_proc.written_pcm, dtype=np.int16)
     nonzero = np.nonzero(all_samples)[0]
@@ -346,15 +348,17 @@ class TestVolumeScaling:
 
         # Capture at full volume
         a_full = SounddeviceAudio(volume=1.0, _popen=_popen_mock)
+        a_full.amp_on()
         pcm_full = _capture_pcm(a_full, 'play_file', wav_path)
-        a_full.stop()
+        a_full.amp_off()
         peak_full = np.max(np.abs(_pcm_to_samples(pcm_full)))
 
         # Capture at half volume
         _proc.reset()
         a_half = SounddeviceAudio(volume=0.5, _popen=_popen_mock)
+        a_half.amp_on()
         pcm_half = _capture_pcm(a_half, 'play_file', wav_path)
-        a_half.stop()
+        a_half.amp_off()
         peak_half = np.max(np.abs(_pcm_to_samples(pcm_half)))
 
         assert peak_half < peak_full * 0.6, \
@@ -363,13 +367,15 @@ class TestVolumeScaling:
     def test_tone_volume_applied(self, audio):
         """volume=0.5 → generated tone amplitude ≈ half of volume=1.0."""
         a_full = SounddeviceAudio(volume=1.0, _popen=_popen_mock)
+        a_full.amp_on()
         pcm_full = _capture_pcm(a_full, 'play_tone', [440], 100)
-        a_full.stop()
+        a_full.amp_off()
 
         _proc.reset()
         a_half = SounddeviceAudio(volume=0.5, _popen=_popen_mock)
+        a_half.amp_on()
         pcm_half = _capture_pcm(a_half, 'play_tone', [440], 100)
-        a_half.stop()
+        a_half.amp_off()
 
         peak_full = np.max(np.abs(_pcm_to_samples(pcm_full)))
         peak_half = np.max(np.abs(_pcm_to_samples(pcm_half)))
@@ -414,10 +420,21 @@ class TestWorkerThread:
 
     def test_is_playing_true_while_worker_busy(self, audio):
         """is_playing() returns True while the worker is executing a task."""
-        _proc.reset()
+        gate = threading.Event()
+        writing_started = threading.Event()
+        original_write_raw = audio._write_raw
+
+        def gated_write(pcm):
+            if np.any(np.frombuffer(bytes(pcm), dtype=np.int16) != 0):
+                writing_started.set()
+                gate.wait(timeout=5.0)
+            original_write_raw(pcm)
+
+        audio._write_raw = gated_write
         audio.play_tone([440], 5000)
-        assert _proc.write_called.wait(timeout=2.0), "tone never started"
+        assert writing_started.wait(timeout=2.0), "tone never started"
         assert audio.is_playing()
+        gate.set()
         audio.stop()
 
     def test_is_playing_false_after_stop(self, audio):
@@ -501,45 +518,43 @@ class TestWorkerThread:
         assert len(all_written) > 0, "Worker never wrote silence during idle period"
         assert np.all(all_written == 0), "Non-silent data written while idle"
 
-    def test_aplay_started_once(self):
-        """popen is called exactly once per SounddeviceAudio instance."""
+    def test_aplay_started_once_per_amp_on(self):
+        """popen is called exactly once per amp_on() call."""
         _popen_mock.reset_mock()
         _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
         a = SounddeviceAudio(_popen=_popen_mock)
+        assert _popen_mock.call_count == 0, "aplay must not start in __init__"
+        a.amp_on()
         a.play_tone([440], 50)
         a.play_tone([350], 50)
         time.sleep(0.2)
-        a.stop()
+        a.amp_off()
         assert _popen_mock.call_count == 1, \
             f"Expected 1 aplay invocation, got {_popen_mock.call_count}"
 
-    def test_warmup_silence_written_on_init(self):
-        """__init__ writes a silence burst synchronously before the worker thread starts.
-
-        This ensures the MAX98357A amp initialises (and its startup transient
-        fires) at app launch rather than on the first real user-facing clip.
-        The write must happen in __init__ *before* self._worker_thread.start(),
-        so write() is called at least once by the time __init__ returns.
-        """
+    def test_warmup_silence_written_on_amp_on(self):
+        """amp_on() writes warmup silence synchronously before returning."""
         local_proc = FakeProcess()
         local_popen = MagicMock(side_effect=lambda *a, **kw: local_proc)
         a = SounddeviceAudio(_popen=local_popen)
-        # Warmup is synchronous in __init__ (before worker starts), so
-        # write() must already have been called when __init__ returns.
+        assert local_proc.stdin.write.call_count == 0, \
+            "aplay must not start in __init__"
+        a.amp_on()
         assert local_proc.stdin.write.call_count >= 1, \
-            "SounddeviceAudio.__init__ did not write warmup silence before returning"
+            "amp_on() must write warmup silence synchronously"
         warmup_bytes = local_proc.stdin.write.call_args_list[0][0][0]
         samples = np.frombuffer(warmup_bytes, dtype=np.int16)
         assert len(samples) > 0, "Warmup write was empty"
         assert np.all(samples == 0), "Warmup write contains non-silent samples"
-        a.stop()
+        a.amp_off()
 
     def test_aplay_invoked_with_pcm_format_flags(self):
         """aplay is started with raw PCM format flags (not WAV stdin)."""
         _popen_mock.reset_mock()
         _popen_mock.side_effect = lambda *a, **kw: FakeProcess()
         a = SounddeviceAudio(device="plughw:TEST", _popen=_popen_mock)
-        a.stop()
+        a.amp_on()
+        a.amp_off()
         cmd = _popen_mock.call_args[0][0]
         assert '-f' in cmd and 'S16_LE' in cmd, "Missing -f S16_LE flag"
         assert '-r' in cmd, "Missing -r (sample rate) flag"

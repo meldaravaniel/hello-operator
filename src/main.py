@@ -13,7 +13,7 @@ from src.constants import (
     MEDIA_BACKEND,
     MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
-    HOOK_SWITCH_PIN, PULSE_SWITCH_PIN,
+    HOOK_SWITCH_PIN, PULSE_SWITCH_PIN, SD_AMP_PIN,
     HOOK_DEBOUNCE,
     RADIO_CONFIG_PATH,
     ALSA_DEVICE,
@@ -32,6 +32,7 @@ from src.session import Session
 
 # Import all pre-renderable script strings from menu
 from src.menu import (
+    Menu,
     SCRIPT_OPERATOR_OPENER,
     SCRIPT_GREETING,
     SCRIPT_EXTENSION_HINT,
@@ -186,43 +187,40 @@ def build_gpio_handler() -> GPIOHandler:
         pulse_pin_reader=pulse_reader,
     )
 
+def _start_hook_watcher(hook_pin: int, audio, tts, menu, gpio) -> None:
+    """Spin a daemon thread that watches the hook pin at ~1 ms intervals.
 
-def _setup_hook_interrupt(hook_pin: int, audio, tts) -> None:
-    """Register a GPIO edge-detect interrupt for immediate audio cutoff on hang-up.
-
-    Supplements the polling loop so that audio.stop() and tts.abort() are called
-    the instant the hook switch fires, without waiting for the event loop to
-    unblock from any ongoing TTS synthesis (e.g. a blocking piper subprocess).
-
-    The callback runs in RPi.GPIO's event thread.  Both audio.stop() and
-    tts.abort() are thread-safe.  If RPi.GPIO is unavailable (non-Pi
-    environment) this function does nothing.
-
-    Parameters
-    ----------
-    hook_pin:
-        BCM pin number for the hook switch (HIGH = on cradle).
-    audio:
-        AudioInterface implementation to stop immediately.
-    tts:
-        TTSInterface implementation to abort immediately.
+    Drives the amp and creates/closes Session the instant the pin changes
+    state, bypassing the polling loop's debounce delay.  No-op on non-Pi hosts.
     """
-    try:
-        import RPi.GPIO as GPIO
-        bouncetime_ms = max(1, int(HOOK_DEBOUNCE * 1000))
+    import threading
 
-        def _on_cradle(channel):
-            if GPIO.input(channel) == 1:  # HIGH = handset on cradle
-                audio.stop()
-                tts.abort()
+    def _watch():
+        try:
+            import RPi.GPIO as GPIO
+            last = GPIO.input(hook_pin)
+            session = None
+            while True:
+                val = GPIO.input(hook_pin)
+                if val != last:
+                    last = val
+                    if val == 1:   # HIGH = on cradle
+                        audio.amp_off()
+                        tts.abort()
+                        if session is not None:
+                            session.close()
+                            session = None
+                    else:          # LOW = lifted
+                        audio.amp_on()
+                        session = Session(menu=menu, gpio=gpio)
+                        session.start()
+                time.sleep(0.001)
+        except (ImportError, RuntimeError):
+            pass
 
-        GPIO.add_event_detect(hook_pin, GPIO.RISING,
-                              callback=_on_cradle,
-                              bouncetime=bouncetime_ms)
-        log.info("Hook-switch interrupt registered on BCM %d (bouncetime %d ms)",
-                 hook_pin, bouncetime_ms)
-    except (ImportError, RuntimeError):
-        pass  # Non-Pi environment — polling loop handles events alone
+    t = threading.Thread(target=_watch, daemon=True, name="hook-watcher")
+    t.start()
+    log.info("Hook watcher thread started on BCM %d", hook_pin)
 
 
 def run() -> None:
@@ -247,7 +245,7 @@ def run() -> None:
         )
 
     # Hardware interfaces
-    audio = SounddeviceAudio(device=ALSA_DEVICE, volume=AUDIO_VOLUME)
+    audio = SounddeviceAudio(device=ALSA_DEVICE, volume=AUDIO_VOLUME, sd_pin=SD_AMP_PIN)
     tts = PiperTTS(
         piper_binary=PIPER_BINARY,
         piper_model=PIPER_MODEL,
@@ -269,15 +267,8 @@ def run() -> None:
     tts.prerender(_PRERENDER_SCRIPTS)
     log.info("Pre-render complete.")
 
-    # GPIO handler — track whether GPIO was successfully initialised so the
-    # finally block only calls _gpio_cleanup() when it is safe to do so.
-    _gpio_ready = False
-    gpio = build_gpio_handler()
-    _gpio_ready = True
-    _setup_hook_interrupt(HOOK_SWITCH_PIN, audio, tts)
-
-    # Session
-    session = Session(
+    # Menu state machine — constructed once, reused across sessions
+    menu = Menu(
         audio=audio,
         tts=tts,
         media_client=media_client,
@@ -287,17 +278,18 @@ def run() -> None:
         radio=radio,
     )
 
+    # GPIO handler — track whether GPIO was successfully initialised so the
+    # finally block only calls _gpio_cleanup() when it is safe to do so.
+    _gpio_ready = False
+    gpio = build_gpio_handler()
+    _gpio_ready = True
+    _start_hook_watcher(HOOK_SWITCH_PIN, audio, tts, menu, gpio)
+
     log.info("hello-operator ready — waiting for handset lift")
 
-    # Event loop
     try:
         while True:
-            now = time.monotonic()
-            event = gpio.poll(now=now)
-            if event is not None:
-                session.handle_event(event, now=now)
-            session.tick(now=now)
-            time.sleep(0.005)  # ~200 Hz polling
+            time.sleep(1)
     except KeyboardInterrupt:
         log.info("Shutting down.")
     finally:

@@ -18,15 +18,19 @@ from src.constants import (
 # ---------------------------------------------------------------------------
 
 def make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
-                 mock_error_queue, tmp_path, mock_radio=None):
-    """Build a Session with all mocked dependencies."""
+                 mock_error_queue, tmp_path, mock_radio=None, now=0.0):
+    """Build a Session with all mocked dependencies.
+
+    Handset lift is delivered via Session.__init__ at the given ``now`` timestamp.
+    """
     from src.phone_book import PhoneBook
     from src.session import Session
+    from src.menu import Menu
     from src.radio import MockRadio
     db = str(tmp_path / "phone_book.db")
     phone_book = PhoneBook(db_path=db)
     radio = mock_radio if mock_radio is not None else MockRadio()
-    return Session(
+    menu = Menu(
         audio=mock_audio,
         tts=mock_tts,
         media_client=mock_media_client,
@@ -35,6 +39,7 @@ def make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
         error_queue=mock_error_queue,
         radio=radio,
     )
+    return Session(menu=menu, now=now)
 
 
 def tts_calls(mock_tts):
@@ -51,11 +56,9 @@ class TestSessionHandset:
 
     def test_handset_lifted_starts_dial_tone(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """HANDSET_LIFTED event → dial tone begins."""
+        """Session construction (handset lift) → dial tone begins."""
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
-        # play_tone should have been called
         assert any(c[0] == 'play_tone' for c in mock_audio.calls)
 
     def test_dial_tone_timeout_idle(
@@ -67,7 +70,6 @@ class TestSessionHandset:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_GREETING in t for t in texts)
@@ -79,44 +81,39 @@ class TestSessionHandset:
         mock_media_client.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_PLAYING + 1.0)
         texts = tts_calls(mock_tts)
         assert any("Jazz" in t for t in texts) or any(SCRIPT_PLAYING_MENU_DEFAULT in t for t in texts)
 
     def test_handset_on_cradle_stops_audio(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """HANDSET_ON_CRADLE → all audio stops."""
+        """session.close() → all audio stops."""
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         mock_audio.calls.clear()
-        session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=1.0)
+        session.close()
         assert any(c[0] == 'stop' for c in mock_audio.calls)
 
     def test_handset_on_cradle_does_not_stop_plex(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """HANDSET_ON_CRADLE while music playing → plex_client.stop() NOT called."""
+        """session.close() while music playing → media_client.stop() NOT called."""
         mock_media_client.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         mock_media_client.calls.clear()
-        session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=1.0)
+        session.close()
         stop_calls = [c for c in mock_media_client.calls if c[0] == 'stop']
         assert len(stop_calls) == 0
 
     def test_digit_after_hangup_ignored(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Digit event after HANDSET_ON_CRADLE → ignored, no state change."""
+        """Digit event after close() → ignored, no state change."""
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
-        session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=1.0)
+        session.close()
         mock_tts.calls.clear()
         mock_audio.calls.clear()
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=2.0)
-        # No TTS or audio changes should happen
         assert len(tts_calls(mock_tts)) == 0
 
 
@@ -128,7 +125,6 @@ class TestSessionDirectDial:
         """Two digits within disambiguation timeout during dial tone → DTMF tones played."""
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=0.5)
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=0.6)
         dtmf_calls = [c for c in mock_audio.calls if c[0] == 'play_dtmf']
@@ -143,7 +139,6 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)  # deliver idle menu
         mock_tts.calls.clear()
         session.handle_event((GpioEvent.DIGIT_DIALED, 1), now=10.0)
@@ -165,7 +160,6 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_media_client.calls.clear()
         # Dial the number
@@ -188,7 +182,6 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_tts.calls.clear()
         # Dial unknown number: 1234567
@@ -211,7 +204,6 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         # Dial 8 digits: 12345678
         t = 10.0
@@ -235,7 +227,6 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.handle_event(GpioEvent.HANDSET_LIFTED, now=0.0)
         session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_media_client.calls.clear()
         mock_tts.calls.clear()
@@ -245,7 +236,7 @@ class TestSessionDirectDial:
         session.handle_event((GpioEvent.DIGIT_DIALED, 2), now=t + 0.05)
         session.handle_event((GpioEvent.DIGIT_DIALED, 3), now=t + 0.1)
         # Hang up before completing
-        session.handle_event(GpioEvent.HANDSET_ON_CRADLE, now=t + 0.2)
+        session.close()
         # No lookup or not-in-service
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         not_in_service = [txt for txt in tts_calls(mock_tts) if "not in service" in txt.lower()]
@@ -274,12 +265,12 @@ class TestSessionRadio:
 # ---------------------------------------------------------------------------
 
 class TestSessionRequiredParameters:
-    """Session must reject construction when required dependencies are omitted.
+    """Menu must reject construction when required dependencies are omitted.
 
     media_client, media_store, phone_book, and error_queue are not truly
-    optional — the session cannot function without them.  Removing their
+    optional — the menu cannot function without them.  Removing their
     = None defaults causes Python to raise TypeError at the call site instead
-    of letting a broken Session reach runtime.
+    of letting a broken Menu reach runtime.
 
     radio is intentionally optional (hardware-dependent; all usages are
     guarded with ``if self._radio is not None``).
@@ -291,9 +282,9 @@ class TestSessionRequiredParameters:
 
     def test_missing_media_client_raises_type_error(
             self, mock_audio, mock_tts, mock_media_store, mock_error_queue, tmp_path):
-        from src.session import Session
+        from src.menu import Menu
         with pytest.raises(TypeError):
-            Session(
+            Menu(
                 audio=mock_audio,
                 tts=mock_tts,
                 media_store=mock_media_store,
@@ -303,9 +294,9 @@ class TestSessionRequiredParameters:
 
     def test_missing_media_store_raises_type_error(
             self, mock_audio, mock_tts, mock_media_client, mock_error_queue, tmp_path):
-        from src.session import Session
+        from src.menu import Menu
         with pytest.raises(TypeError):
-            Session(
+            Menu(
                 audio=mock_audio,
                 tts=mock_tts,
                 media_client=mock_media_client,
@@ -315,9 +306,9 @@ class TestSessionRequiredParameters:
 
     def test_missing_phone_book_raises_type_error(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        from src.session import Session
+        from src.menu import Menu
         with pytest.raises(TypeError):
-            Session(
+            Menu(
                 audio=mock_audio,
                 tts=mock_tts,
                 media_client=mock_media_client,
@@ -327,9 +318,9 @@ class TestSessionRequiredParameters:
 
     def test_missing_error_queue_raises_type_error(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, tmp_path):
-        from src.session import Session
+        from src.menu import Menu
         with pytest.raises(TypeError):
-            Session(
+            Menu(
                 audio=mock_audio,
                 tts=mock_tts,
                 media_client=mock_media_client,
@@ -339,9 +330,10 @@ class TestSessionRequiredParameters:
 
     def test_radio_is_still_optional(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """radio has no = None default — confirm Session builds without it."""
+        """radio has no = None default — confirm Menu+Session builds without it."""
+        from src.menu import Menu
         from src.session import Session
-        session = Session(
+        menu = Menu(
             audio=mock_audio,
             tts=mock_tts,
             media_client=mock_media_client,
@@ -349,4 +341,5 @@ class TestSessionRequiredParameters:
             phone_book=self._make_phone_book(tmp_path),
             error_queue=mock_error_queue,
         )
+        session = Session(menu=menu, now=0.0)
         assert session.menu._radio is None

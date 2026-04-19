@@ -165,21 +165,16 @@ Power-cycle the board after changing the gain wiring.
 
 ## Channel selection (SD pin)
 
+The breakout board's SD pin has a 1MΩ pull-up to Vin, which selects **stereo average** output `(L+R)/2` by default — appropriate for mono use with a stereo audio source.
+
 For reference, the SD pin voltage ranges are:
 
-1. Wire MAX98357A **SD** to **GPIO 22** (physical pin 15) instead of Vin.
-2. Set `AMP_SD_PIN=22` in `/etc/hello-operator/config.env`.
-
-hello-operator handles the rest automatically at startup.
-
-### SD pin voltage reference
-
-| SD pin voltage | Outage |
+| SD pin voltage | Output |
 |---|---|
-| < 0.16 V | Shutdown |
-| 0.16 V – 0.77 V | Stereo average (L+R)/2 |
-| 0.77 V – 1.4 V | Right channel only |
-| > 1.4 V | Left channel only |
+| < 0.16V | Amplifier shutdown |
+| 0.16V – 0.77V | Stereo average (L+R)/2 |
+| 0.77V – 1.4V | Right channel only |
+| > 1.4V | Left channel only |
 
 The SD pin is also used for instant audio cutoff — see Step 5 below.
 
