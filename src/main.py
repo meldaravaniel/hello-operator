@@ -14,7 +14,6 @@ from src.constants import (
     MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
     HOOK_SWITCH_PIN, PULSE_SWITCH_PIN, SD_AMP_PIN,
-    HOOK_DEBOUNCE,
     RADIO_CONFIG_PATH,
     ALSA_DEVICE,
     AUDIO_VOLUME,
@@ -166,7 +165,7 @@ def _gpio_cleanup() -> None:
 
 
 def build_gpio_handler() -> GPIOHandler:
-    """Construct GPIOHandler with real RPi.GPIO pin readers.
+    """Construct GPIOHandler with a real RPi.GPIO pulse-pin reader.
 
     Raises ImportError if RPi.GPIO is not installed, RuntimeError if not on a Pi.
     run() catches both and skips GPIO setup.
@@ -176,16 +175,10 @@ def build_gpio_handler() -> GPIOHandler:
     GPIO.setup(HOOK_SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(PULSE_SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    def hook_reader() -> int:
-        return GPIO.input(HOOK_SWITCH_PIN)
-
     def pulse_reader() -> int:
         return GPIO.input(PULSE_SWITCH_PIN)
 
-    return GPIOHandler(
-        hook_pin_reader=hook_reader,
-        pulse_pin_reader=pulse_reader,
-    )
+    return GPIOHandler(pulse_pin_reader=pulse_reader)
 
 def _start_hook_watcher(hook_pin: int, audio, tts, menu, gpio) -> None:
     """Spin a daemon thread that watches the hook pin at ~1 ms intervals.
@@ -198,25 +191,30 @@ def _start_hook_watcher(hook_pin: int, audio, tts, menu, gpio) -> None:
     def _watch():
         try:
             import RPi.GPIO as GPIO
-            last = GPIO.input(hook_pin)
-            session = None
-            while True:
+        except (ImportError, RuntimeError):
+            return
+        last = GPIO.input(hook_pin)
+        session = None
+        while True:
+            try:
                 val = GPIO.input(hook_pin)
                 if val != last:
                     last = val
                     if val == 1:   # HIGH = on cradle
+                        log.info("hook: handset on cradle")
                         audio.amp_off()
                         tts.abort()
                         if session is not None:
                             session.close()
                             session = None
                     else:          # LOW = lifted
+                        log.info("hook: handset lifted → starting session")
                         audio.amp_on()
                         session = Session(menu=menu, gpio=gpio)
                         session.start()
-                time.sleep(0.001)
-        except (ImportError, RuntimeError):
-            pass
+            except Exception:
+                log.exception("hook-watcher error")
+            time.sleep(0.001)
 
     t = threading.Thread(target=_watch, daemon=True, name="hook-watcher")
     t.start()

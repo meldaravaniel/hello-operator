@@ -55,17 +55,21 @@ class Session:
         self._menu.on_handset_lifted(now=now)
 
     def start(self) -> None:
-        """Start the internal GPIO digit-polling loop in a daemon thread.
+        """Start the GPIO polling thread and the session tick loop.
 
         Call this in production after construction. Tests omit this and
         drive the session directly via handle_event() and tick().
         """
-        t = threading.Thread(target=self._run, daemon=True, name="session-poll")
+        if self._gpio is not None:
+            self._gpio.start()
+        t = threading.Thread(target=self._tick_loop, daemon=True, name="session-tick")
         t.start()
 
     def close(self) -> None:
         """Stop polling and deliver the hang-up event to the menu."""
         self._stop_event.set()
+        if self._gpio is not None:
+            self._gpio.stop()
         self._menu.on_handset_on_cradle()
 
     def handle_event(
@@ -98,11 +102,19 @@ class Session:
     # Internal
     # ------------------------------------------------------------------
 
-    def _run(self) -> None:
+    def _tick_loop(self) -> None:
+        import logging
+        log = logging.getLogger(__name__)
+        log.info("session-tick thread started")
         while not self._stop_event.is_set():
-            now = time.monotonic()
-            event = self._gpio.poll(now=now)
-            if isinstance(event, tuple) and event[0] == GpioEvent.DIGIT_DIALED:
-                self._menu.on_digit(event[1], now=now)
-            self._menu.tick(now=now)
+            try:
+                now = time.monotonic()
+                if self._gpio is not None:
+                    for digit, digit_now in self._gpio.drain_digits():
+                        log.info("digit dialed: %d", digit)
+                        self._menu.on_digit(digit, now=digit_now)
+                self._menu.tick(now=now)
+            except Exception:
+                log.exception("session-tick error")
             time.sleep(0.005)
+        log.info("session-tick thread exiting")

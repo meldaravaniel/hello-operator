@@ -3,6 +3,7 @@
 All tests use injected mocks; no hardware or network required.
 """
 
+import time
 import pytest
 from src.gpio_handler import GpioEvent
 from src.interfaces import MediaItem, PlaybackState
@@ -343,3 +344,78 @@ class TestSessionRequiredParameters:
         )
         session = Session(menu=menu, now=0.0)
         assert session.menu._radio is None
+
+
+# ---------------------------------------------------------------------------
+# Session._run() error resilience (background thread)
+# ---------------------------------------------------------------------------
+
+class TestSessionRunResilience:
+    """Session._run() catches exceptions and keeps the polling loop alive."""
+
+    def _make_menu(self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+                   mock_error_queue, tmp_path):
+        from src.menu import Menu
+        from src.phone_book import PhoneBook
+        from src.radio import MockRadio
+        return Menu(
+            audio=mock_audio, tts=mock_tts,
+            media_client=mock_media_client, media_store=mock_media_store,
+            phone_book=PhoneBook(db_path=str(tmp_path / "pb.db")),
+            error_queue=mock_error_queue,
+            radio=MockRadio(),
+        )
+
+    def test_gpio_drain_exception_does_not_kill_loop(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """RuntimeError from gpio.drain_digits() is caught; loop keeps running."""
+        from src.session import Session
+
+        call_count = [0]
+
+        class FailOnceGpio:
+            def start(self): pass
+            def stop(self): pass
+            def drain_digits(self):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("transient gpio error")
+                return []
+
+        menu = self._make_menu(mock_audio, mock_tts, mock_media_client,
+                               mock_media_store, mock_error_queue, tmp_path)
+        session = Session(menu=menu, gpio=FailOnceGpio(), now=0.0)
+        session.start()
+        time.sleep(0.05)  # ~10 iterations at 5 ms each
+        assert call_count[0] > 1, "loop should have continued past the exception"
+        session.close()
+
+    def test_digit_delivered_after_prior_gpio_exception(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """After a gpio exception, subsequent drain_digits() digits still reach the menu."""
+        from src.session import Session
+        import time as _time
+
+        call_count = [0]
+
+        class FailThenDigitGpio:
+            def start(self): pass
+            def stop(self): pass
+            def drain_digits(self):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("transient error")
+                if call_count[0] == 2:
+                    return [(5, _time.monotonic())]
+                return []
+
+        menu = self._make_menu(mock_audio, mock_tts, mock_media_client,
+                               mock_media_store, mock_error_queue, tmp_path)
+        session = Session(menu=menu, gpio=FailThenDigitGpio(), now=0.0)
+        session.start()
+        time.sleep(0.05)
+        session.close()
+        # drain_digits was called at least twice → exception didn't kill the loop
+        assert call_count[0] >= 2

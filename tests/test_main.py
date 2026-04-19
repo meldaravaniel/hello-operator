@@ -32,33 +32,22 @@ def test_piper_tts_accepts_piper_model_kwarg(mock_audio, mock_error_queue, tmp_p
     assert tts is not None
 
 
-def test_gpio_handler_accepts_pin_reader_kwargs():
-    """GPIOHandler constructor must accept hook_pin_reader= and pulse_pin_reader=
-    (not hook_reader=, pulse_reader=, hook_debounce=, pulse_debounce=).
-    """
+def test_gpio_handler_accepts_pulse_pin_reader_kwarg():
+    """GPIOHandler constructor must accept pulse_pin_reader= only."""
     from src.gpio_handler import GPIOHandler
 
-    hook_reader = lambda: 1
-    pulse_reader = lambda: 1
-
-    # Should not raise TypeError
-    handler = GPIOHandler(
-        hook_pin_reader=hook_reader,
-        pulse_pin_reader=pulse_reader,
-    )
+    handler = GPIOHandler(pulse_pin_reader=lambda: 1)
     assert handler is not None
 
 
 def test_gpio_handler_rejects_old_kwargs():
-    """GPIOHandler must NOT accept the old wrong keyword argument names."""
+    """GPIOHandler must NOT accept old keyword argument names."""
     from src.gpio_handler import GPIOHandler
 
     with pytest.raises(TypeError):
         GPIOHandler(
-            hook_reader=lambda: 1,
-            pulse_reader=lambda: 1,
-            hook_debounce=0.05,
-            pulse_debounce=0.005,
+            hook_pin_reader=lambda: 1,
+            pulse_pin_reader=lambda: 1,
         )
 
 

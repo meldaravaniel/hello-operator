@@ -1,51 +1,51 @@
 """GPIO handler for hello-operator.
 
-Polls GPIO pins and emits clean events to the rest of the system.
-Handles debouncing for both the hook switch and the pulse switch.
-Decodes pulse bursts into digits using the inter-digit timeout.
+Polls the pulse pin and decodes bursts into digits.  The hook switch is
+handled entirely by the dedicated hook-watcher thread in main.py; this
+module has no knowledge of hook state.
 
-No RPi.GPIO dependency in this module — all pin reads go through injected
-callables (hook_pin_reader and pulse_pin_reader), enabling full unit testing
-without hardware.
+Production usage::
+
+    gpio = GPIOHandler(pulse_pin_reader=...)
+    gpio.start()   # 1 ms polling thread begins
+    # ... each tick:
+    for digit, now in gpio.drain_digits():
+        menu.on_digit(digit, now=now)
+    # ... on hang-up:
+    gpio.stop()
+
+Test usage (no background thread)::
+
+    gpio = GPIOHandler(pulse_pin_reader=lambda: 1)
+    event = gpio.poll(now=0.5)   # drive directly
 
 Debounce model
 --------------
-Both the hook switch and the pulse switch use the same debounce pattern:
+The pulse switch uses a duration-based edge filter:
 
-    "commit when the raw value has been continuously stable for at least
-    DEBOUNCE_WINDOW seconds since it last changed"
-
-The implementation tracks (candidate_value, candidate_start_time).  On each
-poll call:
-  1. If the raw value differs from the current candidate, update the candidate
-     and record the current time.
-  2. If the raw value matches the current candidate AND (now - candidate_start)
-     >= debounce_window, the value is considered stable.
-
-For the hook switch, a stable transition from the committed state fires an event.
-For the pulse switch, stable LOW → rising edge starts a pulse; stable HIGH after
-LOW → rising edge ends a pulse (validated by its duration).
+    A falling edge (HIGH→LOW) starts a potential pulse.  A rising edge
+    (LOW→HIGH) ends it; only counted if the LOW duration was at least
+    PULSE_DEBOUNCE seconds (filters noise/glitches).
 
 Digit decoding (rotary convention)
 -----------------------------------
-After the last pulse in a burst, if the inter-digit gap elapses with no further
-pulses, the burst is decoded:  N pulses → digit N (1–9), 10 pulses → digit 0.
+After the last pulse in a burst, if INTER_DIGIT_TIMEOUT elapses with no
+further pulses, the burst is decoded:  N pulses → digit N (1–9), 10 pulses → 0.
 """
 
+import logging
+import queue
+import threading
 import time
 from enum import Enum, auto
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
-from src.constants import (
-    HOOK_DEBOUNCE,
-    PULSE_DEBOUNCE,
-    INTER_DIGIT_TIMEOUT,
-)
+from src.constants import PULSE_DEBOUNCE, INTER_DIGIT_TIMEOUT
+
+log = logging.getLogger(__name__)
 
 
 class GpioEvent(Enum):
-    HANDSET_LIFTED = auto()
-    HANDSET_ON_CRADLE = auto()
     DIGIT_DIALED = auto()
 
 
@@ -55,104 +55,99 @@ _PULSE_TO_DIGIT[10] = 0
 
 
 class GPIOHandler:
-    """Polls GPIO and emits decoded events.
+    """Polls the pulse pin and emits decoded digit events.
 
     Parameters
     ----------
-    hook_pin_reader:
-        Callable returning current hook-switch GPIO level: 0 = lifted, 1 = on cradle.
     pulse_pin_reader:
         Callable returning current pulse-switch GPIO level: 0 = pulsing, 1 = resting.
     """
 
-    def __init__(
-        self,
-        hook_pin_reader: Callable[[], int],
-        pulse_pin_reader: Callable[[], int],
-    ) -> None:
-        self._hook_reader = hook_pin_reader
+    def __init__(self, pulse_pin_reader: Callable[[], int]) -> None:
         self._pulse_reader = pulse_pin_reader
+        self._stop_event = threading.Event()
+        self._digit_queue: queue.Queue = queue.Queue()
 
-        # Hook state machine — debounce
-        self._hook_state: int = 1              # last committed state (1 = on cradle)
-        self._hook_candidate: int = 1          # current candidate raw value
-        self._hook_candidate_time: float = 0.0 # when candidate last changed
+        self._pulse_last_raw: int = 1
+        self._pulse_last_change_time: float = 0.0
 
-        # Pulse state machine — edge detection + burst decoding
-        self._pulse_last_raw: int = 1          # most recent raw pulse reading
-        self._pulse_last_change_time: float = 0.0  # when raw last changed
-
-        # Whether we are currently inside a LOW pulse (after stable falling edge)
         self._in_pulse: bool = False
         self._pulse_start_time: float = 0.0
 
-        # Burst accumulator
         self._pulse_count: int = 0
         self._burst_active: bool = False
         self._last_pulse_end_time: float = 0.0
 
-    def poll(self, now: Optional[float] = None) -> Optional[object]:
-        """Read GPIO pins once and return an event if one is ready, else None.
+    # ------------------------------------------------------------------
+    # Production API (background thread)
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        now:
-            Fake clock value (seconds). If None, ``time.monotonic()`` is used.
-            Injected in tests to avoid real sleeps.
+    def start(self) -> None:
+        """Start a 1 ms daemon polling thread for a new session.
+
+        Resets pulse state and drains any stale digits from a prior session
+        before launching the thread.
+        """
+        self._reset_burst()
+        self._pulse_last_raw = 1
+        self._pulse_last_change_time = 0.0
+        while True:
+            try:
+                self._digit_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._stop_event.clear()
+        t = threading.Thread(target=self._poll_loop, daemon=True, name="gpio-poll")
+        t.start()
+
+    def stop(self) -> None:
+        """Signal the polling thread to exit."""
+        self._stop_event.set()
+
+    def drain_digits(self) -> List[Tuple[int, float]]:
+        """Return all decoded (digit, now) pairs queued since the last call."""
+        result = []
+        while True:
+            try:
+                result.append(self._digit_queue.get_nowait())
+            except queue.Empty:
+                break
+        return result
+
+    # ------------------------------------------------------------------
+    # Test API (direct polling, no background thread)
+    # ------------------------------------------------------------------
+
+    def poll(self, now: Optional[float] = None) -> Optional[object]:
+        """Read the pulse pin once and return an event if ready, else None.
 
         Returns
         -------
-        GpioEvent.HANDSET_LIFTED, GpioEvent.HANDSET_ON_CRADLE,
         (GpioEvent.DIGIT_DIALED, digit: int), or None.
         """
         if now is None:
             now = time.monotonic()
-
-        # --- Hook switch debounce ------------------------------------------------
-        hook_event = self._process_hook(self._hook_reader(), now)
-        if hook_event is not None:
-            return hook_event
-
-        # --- Pulse decoder (only when handset is lifted) -------------------------
-        if self._hook_state == 0:  # handset lifted
-            return self._process_pulse(self._pulse_reader(), now)
-
-        # Handset on cradle — discard any in-progress burst
-        if self._burst_active:
-            self._reset_burst()
-
-        return None
+        return self._process_pulse(self._pulse_reader(), now)
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal
     # ------------------------------------------------------------------
 
-    def _process_hook(self, raw: int, now: float) -> Optional[GpioEvent]:
-        """Debounce hook switch; emit event when a stable transition is detected."""
-        if raw != self._hook_candidate:
-            # Value changed — restart debounce timer
-            self._hook_candidate = raw
-            self._hook_candidate_time = now
-
-        elapsed = now - self._hook_candidate_time
-        if elapsed >= HOOK_DEBOUNCE - 1e-9 and raw != self._hook_state:
-            # Candidate has been stable long enough and differs from committed state
-            self._hook_state = raw
-            if raw == 0:
-                return GpioEvent.HANDSET_LIFTED
-            else:
-                return GpioEvent.HANDSET_ON_CRADLE
-        return None
+    def _poll_loop(self) -> None:
+        log.info("gpio-poll thread started")
+        while not self._stop_event.is_set():
+            try:
+                now = time.monotonic()
+                event = self.poll(now=now)
+                if isinstance(event, tuple) and event[0] == GpioEvent.DIGIT_DIALED:
+                    self._digit_queue.put((event[1], now))
+            except Exception:
+                log.exception("gpio-poll error")
+            time.sleep(0.001)
+        log.info("gpio-poll thread exiting")
 
     def _process_pulse(self, raw: int, now: float) -> Optional[object]:
-        """Detect pulse edges and decode bursts into digits.
-
-        Edge detection uses duration-based validation:
-        - A falling edge (HIGH→LOW) starts a potential pulse.
-        - A rising edge (LOW→HIGH) ends the pulse; only counted if the LOW
-          duration was at least PULSE_DEBOUNCE (filters noise glitches).
-        - After INTER_DIGIT_TIMEOUT with no new pulses, the burst is decoded.
-        """
+        """Detect pulse edges and decode bursts into digits."""
         if raw != self._pulse_last_raw:
             prev_raw = self._pulse_last_raw
             duration = now - self._pulse_last_change_time
@@ -161,14 +156,11 @@ class GPIOHandler:
             self._pulse_last_change_time = now
 
             if prev_raw == 1 and raw == 0:
-                # Falling edge: LOW started — begin potential pulse
                 self._in_pulse = True
                 self._pulse_start_time = now
 
             elif prev_raw == 0 and raw == 1:
-                # Rising edge: LOW ended
                 if self._in_pulse and duration >= PULSE_DEBOUNCE:
-                    # Valid pulse: LOW was long enough
                     self._pulse_count += 1
                     self._burst_active = True
                     self._last_pulse_end_time = now
@@ -187,7 +179,7 @@ class GPIOHandler:
                     return (GpioEvent.DIGIT_DIALED, digit)
         return None
 
-    def _reset_burst(self):
+    def _reset_burst(self) -> None:
         self._pulse_count = 0
         self._burst_active = False
         self._in_pulse = False
