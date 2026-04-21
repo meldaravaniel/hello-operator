@@ -6,7 +6,7 @@
 - A supported media player: **MPD (Music Player Daemon)** or **Mopidy** running and accessible on the network
 - Hardware wired up per the setup guides in `docs/`:
   - `docs/AMP_SETUP.md` — MAX98357 I2S amplifier
-  - `docs/BREAKBEAM_SETUP.md` — IR breakbeam pulse switch
+  - `docs/PULSE_SWITCH_SETUP.md` — pulse switch
   - `docs/HOOK_SWITCH_SETUP.md` — hook switch
 
 There are two installation paths. Both end up at the same [Configure](#step-configure) step.
@@ -211,7 +211,7 @@ sudo systemctl restart hello-operator-web
 | Symptom | Where to look |
 |---|---|
 | No audio from handset | `docs/AMP_SETUP.md` |
-| Dial pulses not detected | `docs/BREAKBEAM_SETUP.md` |
+| Dial pulses not detected | `docs/PULSE_SWITCH_SETUP.md` |
 | Handset lift not detected | `docs/HOOK_SWITCH_SETUP.md` |
 | Service fails to start | `sudo journalctl -u hello-operator -n 50` |
 | Web interface unreachable | Check `sudo systemctl status hello-operator-web`; confirm port 8080 is not blocked |

@@ -1,3 +1,4 @@
 -r requirements.txt
-RPi.GPIO
+gpiozero
+lgpio
 piper-tts

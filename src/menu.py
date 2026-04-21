@@ -6,21 +6,31 @@ interfaces.
 
 States
 ------
-IDLE_DIAL_TONE   — handset lifted, playing dial tone, waiting
-IDLE_MENU        — browsing from idle (no music playing)
-PLAYING_MENU     — browsing while music is active
+IDLE_DIAL_TONE   — handset lifted, dial tone playing, waiting for first digit
+IDLE_MENU        — operator menu from idle (no music playing)
+PLAYING_MENU     — operator menu while music is active
 BROWSE_PLAYLISTS / BROWSE_ARTISTS / BROWSE_GENRES / BROWSE_ALBUMS — T9 narrowing
 ARTIST_SUBMENU   — shuffle artist or pick album
-DIRECT_DIAL      — accumulating digits for a direct phone number
+DIRECT_DIAL      — accumulating digits for a direct phone number (7 digits)
 ASSISTANT        — diagnostic status readout
 OFF_HOOK         — terminal state; off-hook warning tone playing
 
-Reserved digits (all states except DIRECT_DIAL):
+Dialing paths from IDLE_DIAL_TONE
+----------------------------------
+  0            → operator menu (IDLE_MENU or PLAYING_MENU); subsequent digits
+                 are navigation within that menu; phone numbers never start with 0
+  1–9 (first)  → enter DIRECT_DIAL; collect remaining digits until 7 total;
+                 if 7 digits are not entered within DIAL_ENTRY_TIMEOUT seconds
+                 of the handset lift, off-hook warning fires instead
+  (no digit)   → DIAL_ENTRY_TIMEOUT seconds of silence → off-hook warning
+
+Navigation digits (in any operator-menu state, dispatched immediately):
     0 → go back one level (or stay at top)
 """
 
 import sqlite3
 import time
+import logging
 from enum import Enum, auto
 from typing import Optional, List
 
@@ -31,15 +41,16 @@ from src.interfaces import (
 from src.constants import (
     ASSISTANT_MESSAGE_PAGE_SIZE,
     DIAL_TONE_FREQUENCIES,
-    DIAL_TONE_TIMEOUT_IDLE,
-    DIAL_TONE_TIMEOUT_PLAYING,
-    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT,
+    DIAL_ENTRY_TIMEOUT,
     INACTIVITY_TIMEOUT,
     PHONE_NUMBER_LENGTH,
     MAX_MENU_OPTIONS,
     ASSISTANT_NUMBER,
     DIGIT_WORDS,
 )
+
+log = logging.getLogger("menu")
+
 
 # Script text (must match SCRIPTS.md)
 SCRIPT_OPERATOR_OPENER = "Operator."
@@ -249,13 +260,6 @@ class Menu:
         self._handset_up_time: float = 0.0
         self._last_activity_time: float = 0.0
 
-        # Playback state snapshot at handset lift (avoids polling MPD every tick)
-        self._lift_playback: Optional[PlaybackState] = None
-
-        # Disambiguation
-        self._pending_digit: Optional[int] = None
-        self._pending_digit_time: float = 0.0
-
         # Direct dial accumulator
         self._dial_digits: List[int] = []
 
@@ -271,15 +275,14 @@ class Menu:
         self._browse_listed: List[MediaItem] = []    # currently listed (≤8) options
         self._current_artist: Optional[MediaItem] = None  # selected artist
 
-        # Direct dial: state before entering DIRECT_DIAL (for re-delivery on failure)
-        self._pre_dial_state: Optional[MenuState] = None
-
         # Assistant sub-state
         self._assistant_mode: str = "menu"  # "menu" | "reading" | "refreshed"
         self._assistant_messages: List = []          # current message list being read
         self._assistant_page_offset: int = 0         # how many messages already read
         self._assistant_digit_map: dict = {}         # digit → action
-
+        
+        log.info("Menu initialized")
+        
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -300,10 +303,9 @@ class Menu:
         self._state = MenuState.IDLE_DIAL_TONE
         self._nav_stack.clear()
         self._dial_digits.clear()
-        self._pending_digit = None
         self._failure_mode = None
-        self._lift_playback = self._media_client.now_playing()
-        self._audio.play_tone(DIAL_TONE_FREQUENCIES, 2000)
+        self._audio.play_tone(DIAL_TONE_FREQUENCIES, DIAL_ENTRY_TIMEOUT * 1000)
+        log.info("playing dial tone")
 
     def on_handset_on_cradle(self) -> None:
         """Called when the handset is replaced."""
@@ -313,8 +315,6 @@ class Menu:
         self._state = MenuState.IDLE_DIAL_TONE
         self._nav_stack.clear()
         self._dial_digits.clear()
-        self._pending_digit = None
-        self._pre_dial_state = None
         self._current_artist = None
 
     def on_digit(self, digit: int, now: Optional[float] = None) -> None:
@@ -329,15 +329,27 @@ class Menu:
             self._handle_direct_dial_digit(digit, now)
             return
 
-        # Disambiguation logic
-        if self._pending_digit is None:
-            self._pending_digit = digit
-            self._pending_digit_time = now
-        else:
-            # Second digit within window → enter DIRECT_DIAL
-            first = self._pending_digit
-            self._pending_digit = None
-            self._enter_direct_dial(first, digit, now)
+        if self._state == MenuState.IDLE_DIAL_TONE:
+            self._audio.stop()
+            if digit == 0:
+                log.info("entering operator mode")
+                # Operator path: deliver the appropriate top-level menu immediately
+                playback = self._media_client.now_playing()
+                radio_active = self._radio is not None and self._radio.is_playing()
+                if playback.item is not None:
+                    self._deliver_playing_menu(playback, now)
+                elif radio_active:
+                    self._deliver_radio_playing_menu(now)
+                else:
+                    self._deliver_idle_menu(now)
+            else:
+                log.info("entering direct dial mode")
+                # Direct-dial path: first non-zero digit enters DIRECT_DIAL
+                self._enter_direct_dial(digit, now)
+            return
+
+        # In all operator-menu states, dispatch the navigation digit immediately
+        self._dispatch_navigation_digit(digit, now)
 
     def tick(self, now: Optional[float] = None) -> None:
         """Advance timeouts. Call from polling loop."""
@@ -346,54 +358,27 @@ class Menu:
         if now is None:
             now = time.monotonic()
 
-        # Check for pending disambiguation timeout
-        if self._pending_digit is not None:
-            elapsed = now - self._pending_digit_time
-            if elapsed >= DIRECT_DIAL_DISAMBIGUATION_TIMEOUT:
-                digit = self._pending_digit
-                self._pending_digit = None
-                self._dispatch_navigation_digit(digit, now)
-                return
+        # Dial-entry timeout: covers waiting-for-first-digit (IDLE_DIAL_TONE) and
+        # accumulating remaining digits (DIRECT_DIAL).  Measured from handset lift
+        # so the total window is fixed regardless of when dialing starts.
+        if self._state in (MenuState.IDLE_DIAL_TONE, MenuState.DIRECT_DIAL):
+            if now - self._handset_up_time >= DIAL_ENTRY_TIMEOUT:
+                self._go_off_hook()
+            return
 
-        # Inactivity timeout
-        if self._state not in (MenuState.OFF_HOOK, MenuState.IDLE_DIAL_TONE):
+        # Inactivity timeout for operator-menu states
+        if self._state != MenuState.OFF_HOOK:
             if now - self._last_activity_time >= INACTIVITY_TIMEOUT:
                 self._go_off_hook()
-                return
-
-        # Dial tone timeout → deliver menu
-        if self._state == MenuState.IDLE_DIAL_TONE:
-            self._check_dial_tone_timeout(now)
 
     # ------------------------------------------------------------------
     # State transitions
     # ------------------------------------------------------------------
 
-    def _check_dial_tone_timeout(self, now: float) -> None:
-        """Fire the menu prompt after the appropriate dial tone silence."""
-        elapsed = now - self._handset_up_time
-        # Use the playback state captured at handset lift to avoid polling
-        # MPD on every tick (200 Hz would open/close a TCP connection each time).
-        playback = self._lift_playback
-        radio_active = self._radio is not None and self._radio.is_playing()
-        if playback.item is not None or radio_active:
-            timeout = DIAL_TONE_TIMEOUT_PLAYING
-        else:
-            timeout = DIAL_TONE_TIMEOUT_IDLE
-
-        if elapsed >= timeout:
-            self._audio.stop()
-            if playback.item is not None:
-                self._deliver_playing_menu(playback, now)
-            elif radio_active:
-                self._deliver_radio_playing_menu(now)
-            else:
-                self._deliver_idle_menu(now)
-
     def _deliver_idle_menu(self, now: float) -> None:
         """Deliver the idle top-level menu prompt."""
         self._last_activity_time = now
-
+        log.info("nothing playing; deliver idle menu")
         # Try to load content
         try:
             has_playlists = self._media_store.playlists_has_content
@@ -411,6 +396,7 @@ class Menu:
                 has_genres = self._media_store.genres_has_content
 
         except (sqlite3.Error, OSError):
+            log.error("unable to access the media store")
             self._failure_mode = "media"
             self._state = MenuState.IDLE_MENU
             self._tts.speak_and_play(SCRIPT_MEDIA_FAILURE)
@@ -418,6 +404,7 @@ class Menu:
             return
 
         if not has_playlists and not has_artists and not has_genres:
+            log.info("no media found")
             self._state = MenuState.OFF_HOOK
             self._tts.speak_and_play(SCRIPT_NO_CONTENT)
             self._audio.play_off_hook_tone()
@@ -456,6 +443,7 @@ class Menu:
 
     def _deliver_playing_menu(self, playback: PlaybackState, now: float) -> None:
         """Deliver the playing state top-level menu prompt."""
+        log.info("music playing; deliver playing greeting")
         self._last_activity_time = now
         self._state = MenuState.PLAYING_MENU
 
@@ -484,6 +472,7 @@ class Menu:
 
     def _deliver_radio_playing_menu(self, now: float) -> None:
         """Deliver the radio playing state menu prompt."""
+        log.info("radio playing; deliver radio playing menu")
         self._state = MenuState.RADIO_PLAYING_MENU
         self._last_activity_time = now
 
@@ -522,20 +511,8 @@ class Menu:
     # ------------------------------------------------------------------
 
     def _dispatch_navigation_digit(self, digit: int, now: float) -> None:
-        """Handle a single confirmed navigation digit."""
+        """Handle a navigation digit in an operator-menu state."""
         self._last_activity_time = now
-
-        # Guard: digit dialed during IDLE_DIAL_TONE (before menu delivered).
-        # Deliver the appropriate menu first, stop the dial tone, then drop the
-        # digit — the user dialed before hearing the options and must dial again.
-        if self._state == MenuState.IDLE_DIAL_TONE:
-            self._audio.stop()
-            playback = self._media_client.now_playing()
-            if playback.item is not None:
-                self._deliver_playing_menu(playback, now)
-            else:
-                self._deliver_idle_menu(now)
-            return
 
         # RADIO_PLAYING_MENU handles its own digit routing (before global 0/9 rules)
         if self._state == MenuState.RADIO_PLAYING_MENU:
@@ -754,16 +731,12 @@ class Menu:
     # Direct dial
     # ------------------------------------------------------------------
 
-    def _enter_direct_dial(self, first: int, second: int, now: float) -> None:
-        """Enter DIRECT_DIAL mode with the first two digits."""
-        self._pre_dial_state = self._state
+    def _enter_direct_dial(self, first: int, now: float) -> None:
+        """Enter DIRECT_DIAL mode with the first digit (already non-zero)."""
         self._state = MenuState.DIRECT_DIAL
         self._dial_digits = []
-        self._audio.stop()
         self._audio.play_dtmf(first)
         self._dial_digits.append(first)
-        self._audio.play_dtmf(second)
-        self._dial_digits.append(second)
         self._last_activity_time = now
 
     def _handle_direct_dial_digit(self, digit: int, now: float) -> None:
@@ -793,17 +766,13 @@ class Menu:
 
         if entry is None:
             self._tts.speak_and_play(SCRIPT_NOT_IN_SERVICE)
-            pre = self._pre_dial_state or MenuState.IDLE_MENU
-            if pre == MenuState.IDLE_DIAL_TONE:
-                # User dialed before any menu was delivered — determine correct top-level menu
-                playback = self._media_client.now_playing()
-                if playback.item is not None:
-                    self._deliver_playing_menu(playback, now)
-                else:
-                    self._deliver_idle_menu(now)
+            # Direct dial is only reachable from IDLE_DIAL_TONE, so always
+            # deliver the appropriate top-level menu on failure.
+            playback = self._media_client.now_playing()
+            if playback.item is not None:
+                self._deliver_playing_menu(playback, now)
             else:
-                self._state = pre
-                self._re_deliver_current_state(now)
+                self._deliver_idle_menu(now)
             return
 
         if entry["media_type"] == "radio":

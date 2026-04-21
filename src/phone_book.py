@@ -43,14 +43,17 @@ class PhoneBook:
     def _generate_unique_number(self, conn: sqlite3.Connection) -> str:
         """Generate a random PHONE_NUMBER_LENGTH-digit number not already in use.
 
-        Raises RuntimeError if a unique number cannot be found within
-        PHONE_NUMBER_GENERATE_MAX_ATTEMPTS iterations.
+        Numbers never start with 0 (reserved for the operator shortcut) and never
+        equal ASSISTANT_NUMBER.  Raises RuntimeError if a unique number cannot be
+        found within PHONE_NUMBER_GENERATE_MAX_ATTEMPTS iterations.
         """
-        min_val = 10 ** (PHONE_NUMBER_LENGTH - 1)
+        min_val = 10 ** (PHONE_NUMBER_LENGTH - 1)  # e.g. 1000000 — already no leading zero
         max_val = (10 ** PHONE_NUMBER_LENGTH) - 1
         for _ in range(PHONE_NUMBER_GENERATE_MAX_ATTEMPTS):
             candidate = str(random.randint(min_val, max_val))
             if candidate == ASSISTANT_NUMBER:
+                continue
+            if candidate[0] == '0':  # defensive; min_val already prevents this
                 continue
             exists = conn.execute(
                 "SELECT 1 FROM phone_book WHERE phone_number = ?", (candidate,)
@@ -99,8 +102,14 @@ class PhoneBook:
     def seed(self, phone_number: str, media_key: str, media_type: str, name: str) -> None:
         """Insert a pre-configured entry if the phone number is not already present.
 
+        Phone numbers must not start with 0 (reserved for the operator shortcut).
         Idempotent: silently skips if phone_number or media_key already exists.
         """
+        if phone_number.startswith('0'):
+            raise ValueError(
+                f"Phone number {phone_number!r} must not start with 0 "
+                "(0 is reserved for the operator shortcut)."
+            )
         with self._connect() as conn:
             exists = conn.execute(
                 "SELECT 1 FROM phone_book WHERE phone_number = ?", (phone_number,)

@@ -151,7 +151,7 @@ Polarity of the switch contacts does not matter — it is a simple mechanical sw
 
 The breakbeam receiver (Option A) uses an open-collector output that requires a **pull-up**. The direct connection (Option B) requires a **pull-down**. These are incompatible, so one line in `src/main.py` must be changed before running hello-operator with a direct-wired switch.
 
-Find the `build_gpio_handler()` function and change the pulse pin setup from `GPIO.PUD_UP` to `GPIO.PUD_DOWN`:
+Find the `gpio_setup()` function and change the pulse pin setup from `GPIO.PUD_UP` to `GPIO.PUD_DOWN`:
 
 ```python
 # Option A (breakbeam) — default

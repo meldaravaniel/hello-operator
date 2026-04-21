@@ -18,16 +18,16 @@ from src.constants import (
     ALSA_DEVICE,
     AUDIO_VOLUME,
 )
+from gpiozero import Button, OutputDevice                                             
 from src.error_queue import SqliteErrorQueue
+from src.phone import Phone
 from src.phone_book import PhoneBook
 from src.audio import SounddeviceAudio
 from src.tts import PiperTTS
 from src.mpd_client import MPDClient
 from src.media_store import MediaStore
 from src.radio import RtlFmRadio
-from src.gpio_handler import GPIOHandler, GpioEvent
 from src.interfaces import RadioStation, MediaClientInterface
-from src.session import Session
 
 # Import all pre-renderable script strings from menu
 from src.menu import (
@@ -140,7 +140,6 @@ def load_radio_stations(path: str) -> list:
         log.warning("Failed to parse radio config at %s: %s — no stations will be seeded", path, exc)
         return []
 
-
 def build_media_client() -> MediaClientInterface:
     """Construct the configured media client (MPD or Mopidy)."""
     if MEDIA_BACKEND == "mopidy":
@@ -148,78 +147,6 @@ def build_media_client() -> MediaClientInterface:
     else:
         log.info("Media backend: MPD (%s:%d)", MPD_HOST, MPD_PORT)
     return MPDClient(host=MPD_HOST, port=MPD_PORT)
-
-
-def _gpio_cleanup() -> None:
-    """Call GPIO.cleanup() to release pin reservations on shutdown.
-
-    Imports RPi.GPIO lazily so this module can be imported on non-Pi hosts.
-    Module-level so tests can patch it; run() only calls it after
-    build_gpio_handler() has succeeded (i.e. GPIO was actually initialised).
-    """
-    try:
-        import RPi.GPIO as GPIO  # type: ignore[import]
-        GPIO.cleanup()
-    except (ImportError, RuntimeError):
-        pass  # Non-Pi environment — nothing to clean up
-
-
-def build_gpio_handler() -> GPIOHandler:
-    """Construct GPIOHandler with a real RPi.GPIO pulse-pin reader.
-
-    Raises ImportError if RPi.GPIO is not installed, RuntimeError if not on a Pi.
-    run() catches both and skips GPIO setup.
-    """
-    import RPi.GPIO as GPIO
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(HOOK_SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(PULSE_SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-    def pulse_reader() -> int:
-        return GPIO.input(PULSE_SWITCH_PIN)
-
-    return GPIOHandler(pulse_pin_reader=pulse_reader)
-
-def _start_hook_watcher(hook_pin: int, audio, tts, menu, gpio) -> None:
-    """Spin a daemon thread that watches the hook pin at ~1 ms intervals.
-
-    Drives the amp and creates/closes Session the instant the pin changes
-    state, bypassing the polling loop's debounce delay.  No-op on non-Pi hosts.
-    """
-    import threading
-
-    def _watch():
-        try:
-            import RPi.GPIO as GPIO
-        except (ImportError, RuntimeError):
-            return
-        last = GPIO.input(hook_pin)
-        session = None
-        while True:
-            try:
-                val = GPIO.input(hook_pin)
-                if val != last:
-                    last = val
-                    if val == 1:   # HIGH = on cradle
-                        log.info("hook: handset on cradle")
-                        audio.amp_off()
-                        tts.abort()
-                        if session is not None:
-                            session.close()
-                            session = None
-                    else:          # LOW = lifted
-                        log.info("hook: handset lifted → starting session")
-                        audio.amp_on()
-                        session = Session(menu=menu, gpio=gpio)
-                        session.start()
-            except Exception:
-                log.exception("hook-watcher error")
-            time.sleep(0.001)
-
-    t = threading.Thread(target=_watch, daemon=True, name="hook-watcher")
-    t.start()
-    log.info("Hook watcher thread started on BCM %d", hook_pin)
-
 
 def run() -> None:
     """Main entry point — wire all components and start the event loop."""
@@ -241,9 +168,14 @@ def run() -> None:
             media_type="radio",
             name=station.name,
         )
+    
+    # Set up the GPIO "Buttons"
+    hook_pin_button = Button(HOOK_SWITCH_PIN, pull_up=True)
+    pulse_pin_button = Button(PULSE_SWITCH_PIN, pull_up=False)
+    shutdown_pin_output = OutputDevice(SD_AMP_PIN)
 
     # Hardware interfaces
-    audio = SounddeviceAudio(device=ALSA_DEVICE, volume=AUDIO_VOLUME, sd_pin=SD_AMP_PIN)
+    audio = SounddeviceAudio(shutdown_pin_output, device=ALSA_DEVICE, volume=AUDIO_VOLUME)
     tts = PiperTTS(
         piper_binary=PIPER_BINARY,
         piper_model=PIPER_MODEL,
@@ -275,14 +207,9 @@ def run() -> None:
         error_queue=error_queue,
         radio=radio,
     )
-
-    # GPIO handler — track whether GPIO was successfully initialised so the
-    # finally block only calls _gpio_cleanup() when it is safe to do so.
-    _gpio_ready = False
-    gpio = build_gpio_handler()
-    _gpio_ready = True
-    _start_hook_watcher(HOOK_SWITCH_PIN, audio, tts, menu, gpio)
-
+    
+   phone = Phone(hook_pin_button, pulse_pin_button, tts, audio, menu)
+    phone.start()
     log.info("hello-operator ready — waiting for handset lift")
 
     try:
@@ -292,8 +219,6 @@ def run() -> None:
         log.info("Shutting down.")
     finally:
         audio.stop()
-        if _gpio_ready:
-            _gpio_cleanup()
 
 
 if __name__ == "__main__":

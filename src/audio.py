@@ -24,7 +24,7 @@ import threading
 import time
 import wave
 import numpy as np
-
+from gpiozero import OutputDevice
 from src.interfaces import AudioInterface
 
 log = logging.getLogger(__name__)
@@ -99,9 +99,14 @@ class SounddeviceAudio(AudioInterface):
 
     """
 
-    def __init__(self, sample_rate: int = _SAMPLE_RATE, device: str = "default",
-                 volume: float = 1.0, sd_pin: int = None,
-                 _popen=None, _gpio_output=None) -> None:
+    def __init__(
+        self, 
+        sd_pin_out: OutputDevice, 
+        sample_rate: int = _SAMPLE_RATE,
+        device: str = "default", 
+        volume: float = 1.0, 
+        _popen=None
+    ) -> None:
         self._sample_rate = sample_rate
         self._device = device
         self._volume = max(0.0, min(1.0, volume))
@@ -112,35 +117,8 @@ class SounddeviceAudio(AudioInterface):
         self._busy = False
 
         # SD pin: drive LOW to cut amp instantly; release to INPUT to re-enable.
-        # Both callables are None when sd_pin is not configured.
-        self._amp_off = None
-        self._amp_on = None
-        if sd_pin is not None:
-            if _gpio_output is not None:
-                self._amp_off = lambda: _gpio_output(sd_pin, False)
-                self._amp_on = lambda: _gpio_output(sd_pin, None)
-            else:
-                try:
-                    import RPi.GPIO as GPIO  # type: ignore[import]
-                    _pin = sd_pin
-                    GPIO.setmode(GPIO.BCM)
-                    GPIO.setup(_pin, GPIO.IN)
-
-                    def _amp_off(_p=_pin, _g=GPIO):
-                        log.info("SD pin %d → OUTPUT LOW (amp off)", _p)
-                        _g.setup(_p, _g.OUT)
-                        _g.output(_p, _g.LOW)
-
-                    def _amp_on(_p=_pin, _g=GPIO):
-                        log.debug("SD pin %d → INPUT (amp on)", _p)
-                        _g.setup(_p, _g.IN)
-
-                    self._amp_off = _amp_off
-                    self._amp_on = _amp_on
-                    log.info("SD amp pin configured: BCM %d", sd_pin)
-                except Exception as exc:
-                    log.warning("SD amp pin setup failed (pin %d): %s", sd_pin, exc)
-
+        self._amp = sd_pin_out
+        
         self._proc = None
 
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
@@ -180,8 +158,7 @@ class SounddeviceAudio(AudioInterface):
 
     def amp_off(self) -> None:
         """Cut the amp and terminate aplay. Call only from the hook watcher."""
-        if self._amp_off:
-            self._amp_off()
+        self._amp.off()
         self.stop()
         proc, self._proc = self._proc, None
         if proc is not None:
@@ -206,8 +183,7 @@ class SounddeviceAudio(AudioInterface):
                 self._proc.stdin.write(_warmup_silence)
             except (BrokenPipeError, OSError):
                 pass
-        if self._amp_on:
-            self._amp_on()
+       self._amp.on()
 
     def stop(self) -> None:
         """Stop current playback and clear all queued tasks.

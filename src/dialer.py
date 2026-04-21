@@ -1,4 +1,4 @@
-"""GPIO handler for hello-operator.
+"""GPIO Dialer for hello-operator.
 
 Polls the pulse pin and decodes bursts into digits.  The hook switch is
 handled entirely by the dedicated hook-watcher thread in main.py; this
@@ -37,6 +37,7 @@ import logging
 import queue
 import threading
 import time
+from gpiozero import Button
 from enum import Enum, auto
 from typing import Callable, List, Optional, Tuple
 
@@ -45,7 +46,7 @@ from src.constants import PULSE_DEBOUNCE, INTER_DIGIT_TIMEOUT
 log = logging.getLogger(__name__)
 
 
-class GpioEvent(Enum):
+class DialEvent(Enum):
     DIGIT_DIALED = auto()
 
 
@@ -54,7 +55,7 @@ _PULSE_TO_DIGIT = {i: i for i in range(1, 10)}
 _PULSE_TO_DIGIT[10] = 0
 
 
-class GPIOHandler:
+class Dialer:
     """Polls the pulse pin and emits decoded digit events.
 
     Parameters
@@ -63,7 +64,7 @@ class GPIOHandler:
         Callable returning current pulse-switch GPIO level: 0 = pulsing, 1 = resting.
     """
 
-    def __init__(self, pulse_pin_reader: Callable[[], int]) -> None:
+    def __init__(self, pulse: Button) -> None:
         self._pulse_reader = pulse_pin_reader
         self._stop_event = threading.Event()
         self._digit_queue: queue.Queue = queue.Queue()
@@ -84,19 +85,7 @@ class GPIOHandler:
 
     def start(self) -> None:
         """Start a 1 ms daemon polling thread for a new session.
-
-        Resets pulse state and drains any stale digits from a prior session
-        before launching the thread.
         """
-        self._reset_burst()
-        self._pulse_last_raw = 1
-        self._pulse_last_change_time = 0.0
-        while True:
-            try:
-                self._digit_queue.get_nowait()
-            except queue.Empty:
-                break
-        self._stop_event.clear()
         t = threading.Thread(target=self._poll_loop, daemon=True, name="gpio-poll")
         t.start()
 
@@ -123,7 +112,7 @@ class GPIOHandler:
 
         Returns
         -------
-        (GpioEvent.DIGIT_DIALED, digit: int), or None.
+        (DialEvent.DIGIT_DIALED, digit: int), or None.
         """
         if now is None:
             now = time.monotonic()
@@ -139,7 +128,7 @@ class GPIOHandler:
             try:
                 now = time.monotonic()
                 event = self.poll(now=now)
-                if isinstance(event, tuple) and event[0] == GpioEvent.DIGIT_DIALED:
+                if isinstance(event, tuple) and event[0] == DialEvent.DIGIT_DIALED:
                     self._digit_queue.put((event[1], now))
             except Exception:
                 log.exception("gpio-poll error")
@@ -149,6 +138,7 @@ class GPIOHandler:
     def _process_pulse(self, raw: int, now: float) -> Optional[object]:
         """Detect pulse edges and decode bursts into digits."""
         if raw != self._pulse_last_raw:
+            log.info("processing pulse")
             prev_raw = self._pulse_last_raw
             duration = now - self._pulse_last_change_time
 
@@ -176,10 +166,12 @@ class GPIOHandler:
                 digit = _PULSE_TO_DIGIT.get(self._pulse_count)
                 self._reset_burst()
                 if digit is not None:
-                    return (GpioEvent.DIGIT_DIALED, digit)
+                    log.info("detected digit: %d", digit)
+                    return (DialEvent.DIGIT_DIALED, digit)
         return None
 
     def _reset_burst(self) -> None:
+        log.info("resetting burst")
         self._pulse_count = 0
         self._burst_active = False
         self._in_pulse = False

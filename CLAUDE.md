@@ -121,11 +121,12 @@ main.py
 - **TTS pre-rendering** — all fixed `SCRIPT_*` strings from `SCRIPTS.md` are pre-rendered via `prerender({script_name: text})` at startup; only dynamic strings use live Piper at runtime
 - **Piper invocation** — `_run_piper(text, output_path)` uses `--output_file <path>` so Piper writes a valid RIFF/WAV file directly; never use `--output-raw` (raw PCM) as it produces files that `wave.open()` cannot read
 - **Live TTS temp files** — `_synthesize()` writes to `<cache_dir>/live/` (not system `/tmp`); `PiperTTS.__init__` wipes this directory on startup to clear session orphans; each live file is deleted immediately after `audio.play_file()` returns (safe because `SounddeviceAudio.play_file` reads the file eagerly before enqueuing); `speak()` returns a path the caller owns — it is not auto-deleted by `PiperTTS`
-- **GPIO cleanup on exit** — `run()` sets `_gpio_ready = True` after `build_gpio_handler()` succeeds and calls the module-level `_gpio_cleanup()` in the `finally` block only when `_gpio_ready` is set; `_gpio_cleanup` is a real function (not a lambda) at module scope so tests can patch `src.main._gpio_cleanup` to assert it was called
+- **GPIO cleanup on exit** — `run()` sets `_gpio_ready = True` after `gpio_setup()` succeeds and calls the module-level `_gpio_cleanup()` in the `finally` block only when `_gpio_ready` is set; `_gpio_cleanup` is a real function (not a lambda) at module scope so tests can patch `src.main._gpio_cleanup` to assert it was called
 - **Hang-up never stops media playback** — `HANDSET_ON_CRADLE` stops local audio only; music keeps playing on the backend
 - **Never hang up on the user** — the system must always be doing something while the handset is lifted; the only exit is the off-hook warning tone for unrecoverable dead-ends or inactivity timeout (`INACTIVITY_TIMEOUT = 30s`)
-- **Digit disambiguation** — first digit waits `DIRECT_DIAL_DISAMBIGUATION_TIMEOUT` for a second; single digit = navigation (`0`=top, `9`=back, `1`–`8`=option); two digits within timeout = enter `DIRECT_DIAL` mode where `0`/`9` are literal
-- **Digit before menu guard** — if a digit's disambiguation timeout fires while state is still `IDLE_DIAL_TONE`, `_dispatch_navigation_digit` stops the dial tone, delivers the appropriate menu (idle or playing), then **drops the digit**; the user must dial again after hearing the options; this prevents `SCRIPT_NOT_IN_SERVICE` from being spoken for premature digits
+- **Two dialing paths from `IDLE_DIAL_TONE`** — digit `0` immediately delivers the operator menu (idle, playing, or radio); any non-zero digit (`1`–`9`) immediately enters `DIRECT_DIAL` mode to collect a 7-digit number; no disambiguation wait; phone numbers never start with `0`
+- **`DIAL_ENTRY_TIMEOUT`** — `IDLE_DIAL_TONE` and `DIRECT_DIAL` share a single 60-second window from handset lift; if 7 digits are not completed within that window, the system enters `OFF_HOOK` mode; `INACTIVITY_TIMEOUT` (30 s) applies separately to all operator-menu states
+- **`DIRECT_DIAL` only from `IDLE_DIAL_TONE`** — once the user is inside the operator menu (browse, playing, etc.), dialing digits navigates the menu; there is no direct-dial re-entry from within a menu
 - **DTMF feedback** — `play_dtmf(digit)` called for each digit in `DIRECT_DIAL` mode
 - **No local playback state** — all pause/play state derived from `now_playing()` → `PlaybackState` at speak time; never tracked locally
 - **`SCRIPT_OPERATOR_OPENER` spoken once per session** — only on the first menu prompt after handset lift; subsequent prompts omit it
@@ -142,9 +143,9 @@ main.py
 - **Genre playback flow** — selecting a genre calls `get_tracks_for_genre(genre_media_key)` then `play_tracks(track_keys, shuffle=True)`; if the genre has no tracks, `SCRIPT_NOT_IN_SERVICE` is spoken and state returns to `BROWSE_GENRES`; `play()` is never called for genres
 - **Radio media_key encoding** — radio entries in the phone book use `media_key = "radio:{frequency_hz}"` (e.g. `"radio:90300000.0"`) and `media_type = "radio"`; seeded at startup via `phone_book.seed()` from `radio_stations.json`; `menu._execute_direct_dial()` parses the frequency from the media_key and calls `radio.play(frequency_hz)`
 - **Radio playback flow** — dialing a radio number stops any active media playback, stops any active radio stream, speaks `SCRIPT_RADIO_CONNECTING`, calls `radio.play(frequency_hz)`, and transitions to `RADIO_PLAYING_MENU`; hang-up never stops radio
-- **Radio playing menu** — `RADIO_PLAYING_MENU` state offers only disconnect (digit 3 → `radio.stop()` → `IDLE_MENU`) and new party (digit 0 → `radio.stop()` → `IDLE_MENU`); no pause, no skip; lifting the handset while radio is playing delivers `SCRIPT_RADIO_PLAYING_GREETING` then `SCRIPT_RADIO_PLAYING_MENU`
+- **Radio playing menu** — `RADIO_PLAYING_MENU` state offers only disconnect (digit 3 → `radio.stop()` → `IDLE_MENU`) and new party (digit 0 → `radio.stop()` → `IDLE_MENU`); no pause, no skip; dialing 0 from `IDLE_DIAL_TONE` while radio is active delivers `SCRIPT_RADIO_PLAYING_GREETING` then `SCRIPT_RADIO_PLAYING_MENU`
 - **Radio state is local** — unlike MPD state (never tracked locally; always queried via `now_playing()`), radio playing state is tracked via `radio.is_playing()`; there is no remote authority to query; menu checks `radio.is_playing()` when `media_client.now_playing().item is None` to decide between idle and radio playing menus
-- **Failed direct dial re-delivers prior menu** — `_pre_dial_state` is set in `_enter_direct_dial()` to the state before DIRECT_DIAL was entered; on failure (`entry is None`), if `_pre_dial_state` was `IDLE_DIAL_TONE` (user dialed before any menu was delivered), `now_playing()` is queried to pick the correct top-level menu; otherwise `_state` is restored to `_pre_dial_state` and `_re_deliver_current_state()` re-announces the menu; `_pre_dial_state` is cleared in `on_handset_on_cradle()`
+- **Failed direct dial delivers top-level menu** — on failure (`entry is None`), `now_playing()` is queried to pick the correct top-level menu (idle, playing, or radio); `SCRIPT_NOT_IN_SERVICE` is spoken first
 - **`load_radio_stations(path)`** — module-level helper in `main.py`; reads `radio_stations.json`, converts `frequency_mhz` → `frequency_hz` (multiply by 1_000_000), returns `list[RadioStation]`; returns `[]` (with warning log) on `FileNotFoundError` or JSON/key parse error; never raises
 
 ### Data stores
@@ -154,8 +155,7 @@ main.py
 ### Configuration constants (from `DESIGN.md`)
 | Constant | Value |
 |---|---|
-| `DIAL_TONE_TIMEOUT_IDLE` | 5 s |
-| `DIAL_TONE_TIMEOUT_PLAYING` | 2 s |
+| `DIAL_ENTRY_TIMEOUT` | 60 s — window from handset lift to complete a 7-digit number or dial 0 for operator; applies to `IDLE_DIAL_TONE` and `DIRECT_DIAL` |
 | `INTER_DIGIT_TIMEOUT` | 300 ms |
 | `DIAL_TONE_FREQUENCIES` | [350, 440] Hz |
 | `MAX_MENU_OPTIONS` | 8 |

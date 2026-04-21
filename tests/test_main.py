@@ -84,7 +84,7 @@ def _run_with_stubs(makedirs_mock=None):
         patch("src.main.SounddeviceAudio", MagicMock()),
         patch("src.main.PiperTTS", MagicMock()),
         patch("src.main.MediaStore", MagicMock()),
-        patch("src.main.build_gpio_handler", MagicMock()),
+        patch("src.main._gpio_setup", MagicMock(side_effect=True)),
         patch("src.main.Session", MagicMock()),
         patch("src.main.time.sleep", side_effect=KeyboardInterrupt),
     ]
@@ -132,7 +132,7 @@ def test_run_makedirs_called_before_sqlite_error_queue():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
-         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main._gpio_setup", MagicMock(side_effect=True)), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
         try:
@@ -162,7 +162,7 @@ def test_run_makedirs_exist_ok_true():
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
-         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main._gpio_setup", MagicMock(side_effect=True)), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt):
         try:
@@ -177,19 +177,14 @@ def test_run_makedirs_exist_ok_true():
 # F-18: GPIO.cleanup() called on clean shutdown
 # ---------------------------------------------------------------------------
 
-def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
+def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, gpio_setup_success=True):
     """Run main.run() with all heavy dependencies stubbed out, capturing
     GPIO.cleanup() calls via the provided mock.
 
-    If build_gpio_raises is True, build_gpio_handler() raises ImportError
+    If gpio_setup_success is False, _gpio_setup() returns False
     (simulating a missing RPi.GPIO module).
     """
     import src.main as main_mod
-
-    if build_gpio_raises:
-        build_gpio_side_effect = ImportError("No module named 'RPi'")
-    else:
-        build_gpio_side_effect = None
 
     with patch("src.main.os.makedirs", MagicMock()), \
          patch("src.main.SqliteErrorQueue", MagicMock()), \
@@ -197,30 +192,30 @@ def _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False):
          patch("src.main.SounddeviceAudio", MagicMock()), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
-         patch("src.main.build_gpio_handler",
-               MagicMock(side_effect=build_gpio_side_effect)), \
+         patch("src.main._gpio_setup",
+               MagicMock(side_effect=gpio_setup_success)), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \
          patch("src.main._gpio_cleanup", gpio_cleanup_mock):
         try:
             main_mod.run()
-        except (KeyboardInterrupt, ImportError):
+        except (KeyboardInterrupt):
             pass
 
 
 def test_gpio_cleanup_called_on_keyboard_interrupt():
     """run() must call _gpio_cleanup() in the finally block when
-    build_gpio_handler() succeeds."""
+    _gpio_setup() succeeds."""
     gpio_cleanup_mock = MagicMock()
-    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=False)
+    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, gpio_setup_success=True)
     gpio_cleanup_mock.assert_called_once()
 
 
 def test_gpio_cleanup_not_called_when_build_raises():
-    """run() must NOT call _gpio_cleanup() if build_gpio_handler() raised
+    """run() must NOT call _gpio_cleanup() if _gpio_setup() fails
     (i.e., GPIO was never initialised)."""
     gpio_cleanup_mock = MagicMock()
-    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, build_gpio_raises=True)
+    _run_with_gpio_cleanup_mock(gpio_cleanup_mock, gpio_setup_success=False)
     gpio_cleanup_mock.assert_not_called()
 
 
@@ -242,7 +237,7 @@ def test_gpio_cleanup_called_after_audio_stop():
          patch("src.main.SounddeviceAudio", audio_class_mock), \
          patch("src.main.PiperTTS", MagicMock()), \
          patch("src.main.MediaStore", MagicMock()), \
-         patch("src.main.build_gpio_handler", MagicMock()), \
+         patch("src.main._gpio_setup", MagicMock(side_effect=True)), \
          patch("src.main.Session", MagicMock()), \
          patch("src.main.time.sleep", side_effect=KeyboardInterrupt), \
          patch("src.main._gpio_cleanup", gpio_cleanup_mock):
