@@ -69,6 +69,8 @@ _DTMF_FREQ = {
 
 # Off-hook warning tone frequencies (alternating cadence — standard US ROH).
 _OFF_HOOK_FREQ = [1400, 2060, 2450, 2600]
+# Dial tone frequencies
+_DIAL_TONE_FREQ = [350, 440]
 
 def _generate_tone(frequencies: list, duration_ms: int, sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
     """Generate a normalised sine wave mix for the given frequencies (float32, mono)."""
@@ -79,6 +81,34 @@ def _generate_tone(frequencies: list, duration_ms: int, sample_rate: int = _SAMP
     if peak > 0:
         wave_data = wave_data / peak
     return wave_data.astype(np.float32)
+
+class AudioTask:
+
+    def __init__(
+        self,
+        description: str,
+        pcm: bytes,
+        loop: bool = False 
+    ) -> None:
+        self._description = description
+        self._pcm = pcm
+        self._loop = loop
+        self._done = False
+    
+    def isLoop(self) -> bool:
+        return self._loop
+
+    def getBytes(self) -> bytes:
+        return self._pcm
+
+    def describe(self) -> str:
+        return self._description
+
+    def isDone(self) -> bool:
+        return self._done
+
+    def stop(self) -> None:
+        self._done = True
 
 
 class SounddeviceAudio(AudioInterface):
@@ -112,9 +142,9 @@ class SounddeviceAudio(AudioInterface):
         self._volume = max(0.0, min(1.0, volume))
         self._popen = _popen if _popen is not None else subprocess.Popen
         self._lock = threading.Lock()
-        self._stop_event = threading.Event()
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
+        self._current_task = None
 
         # SD pin: drive LOW to cut amp instantly; release to INPUT to re-enable.
         self._amp = sd_pin_out
@@ -132,7 +162,7 @@ class SounddeviceAudio(AudioInterface):
         """Enqueue a sine wave mix task; returns immediately."""
         waveform = _generate_tone(frequencies, duration_ms, self._sample_rate)
         pcm = self._waveform_to_pcm(waveform)
-        self._enqueue(lambda: self._write_pcm(pcm))
+        self._enqueue(AudioTask("tone(s) " + str(frequencies), pcm))
 
     def play_file(self, path: str) -> None:
         """Enqueue a WAV file playback task; returns immediately.
@@ -143,18 +173,25 @@ class SounddeviceAudio(AudioInterface):
         with open(path, 'rb') as f:
             wav_bytes = f.read()
         pcm = self._wav_to_pcm(wav_bytes)
-        self._enqueue(lambda: self._write_pcm(pcm))
+        self._enqueue(AudioTask("file " + path, pcm))
 
     def play_dtmf(self, digit: int) -> None:
         """Enqueue the standard DTMF tone for digit 0–9; returns immediately."""
         freqs = list(_DTMF_FREQ[digit])
         self.play_tone(freqs, _DTMF_DURATION_MS)
 
+    def play_dial_tone(self) -> None:
+        """Enqueue a looping dial tone task; returns immediately."""
+        waveform = _generate_tone(_DIAL_TONE_FREQ, _OFF_HOOK_SEGMENT_MS, self._sample_rate)
+        pcm = self._waveform_to_pcm(waveform)
+        self._enqueue(AudioTask("dial tone", pcm, True))
+
+    
     def play_off_hook_tone(self) -> None:
         """Enqueue a looping off-hook warning tone task; returns immediately."""
         waveform = _generate_tone(_OFF_HOOK_FREQ, _OFF_HOOK_SEGMENT_MS, self._sample_rate)
         pcm = self._waveform_to_pcm(waveform)
-        self._enqueue(lambda: self._write_pcm_loop(pcm))
+        self._enqueue(AudioTask("off hook", pcm, True))
 
     def amp_off(self) -> None:
         """Cut the amp and terminate aplay. Call only from the hook watcher."""
@@ -183,7 +220,7 @@ class SounddeviceAudio(AudioInterface):
                 self._proc.stdin.write(_warmup_silence)
             except (BrokenPipeError, OSError):
                 pass
-       self._amp.on()
+        self._amp.on()
 
     def stop(self) -> None:
         """Stop current playback and clear all queued tasks.
@@ -192,12 +229,16 @@ class SounddeviceAudio(AudioInterface):
         period, ~20 ms) and drains the queue.  The aplay process is left
         running so the I2S clock stays active.
         """
-        self._stop_event.set()
+        if (self._current_task is not None):
+            self._current_task.stop()
+        
+        log.debug("stopping with " + str(self._queue.qsize()) + " tasks")
         while True:
             try:
                 self._queue.get_nowait()
                 self._queue.task_done()
             except queue.Empty:
+                log.debug("queue empty")
                 break
         with self._lock:
             self._busy = False
@@ -211,9 +252,9 @@ class SounddeviceAudio(AudioInterface):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _enqueue(self, task) -> None:
+    def _enqueue(self, task: AudioTask) -> None:
         """Put a callable task onto the work queue and clear the stop event."""
-        self._stop_event.clear()
+        log.debug("queueing " + task.describe())
         self._queue.put(task)
 
     def _worker_loop(self) -> None:
@@ -222,7 +263,7 @@ class SounddeviceAudio(AudioInterface):
         silence = np.zeros(_CHUNK_FRAMES, dtype=np.int16).tobytes()
         while True:
             try:
-                task = self._queue.get(timeout=chunk_duration)
+                self._current_task = self._queue.get(timeout=chunk_duration)
             except queue.Empty:
                 # Keep I2S clock alive between clips.
                 self._write_raw(silence)
@@ -230,9 +271,22 @@ class SounddeviceAudio(AudioInterface):
             with self._lock:
                 self._busy = True
             try:
-                task()
+                if(self._current_task.isLoop()):
+                    log.debug("Looping " + self._current_task.describe())
+                    self._write_pcm_loop(self._current_task)
+                    log.debug("done looping " + self._current_task.describe())
+                else:
+                    log.debug("Playing " + self._current_task.describe())
+                    self._write_pcm(self._current_task)
+                    log.debug("done playing " + self._current_task.describe())
+            except (BrokenPipeError, OSError):
+                pass
+            except Exception:
+                log.exception("audio worker: task error")
             finally:
+                log.debug("task finished")
                 self._queue.task_done()
+                self._current_task = None
                 with self._lock:
                     self._busy = False
 
@@ -246,23 +300,32 @@ class SounddeviceAudio(AudioInterface):
         except (BrokenPipeError, OSError):
             pass
 
-    def _write_pcm(self, pcm: bytes) -> None:
+    def _write_pcm(self, task: AudioTask) -> None:
         """Write PCM in chunks, returning early if stop() is called."""
         chunk_bytes = _CHUNK_FRAMES * 2  # int16 = 2 bytes per sample
         offset = 0
+        pcm = task.getBytes()
         while offset < len(pcm):
-            if self._stop_event.is_set():
+            if task.isDone():
                 return
-            self._write_raw(pcm[offset:offset + chunk_bytes])
+            try:
+                # log.info("audio: writing pcm bytes " + str(pcm[offset:offset + chunk_bytes]))
+                self._write_raw(pcm[offset:offset + chunk_bytes])
+            except (BrokenPipeError, OSError):
+                return
             offset += chunk_bytes
 
-    def _write_pcm_loop(self, pcm: bytes) -> None:
+    def _write_pcm_loop(self, task: AudioTask) -> None:
         """Write PCM in a loop until stop() is called (used for off-hook tone)."""
         chunk_bytes = _CHUNK_FRAMES * 2
         offset = 0
-        while not self._stop_event.is_set():
+        pcm = task.getBytes()
+        while not task.isDone():
             end = offset + chunk_bytes
-            self._write_raw(pcm[offset:min(end, len(pcm))])
+            try:
+                self._write_raw(pcm[offset:min(end, len(pcm))])
+            except (BrokenPipeError, OSError):
+                return
             offset = end
             if offset >= len(pcm):
                 offset = 0

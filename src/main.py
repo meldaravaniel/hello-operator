@@ -13,12 +13,12 @@ from src.constants import (
     MEDIA_BACKEND,
     MPD_HOST, MPD_PORT,
     PIPER_BINARY, PIPER_MODEL, TTS_CACHE_DIR,
-    HOOK_SWITCH_PIN, PULSE_SWITCH_PIN, SD_AMP_PIN,
+    HOOK_SWITCH_PIN, PULSE_SWITCH_PIN, ROTARY_SWITCH_PIN, SD_AMP_PIN,
     RADIO_CONFIG_PATH,
     ALSA_DEVICE,
     AUDIO_VOLUME,
 )
-from gpiozero import Button, OutputDevice                                             
+from gpiozero import Button, OutputDevice, DigitalInputDevice                                             
 from src.error_queue import SqliteErrorQueue
 from src.phone import Phone
 from src.phone_book import PhoneBook
@@ -170,8 +170,9 @@ def run() -> None:
         )
     
     # Set up the GPIO "Buttons"
-    hook_pin_button = Button(HOOK_SWITCH_PIN, pull_up=True)
-    pulse_pin_button = Button(PULSE_SWITCH_PIN, pull_up=False)
+    hook_pin_button = DigitalInputDevice(HOOK_SWITCH_PIN, pull_up=True)
+    pulse_pin_button = Button(PULSE_SWITCH_PIN, pull_up=True, bounce_time=0.005)
+    rotary_pin_button = DigitalInputDevice(ROTARY_SWITCH_PIN, pull_up=True, bounce_time=0.1)
     shutdown_pin_output = OutputDevice(SD_AMP_PIN)
 
     # Hardware interfaces
@@ -208,7 +209,7 @@ def run() -> None:
         radio=radio,
     )
     
-   phone = Phone(hook_pin_button, pulse_pin_button, tts, audio, menu)
+    phone = Phone(hook_pin_button, pulse_pin_button, rotary_pin_button, tts, audio, menu)
     phone.start()
     log.info("hello-operator ready — waiting for handset lift")
 
@@ -217,7 +218,10 @@ def run() -> None:
             time.sleep(1)
     except KeyboardInterrupt:
         log.info("Shutting down.")
+    except Exception:
+        log.info("Fail!")
     finally:
+        phone.stop()
         audio.stop()
 
 

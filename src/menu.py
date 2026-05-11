@@ -304,25 +304,25 @@ class Menu:
         self._nav_stack.clear()
         self._dial_digits.clear()
         self._failure_mode = None
-        self._audio.play_tone(DIAL_TONE_FREQUENCIES, DIAL_ENTRY_TIMEOUT * 1000)
-        log.info("playing dial tone")
+        self._audio.play_dial_tone()
+        log.debug("playing dial tone")
 
     def on_handset_on_cradle(self) -> None:
         """Called when the handset is replaced."""
         self._handset_up = False
-        self._audio.stop()
         self._tts.abort()
         self._state = MenuState.IDLE_DIAL_TONE
         self._nav_stack.clear()
         self._dial_digits.clear()
         self._current_artist = None
 
-    def on_digit(self, digit: int, now: Optional[float] = None) -> None:
+    def on_digit(self, digit: int) -> None:
         """Called when a digit is decoded."""
+        log.info("digit received " + str(digit))
+        log.debug("state is " + str(self._state))
         if not self._handset_up:
             return
-        if now is None:
-            now = time.monotonic()
+        now = time.monotonic()
         self._last_activity_time = now
 
         if self._state == MenuState.DIRECT_DIAL:
@@ -330,9 +330,11 @@ class Menu:
             return
 
         if self._state == MenuState.IDLE_DIAL_TONE:
+            log.debug("stopping dial tone")
             self._audio.stop()
             if digit == 0:
-                log.info("entering operator mode")
+                self._audio.play_dtmf(digit)
+                log.debug("entering operator mode")
                 # Operator path: deliver the appropriate top-level menu immediately
                 playback = self._media_client.now_playing()
                 radio_active = self._radio is not None and self._radio.is_playing()
@@ -343,7 +345,7 @@ class Menu:
                 else:
                     self._deliver_idle_menu(now)
             else:
-                log.info("entering direct dial mode")
+                log.debug("entering direct dial mode")
                 # Direct-dial path: first non-zero digit enters DIRECT_DIAL
                 self._enter_direct_dial(digit, now)
             return
@@ -378,7 +380,7 @@ class Menu:
     def _deliver_idle_menu(self, now: float) -> None:
         """Deliver the idle top-level menu prompt."""
         self._last_activity_time = now
-        log.info("nothing playing; deliver idle menu")
+        log.debug("nothing playing; deliver idle menu")
         # Try to load content
         try:
             has_playlists = self._media_store.playlists_has_content
@@ -404,7 +406,7 @@ class Menu:
             return
 
         if not has_playlists and not has_artists and not has_genres:
-            log.info("no media found")
+            log.debug("no media found")
             self._state = MenuState.OFF_HOOK
             self._tts.speak_and_play(SCRIPT_NO_CONTENT)
             self._audio.play_off_hook_tone()
@@ -443,7 +445,7 @@ class Menu:
 
     def _deliver_playing_menu(self, playback: PlaybackState, now: float) -> None:
         """Deliver the playing state top-level menu prompt."""
-        log.info("music playing; deliver playing greeting")
+        log.debug("music playing; deliver playing greeting")
         self._last_activity_time = now
         self._state = MenuState.PLAYING_MENU
 
@@ -472,7 +474,7 @@ class Menu:
 
     def _deliver_radio_playing_menu(self, now: float) -> None:
         """Deliver the radio playing state menu prompt."""
-        log.info("radio playing; deliver radio playing menu")
+        log.debug("radio playing; deliver radio playing menu")
         self._state = MenuState.RADIO_PLAYING_MENU
         self._last_activity_time = now
 
@@ -743,6 +745,7 @@ class Menu:
         """Accumulate a direct dial digit."""
         if len(self._dial_digits) >= PHONE_NUMBER_LENGTH:
             return  # ignore extra digits
+        self._audio.stop()
         self._audio.play_dtmf(digit)
         self._dial_digits.append(digit)
         self._last_activity_time = now
@@ -752,7 +755,7 @@ class Menu:
     def _execute_direct_dial(self, now: float) -> None:
         """Look up and play the phone number."""
         number = "".join(str(d) for d in self._dial_digits)
-
+        log.info("dialing " + number)
         # Route to diagnostic assistant
         if number == ASSISTANT_NUMBER:
             self._enter_assistant(now)
@@ -1016,5 +1019,7 @@ class Menu:
 
     def _go_off_hook(self) -> None:
         """Enter the off-hook warning state."""
+        log.debug("changing to off hook")
         self._state = MenuState.OFF_HOOK
+        self._audio.stop()
         self._audio.play_off_hook_tone()

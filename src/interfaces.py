@@ -54,6 +54,10 @@ class AudioInterface(ABC):
         """Play off-hook warning tone continuously until stop()."""
 
     @abstractmethod
+    def play_dial_tone(self) -> None:
+        """Play dial tone continuously until stop()."""
+
+    @abstractmethod
     def stop(self) -> None:
         """Stop any current playback immediately."""
 

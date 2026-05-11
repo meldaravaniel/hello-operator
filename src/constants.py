@@ -87,6 +87,7 @@ TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 # GPIO pin assignments (BCM numbering) — optional; defaults match recommended wiring docs
 HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
 PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
+ROTARY_SWITCH_PIN = int(os.environ.get("ROTARY_SWITCH_PIN", "26"))
 _sd_amp_pin_env = os.environ.get("SD_AMP_PIN")
 SD_AMP_PIN: int | None = int(_sd_amp_pin_env) if _sd_amp_pin_env is not None else None
 
