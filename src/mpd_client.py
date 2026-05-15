@@ -15,6 +15,8 @@ socket protocol. See https://mpd.readthedocs.io/en/latest/protocol.html
 
 from contextlib import contextmanager
 from typing import Optional
+import logging
+import json
 
 import mpd  # python-mpd2
 
@@ -26,6 +28,7 @@ _ALBUM_PREFIX = "album:"
 _GENRE_PREFIX = "genre:"
 _TRACK_PREFIX = "track:"
 
+log = logging.getLogger("mpd")
 
 def _strip(prefix: str, value: str) -> str:
     return value[len(prefix):] if value.startswith(prefix) else value
@@ -37,6 +40,7 @@ class MPDClient(MediaClientInterface):
     def __init__(self, host: str = "localhost", port: int = 6600) -> None:
         self._host = host
         self._port = port
+        self._client = mpd.MPDClient()
 
     @contextmanager
     def _connection(self):
@@ -69,13 +73,16 @@ class MPDClient(MediaClientInterface):
         ]
 
     def get_artists(self) -> list:
+        log.info("getting artists")
         with self._connection() as c:
-            names = c.list("albumartist")
-        return [
-            MediaItem(media_key=f"{_ARTIST_PREFIX}{name}", name=name, media_type="artist")
-            for name in names
-            if name
-        ]
+            artists = c.list("albumartist")
+            log.info("artists: " + str(artists))
+        result = []
+        for artist in artists:
+            name = artist['albumartist']
+            if name:
+                result.append(MediaItem(media_key=f"{_ARTIST_PREFIX}{name}", name=name, media_type="artist"))
+        return result
 
     def get_genres(self) -> list:
         with self._connection() as c:
@@ -137,8 +144,10 @@ class MPDClient(MediaClientInterface):
             c.stop()
 
     def now_playing(self) -> PlaybackState:
+        log.info("checking what's playing")
         with self._connection() as c:
             status = c.status()
+            log.info("status is " + str(status))
             state = status.get("state", "stop")
             if state == "stop":
                 return PlaybackState(item=None, is_paused=False)

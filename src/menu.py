@@ -148,6 +148,7 @@ _ARTICLES = ("the ", "a ", "an ")
 
 def _strip_article(name: str) -> str:
     """Strip leading articles for T9 indexing (case-insensitive)."""
+    log.info("stripping articles from: " + str(name))
     lower = name.lower()
     for article in _ARTICLES:
         if lower.startswith(article):
@@ -175,6 +176,9 @@ def _filter_by_t9_prefix(items: List[MediaItem], prefix: List[int]) -> List[Medi
         return list(items)
     result = []
     for item in items:
+        log.info("processing item: " + str(item))
+        if not item.name or item.name == "":
+            continue
         stripped = _strip_article(item.name)
         if not stripped:
             continue
@@ -330,8 +334,6 @@ class Menu:
             return
 
         if self._state == MenuState.IDLE_DIAL_TONE:
-            log.debug("stopping dial tone")
-            self._audio.stop()
             if digit == 0:
                 self._audio.play_dtmf(digit)
                 log.debug("entering operator mode")
@@ -391,6 +393,7 @@ class Menu:
                 self._media_store.get_playlists()
                 has_playlists = self._media_store.playlists_has_content
             if not has_artists:
+                log.info("getting artists")
                 self._media_store.get_artists()
                 has_artists = self._media_store.artists_has_content
             if not has_genres:
@@ -604,6 +607,7 @@ class Menu:
                                SCRIPT_BROWSE_PROMPT_PLAYLIST, now)
         elif next_state == MenuState.BROWSE_ARTISTS:
             items = self._media_store.get_artists()
+            log.info("browing artists: " + str(items))
             self._start_browse(items, MenuState.BROWSE_ARTISTS,
                                SCRIPT_BROWSE_PROMPT_ARTIST, now)
         elif next_state == MenuState.BROWSE_GENRES:
@@ -650,6 +654,7 @@ class Menu:
             return
 
         # T9 narrowing mode
+        log.info("narrowing for " + str(digit))
         self._browse_prefix.append(digit)
         filtered = _filter_by_t9_prefix(self._browse_items, self._browse_prefix)
 
@@ -745,7 +750,6 @@ class Menu:
         """Accumulate a direct dial digit."""
         if len(self._dial_digits) >= PHONE_NUMBER_LENGTH:
             return  # ignore extra digits
-        self._audio.stop()
         self._audio.play_dtmf(digit)
         self._dial_digits.append(digit)
         self._last_activity_time = now
@@ -1021,5 +1025,4 @@ class Menu:
         """Enter the off-hook warning state."""
         log.debug("changing to off hook")
         self._state = MenuState.OFF_HOOK
-        self._audio.stop()
         self._audio.play_off_hook_tone()

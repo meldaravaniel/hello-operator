@@ -14,9 +14,11 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+import logging
 
 from src.interfaces import MediaItem, MediaClientInterface, ErrorQueueInterface
 
+log = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -123,6 +125,7 @@ class MediaStore:
         self._media_client = media_client
         self._error_queue = error_queue
         self._init_db()
+        self._start_fresh()
 
     # ------------------------------------------------------------------
     # Schema
@@ -143,6 +146,12 @@ class MediaStore:
                 )
             """)
 
+    def _start_fresh(self) -> None:
+        with self._connect() as conn:
+            conn.execute("""
+                DELETE FROM media_cache
+            """)
+
     # ------------------------------------------------------------------
     # Private DB helpers
     # ------------------------------------------------------------------
@@ -155,6 +164,7 @@ class MediaStore:
         if row is None:
             return None
         data = json.loads(row["data"])
+        log.info("all the raw data: " + str(data))
         return [
             MediaItem(media_key=d["media_key"], name=d["name"], media_type=d["media_type"])
             for d in data
@@ -231,11 +241,13 @@ class MediaStore:
     def _get_or_fetch(self, cache_key: str, fetch_fn) -> List[MediaItem]:
         """Return local data if available; otherwise fetch, store, and return."""
         cached = self._read(cache_key)
-        if cached is not None:
-            return cached
-        items = fetch_fn()
-        self._write(cache_key, items)
-        return items
+        log.info("cached: " + str(cached))
+        if cached is None or len(cached) == 0:
+            items = fetch_fn()
+            self._write(cache_key, items)
+            return items
+        return cached
+        
 
     # ------------------------------------------------------------------
     # Item removal (on playback not-found)
