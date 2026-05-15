@@ -382,6 +382,10 @@ class MockAudio(AudioInterface):
         self.calls.append(('play_off_hook_tone',))
         self._playing = True
 
+    def play_dial_tone(self) -> None:
+        self.calls.append(('play_dial_tone',))
+        self._playing = True
+
     def stop(self) -> None:
         self.calls.append(('stop',))
         self._playing = False
