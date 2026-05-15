@@ -3,13 +3,13 @@
 All tests use injected mocks; no hardware or network required.
 """
 
+import time
 import pytest
 from src.gpio_handler import GpioEvent
 from src.interfaces import MediaItem, PlaybackState
 from src.menu import MenuState
 from src.constants import (
-    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, PHONE_NUMBER_LENGTH,
-    DIAL_TONE_TIMEOUT_IDLE, DIAL_TONE_TIMEOUT_PLAYING,
+    DIAL_ENTRY_TIMEOUT, PHONE_NUMBER_LENGTH,
 )
 
 
@@ -61,29 +61,38 @@ class TestSessionHandset:
                                mock_error_queue, tmp_path)
         assert any(c[0] == 'play_tone' for c in mock_audio.calls)
 
-    def test_dial_tone_timeout_idle(
+    def test_digit_0_from_idle_dial_tone_delivers_idle_menu(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """No digit within idle timeout → dial tone stops, idle menu prompt begins."""
+        """Digit 0 from IDLE_DIAL_TONE (no music) → idle menu delivered."""
         from src.menu import SCRIPT_GREETING
         mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
+        session.handle_event((GpioEvent.DIGIT_DIALED, 0), now=0.5)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_GREETING in t for t in texts)
 
-    def test_dial_tone_timeout_playing(
+    def test_digit_0_from_idle_dial_tone_while_playing_delivers_playing_menu(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """No digit within playing timeout → playing menu prompt begins."""
+        """Digit 0 from IDLE_DIAL_TONE while music playing → playing menu delivered."""
         from src.menu import SCRIPT_PLAYING_MENU_DEFAULT
         mock_media_client.set_now_playing(PlaybackState(MediaItem("/pl/1", "Jazz", "playlist"), False))
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_PLAYING + 1.0)
+        session.handle_event((GpioEvent.DIGIT_DIALED, 0), now=0.5)
         texts = tts_calls(mock_tts)
         assert any("Jazz" in t for t in texts) or any(SCRIPT_PLAYING_MENU_DEFAULT in t for t in texts)
+
+    def test_dial_entry_timeout_triggers_off_hook(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """No digit within DIAL_ENTRY_TIMEOUT → off-hook warning tone."""
+        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                               mock_error_queue, tmp_path)
+        session.tick(now=DIAL_ENTRY_TIMEOUT + 1.0)
+        from src.menu import MenuState
+        assert session.menu.state == MenuState.OFF_HOOK
 
     def test_handset_on_cradle_stops_audio(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -122,31 +131,13 @@ class TestSessionDirectDial:
 
     def test_direct_dial_during_dial_tone(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Two digits within disambiguation timeout during dial tone → DTMF tones played."""
+        """Non-zero digit from IDLE_DIAL_TONE enters DIRECT_DIAL → DTMF tones played."""
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=0.5)
         session.handle_event((GpioEvent.DIGIT_DIALED, 5), now=0.6)
         dtmf_calls = [c for c in mock_audio.calls if c[0] == 'play_dtmf']
         assert len(dtmf_calls) >= 2
-
-    def test_single_digit_during_dial_tone_treated_as_navigation(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """One digit during dial tone, no second → treated as menu input."""
-        from src.menu import SCRIPT_GREETING
-        mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
-        mock_media_store.set_artists([])
-        mock_media_store.set_genres([])
-        session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
-                               mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)  # deliver idle menu
-        mock_tts.calls.clear()
-        session.handle_event((GpioEvent.DIGIT_DIALED, 1), now=10.0)
-        # Wait for disambiguation timeout
-        session.tick(now=10.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        texts = tts_calls(mock_tts)
-        # Digit 1 in idle menu → browse playlists
-        assert len(texts) > 0
 
     def test_direct_dial_known_number(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -160,16 +151,12 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_media_client.calls.clear()
-        # Dial the number
-        t = 10.0
-        digits = [int(c) for c in number]
-        session.handle_event((GpioEvent.DIGIT_DIALED, digits[0]), now=t)
-        session.handle_event((GpioEvent.DIGIT_DIALED, digits[1]), now=t + 0.05)
-        for d in digits[2:]:
-            t += 0.1
+        # Dial from IDLE_DIAL_TONE (first non-zero digit enters DIRECT_DIAL)
+        t = 1.0
+        for d in [int(c) for c in number]:
             session.handle_event((GpioEvent.DIGIT_DIALED, d), now=t)
+            t += 0.1
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert len(play_calls) >= 1
 
@@ -182,17 +169,12 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_tts.calls.clear()
-        # Dial unknown number: 1234567
-        number = "1234567"
-        t = 10.0
-        digits = [int(c) for c in number]
-        session.handle_event((GpioEvent.DIGIT_DIALED, digits[0]), now=t)
-        session.handle_event((GpioEvent.DIGIT_DIALED, digits[1]), now=t + 0.05)
-        for d in digits[2:]:
-            t += 0.1
+        # Dial from IDLE_DIAL_TONE (first non-zero digit enters DIRECT_DIAL)
+        t = 1.0
+        for d in [1, 2, 3, 4, 5, 6, 7]:
             session.handle_event((GpioEvent.DIGIT_DIALED, d), now=t)
+            t += 0.1
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in txt for txt in texts)
 
@@ -204,20 +186,19 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
-        # Dial 8 digits: 12345678
-        t = 10.0
-        session.handle_event((GpioEvent.DIGIT_DIALED, 1), now=t)
-        session.handle_event((GpioEvent.DIGIT_DIALED, 2), now=t + 0.05)
-        for d in [3, 4, 5, 6, 7, 8]:  # 8th digit
-            t += 0.1
+        # Dial 7 digits from IDLE_DIAL_TONE (unknown number → not-in-service), then 1 more
+        # 8th digit should not trigger a second phone book lookup
+        t = 1.0
+        for d in [1, 2, 3, 4, 5, 6, 7]:
             session.handle_event((GpioEvent.DIGIT_DIALED, d), now=t)
-        # lookup should only fire once (7 digits)
-        not_in_service_count = sum(
-            1 for txt in tts_calls(mock_tts)
-            if "not in service" in txt.lower()
-        )
-        assert not_in_service_count <= 1
+            t += 0.1
+        mock_tts.calls.clear()
+        # 8th digit: navigate IDLE_MENU option 1 (browse playlists — valid, no "not in service")
+        session.handle_event((GpioEvent.DIGIT_DIALED, 1), now=t)
+        # no additional "not in service" from an 8th phone book lookup
+        texts = tts_calls(mock_tts)
+        assert not any("not in service" in txt.lower() for txt in texts), \
+            f"8th digit should not trigger a second lookup; got: {texts}"
 
     def test_direct_dial_hangup_before_7_digits(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -227,14 +208,13 @@ class TestSessionDirectDial:
         mock_media_store.set_genres([])
         session = make_session(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                mock_error_queue, tmp_path)
-        session.tick(now=DIAL_TONE_TIMEOUT_IDLE + 1.0)
         mock_media_client.calls.clear()
         mock_tts.calls.clear()
-        # Start dialing 3 digits
-        t = 10.0
-        session.handle_event((GpioEvent.DIGIT_DIALED, 1), now=t)
-        session.handle_event((GpioEvent.DIGIT_DIALED, 2), now=t + 0.05)
-        session.handle_event((GpioEvent.DIGIT_DIALED, 3), now=t + 0.1)
+        # Dial 3 digits from IDLE_DIAL_TONE, then hang up
+        t = 1.0
+        for d in [1, 2, 3]:
+            session.handle_event((GpioEvent.DIGIT_DIALED, d), now=t)
+            t += 0.1
         # Hang up before completing
         session.close()
         # No lookup or not-in-service
@@ -343,3 +323,78 @@ class TestSessionRequiredParameters:
         )
         session = Session(menu=menu, now=0.0)
         assert session.menu._radio is None
+
+
+# ---------------------------------------------------------------------------
+# Session._run() error resilience (background thread)
+# ---------------------------------------------------------------------------
+
+class TestSessionRunResilience:
+    """Session._run() catches exceptions and keeps the polling loop alive."""
+
+    def _make_menu(self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+                   mock_error_queue, tmp_path):
+        from src.menu import Menu
+        from src.phone_book import PhoneBook
+        from src.radio import MockRadio
+        return Menu(
+            audio=mock_audio, tts=mock_tts,
+            media_client=mock_media_client, media_store=mock_media_store,
+            phone_book=PhoneBook(db_path=str(tmp_path / "pb.db")),
+            error_queue=mock_error_queue,
+            radio=MockRadio(),
+        )
+
+    def test_gpio_drain_exception_does_not_kill_loop(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """RuntimeError from gpio.drain_digits() is caught; loop keeps running."""
+        from src.session import Session
+
+        call_count = [0]
+
+        class FailOnceGpio:
+            def start(self): pass
+            def stop(self): pass
+            def drain_digits(self):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("transient gpio error")
+                return []
+
+        menu = self._make_menu(mock_audio, mock_tts, mock_media_client,
+                               mock_media_store, mock_error_queue, tmp_path)
+        session = Session(menu=menu, gpio=FailOnceGpio(), now=0.0)
+        session.start()
+        time.sleep(0.05)  # ~10 iterations at 5 ms each
+        assert call_count[0] > 1, "loop should have continued past the exception"
+        session.close()
+
+    def test_digit_delivered_after_prior_gpio_exception(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """After a gpio exception, subsequent drain_digits() digits still reach the menu."""
+        from src.session import Session
+        import time as _time
+
+        call_count = [0]
+
+        class FailThenDigitGpio:
+            def start(self): pass
+            def stop(self): pass
+            def drain_digits(self):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("transient error")
+                if call_count[0] == 2:
+                    return [(5, _time.monotonic())]
+                return []
+
+        menu = self._make_menu(mock_audio, mock_tts, mock_media_client,
+                               mock_media_store, mock_error_queue, tmp_path)
+        session = Session(menu=menu, gpio=FailThenDigitGpio(), now=0.0)
+        session.start()
+        time.sleep(0.05)
+        session.close()
+        # drain_digits was called at least twice → exception didn't kill the loop
+        assert call_count[0] >= 2

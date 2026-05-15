@@ -39,7 +39,7 @@ DOC_PAGES = [
     ("Overview",         "README.md"),
     ("Installation",     "INSTALL.md"),
     ("Amplifier",        "docs/AMP_SETUP.md"),
-    ("Breakbeam Switch", "docs/BREAKBEAM_SETUP.md"),
+    ("Pulse Switch",     "docs/PULSE_SWITCH_SETUP.md"),
     ("Hook Switch",      "docs/HOOK_SWITCH_SETUP.md"),
     ("Piper TTS",        "docs/PIPER_SETUP.md"),
 ]

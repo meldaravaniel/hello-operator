@@ -2,7 +2,7 @@
 # install.sh — deploy hello-operator on a Raspberry Pi
 #
 # Run from the project directory:
-#   sudo ./install.sh
+#   sudo bash install.sh
 #
 # Requires: Raspberry Pi OS (64-bit), internet access for apt and Piper download.
 
@@ -47,17 +47,19 @@ echo ""
 # System packages
 # ---------------------------------------------------------------------------
 
-# echo "==> Installing system packages..."
-# apt-get update -qq
-# apt-get install -y \
-#     python3 \
-#     python3-venv \
-#     python3-pip \
-#     alsa-utils \
-#     rtl-sdr \
-#     mpd \
-#     mpc \
-#     mopidy
+echo "==> Installing system packages..."
+apt-get update -qq
+apt-get install -y \
+    python3 \
+    python3-venv \
+    python3-pip \
+    swig \
+    build-essential \
+    alsa-utils \
+    rtl-sdr \
+    mpd \
+    mpc \
+    mopidy
 
 # ---------------------------------------------------------------------------
 # Config directory and files
@@ -111,10 +113,11 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Creating Python virtual environment..."
-sudo -u "$INSTALL_USER" python3 -m venv "$INSTALL_DIR/venv"
+sudo -u "$INSTALL_USER" python3 -m venv --system-site-packages "$INSTALL_DIR/venv"
 
 echo "==> Installing Python dependencies..."
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
+sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-dev.txt"
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-pi.txt"
 sudo -u "$INSTALL_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements-web.txt"
 

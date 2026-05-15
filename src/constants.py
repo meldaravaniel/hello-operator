@@ -39,11 +39,10 @@ MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
 # Timing constants (in seconds unless noted)
 # ---------------------------------------------------------------------------
 
-DIAL_TONE_TIMEOUT_IDLE = 3       # Silence before idle operator prompt
-DIAL_TONE_TIMEOUT_PLAYING = 2    # Silence before playing-state prompt
 INTER_DIGIT_TIMEOUT = 0.3        # Gap after last pulse → digit complete (300 ms)
-DIRECT_DIAL_DISAMBIGUATION_TIMEOUT = 1.5  # TODO: tune on hardware — wait after first digit before treating as single nav input
-INACTIVITY_TIMEOUT = 30          # Inactivity in any menu state → off-hook warning tone
+DIAL_ENTRY_TIMEOUT = 60          # Seconds to dial 0 (operator) or a 7-digit number from IDLE_DIAL_TONE;
+                                 # entering DIRECT_DIAL restarts this window; timeout → off-hook tone
+INACTIVITY_TIMEOUT = 30          # Inactivity in any operator-menu state → off-hook warning tone
 
 # Audio constants
 DIAL_TONE_FREQUENCIES = [350, 440]  # Standard PSTN dial tone (Hz)
@@ -66,6 +65,10 @@ if not _assistant_number.isdigit() or len(_assistant_number) != PHONE_NUMBER_LEN
     raise RuntimeError(
         f"ASSISTANT_NUMBER must be exactly {PHONE_NUMBER_LENGTH} digits (got {_assistant_number!r})."
     )
+if _assistant_number[0] == '0':
+    raise RuntimeError(
+        "ASSISTANT_NUMBER must not start with 0 (0 is reserved for the operator shortcut)."
+    )
 ASSISTANT_NUMBER: str = _assistant_number
 
 # GPIO debounce windows (in seconds)
@@ -84,6 +87,7 @@ TTS_CACHE_DIR = os.environ.get("TTS_CACHE_DIR", "/var/cache/hello-operator/tts")
 # GPIO pin assignments (BCM numbering) — optional; defaults match recommended wiring docs
 HOOK_SWITCH_PIN = int(os.environ.get("HOOK_SWITCH_PIN", "17"))
 PULSE_SWITCH_PIN = int(os.environ.get("PULSE_SWITCH_PIN", "27"))
+ROTARY_SWITCH_PIN = int(os.environ.get("ROTARY_SWITCH_PIN", "26"))
 _sd_amp_pin_env = os.environ.get("SD_AMP_PIN")
 SD_AMP_PIN: int | None = int(_sd_amp_pin_env) if _sd_amp_pin_env is not None else None
 

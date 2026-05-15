@@ -28,13 +28,13 @@ All menus are spoken aloud. There are no screens.
 | Vintage rotary phone | Handset, speaker, dial |
 | Adafruit MAX98357A I2S amplifier | Drives the handset speaker |
 | Hook switch → GPIO | Detects handset up/down |
-| Rotary dial → IR breakbeam → GPIO | Decodes dialed digits |
+| Rotary dial → GPIO | Decodes dialed digits |
 | RTL-SDR USB dongle (optional) | FM radio via `rtl_fm` |
 
 Setup guides for each hardware component are in `docs/`:
 
 - [`docs/AMP_SETUP.md`](docs/AMP_SETUP.md) — MAX98357A I2S amplifier
-- [`docs/BREAKBEAM_SETUP.md`](docs/BREAKBEAM_SETUP.md) — IR breakbeam pulse switch
+- [`docs/PULSE_SWITCH_SETUP.md`](docs/PULSE_SWITCH_SETUP.md) — pulse switch
 - [`docs/HOOK_SWITCH_SETUP.md`](docs/HOOK_SWITCH_SETUP.md) — hook switch
 - [`docs/PIPER_SETUP.md`](docs/PIPER_SETUP.md) — Piper TTS voice engine
 

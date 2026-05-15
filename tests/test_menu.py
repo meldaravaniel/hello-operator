@@ -8,7 +8,7 @@ import pytest
 from src.menu import Menu, MenuState, _t9_digit_for_char, _t9_digit_for_name, _filter_by_t9_prefix
 from src.interfaces import MediaItem, PlaybackState
 from src.constants import (
-    DIRECT_DIAL_DISAMBIGUATION_TIMEOUT, DIAL_TONE_TIMEOUT_IDLE, INACTIVITY_TIMEOUT,
+    DIAL_ENTRY_TIMEOUT, INACTIVITY_TIMEOUT,
     ASSISTANT_NUMBER, ASSISTANT_MESSAGE_PAGE_SIZE, PHONE_NUMBER_LENGTH,
 )
 
@@ -55,132 +55,160 @@ def tts_calls(mock_tts):
 
 
 # ---------------------------------------------------------------------------
-# §9.1 Reserved digits and disambiguation
+# §9.1 Dialing paths from IDLE_DIAL_TONE
 # ---------------------------------------------------------------------------
 
-class TestReservedDigitsAndDisambiguation:
+class TestDialingPaths:
 
-    def test_digit_0_goes_back_one_level_or_top(self, mock_audio, mock_tts, mock_media_client,
-                                                 mock_media_store, mock_error_queue, tmp_path):
-        """Digit 0 alone → go back one level; at root delivers the top-level menu."""
+    def test_digit_0_from_idle_dial_tone_delivers_operator_menu(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 from IDLE_DIAL_TONE → operator menu delivered immediately."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.on_digit(0, now=0.0)
-        # After disambiguation timeout: no history at root → delivers top-level menu
-        menu.tick(now=0.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        menu.on_digit(0, now=0.5)
         assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
 
-    def test_digit_0_goes_back_from_browse(self, mock_audio, mock_tts, mock_media_client,
-                                            mock_media_store, mock_error_queue, tmp_path):
+    def test_first_nonzero_digit_enters_direct_dial_immediately(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """First non-zero digit from IDLE_DIAL_TONE → DIRECT_DIAL entered immediately."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        assert menu.state == MenuState.IDLE_DIAL_TONE
+        menu.on_digit(5, now=0.5)
+        assert menu.state == MenuState.DIRECT_DIAL
+
+    def test_digit_0_from_idle_dial_tone_stops_dial_tone(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 from IDLE_DIAL_TONE → dial tone stopped before menu delivery."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        mock_audio.calls.clear()
+        menu.on_digit(0, now=0.5)
+        stop_calls = [c for c in mock_audio.calls if c[0] == 'stop']
+        assert stop_calls, f"Expected audio.stop() before menu delivery; calls: {mock_audio.calls}"
+
+    def test_digit_0_delivers_playing_menu_when_music_active(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 while music playing → PLAYING_MENU delivered."""
+        playing = MediaItem("/t/1", "Abbey Road", "album")
+        mock_media_client.set_now_playing(PlaybackState(item=playing, is_paused=False))
+        mock_media_client.set_queue_position(1, 5)
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.on_digit(0, now=0.5)
+        assert menu.state == MenuState.PLAYING_MENU
+
+    def test_dial_entry_timeout_no_digits_triggers_off_hook(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """No digits within DIAL_ENTRY_TIMEOUT from handset lift → off-hook warning."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.tick(now=DIAL_ENTRY_TIMEOUT + 1.0)
+        assert menu.state == MenuState.OFF_HOOK, f"Expected OFF_HOOK, got {menu.state}"
+        off_hook = [c for c in mock_audio.calls if c[0] == 'play_off_hook_tone']
+        assert off_hook, "Expected off-hook tone to play"
+
+    def test_dial_entry_timeout_incomplete_direct_dial_triggers_off_hook(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Partial number entered but not completed within DIAL_ENTRY_TIMEOUT → off-hook."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(5, now=0.5)  # enters DIRECT_DIAL
+        assert menu.state == MenuState.DIRECT_DIAL
+        menu.tick(now=DIAL_ENTRY_TIMEOUT + 1.0)  # measured from handset_up_time (0.0)
+        assert menu.state == MenuState.OFF_HOOK, f"Expected OFF_HOOK, got {menu.state}"
+
+    def test_0_and_9_literal_in_direct_dial(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """In DIRECT_DIAL mode, 0 and 9 are accumulated as phone number digits (not navigation)."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.on_digit(5, now=0.5)  # enters DIRECT_DIAL from IDLE_DIAL_TONE
+        assert menu.state == MenuState.DIRECT_DIAL
+        menu.on_digit(0, now=1.0)
+        menu.on_digit(9, now=1.1)
+        # Still in DIRECT_DIAL (only 3 digits so far, need 7)
+        assert menu.state == MenuState.DIRECT_DIAL
+
+    def test_dtmf_plays_for_each_direct_dial_digit(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """In DIRECT_DIAL mode, audio.play_dtmf called for each digit including the first."""
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.on_digit(5, now=0.5)  # first digit → DIRECT_DIAL
+        menu.on_digit(5, now=1.0)  # second digit
+        menu.on_digit(5, now=1.5)  # third digit
+        dtmf_calls = [c for c in mock_audio.calls if c[0] == 'play_dtmf']
+        assert len(dtmf_calls) >= 3
+
+    def test_digit_0_goes_back_one_level_from_operator_menu(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 0 from inside the operator menu → re-delivers the top-level menu."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=_T0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
+        assert menu.state == MenuState.IDLE_MENU
+        menu.on_digit(0, now=1.0)  # at root → re-delivers top-level
+        assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
+
+    def test_digit_0_goes_back_from_browse(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """Digit 0 from inside a browse state → go back one level to IDLE_MENU."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
-        # Navigate into playlist browse
-        menu.on_digit(1, now=10.1)
-        menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(0, now=0.5)  # operator menu
+        menu.on_digit(1, now=1.0)  # navigate to playlist browse
         assert menu.state == MenuState.BROWSE_PLAYLISTS
-        # Digit 0 → back one level
-        menu.on_digit(0, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(0, now=2.0)  # back one level
         assert menu.state in (MenuState.IDLE_MENU, MenuState.PLAYING_MENU)
 
-    def test_digit_9_is_not_navigation_in_browse(self, mock_audio, mock_tts, mock_media_client,
-                                                   mock_media_store, mock_error_queue, tmp_path):
-        """Digit 9 is a T9 browse group, not a navigation key — pressing it narrows browse."""
+    def test_digit_9_is_not_navigation_in_browse(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 9 in browse state is T9 narrowing, not navigation-back."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
-        # Navigate into playlist browse
-        menu.on_digit(1, now=10.1)
-        menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(0, now=0.5)  # operator menu
+        menu.on_digit(1, now=1.0)  # navigate to playlist browse
         assert menu.state == MenuState.BROWSE_PLAYLISTS
-        # Digit 9 → T9 narrowing attempt, stays in browse (no match for "Jazz Mix" in group 9)
-        menu.on_digit(9, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(9, now=2.0)  # T9 narrowing (no match → stays in browse)
         assert menu.state == MenuState.BROWSE_PLAYLISTS, (
-            "Digit 9 should be a T9 browse digit, not navigation-back. "
-            f"State is {menu.state!r}; expected BROWSE_PLAYLISTS."
+            f"Digit 9 should be T9 browse, not navigation; state: {menu.state!r}"
         )
 
-    def test_digit_9_at_top_level_is_treated_as_menu_digit(self, mock_audio, mock_tts,
-                                                             mock_media_client, mock_media_store,
-                                                             mock_error_queue, tmp_path):
-        """Digit 9 at IDLE_MENU is treated as a menu option digit, not navigation."""
+    def test_digit_9_at_top_level_is_treated_as_menu_digit(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
+        """Digit 9 at IDLE_MENU is treated as a menu option digit (not navigation)."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
-        menu.on_digit(9, now=10.1)
-        menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        # Option 9 doesn't exist → "not in service", stays at IDLE_MENU
+        menu.on_digit(0, now=0.5)  # operator menu
+        menu.on_digit(9, now=1.0)  # option 9 doesn't exist → not in service, stays at IDLE_MENU
         assert menu.state == MenuState.IDLE_MENU
 
-    def test_disambiguation_timeout_single_digit_is_navigation(
+    def test_navigation_digit_dispatched_immediately_in_menu(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """First digit received, no second digit within timeout → treated as navigation."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
+        """Navigation digit in IDLE_MENU fires immediately in on_digit, no tick needed."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
-        menu.on_digit(1, now=10.1)
-        # Tick past disambiguation timeout
-        menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        # Digit 1 navigated to playlist browse — not direct dial
-        assert menu.state != MenuState.DIRECT_DIAL
-
-    def test_disambiguation_second_digit_enters_direct_dial(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Second digit within timeout → DIRECT_DIAL mode entered."""
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        t = 10.0
-        menu.on_digit(1, now=t)
-        # Second digit within timeout
-        menu.on_digit(2, now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.5)
-        menu.tick(now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.5 + 0.01)
-        assert menu.state == MenuState.DIRECT_DIAL
-
-    def test_disambiguation_0_and_9_literal_in_direct_dial(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """In DIRECT_DIAL mode, 0 and 9 are accumulated as phone number digits."""
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        t = 10.0
-        # Enter direct dial
-        menu.on_digit(5, now=t)
-        menu.on_digit(5, now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.3)
-        menu.tick(now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.3 + 0.01)
-        assert menu.state == MenuState.DIRECT_DIAL
-        # Now dial 0 and 9 — should be accumulated, not navigation
-        menu.on_digit(0, now=t + 1.0)
-        menu.on_digit(9, now=t + 1.1)
-        # Still in DIRECT_DIAL (only 4 digits so far, need 7)
-        assert menu.state == MenuState.DIRECT_DIAL
-
-    def test_dtmf_plays_for_each_direct_dial_digit(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """In DIRECT_DIAL mode, audio.play_dtmf called for each digit."""
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        t = 10.0
-        # Enter direct dial with first two digits
-        menu.on_digit(5, now=t)
-        menu.on_digit(5, now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.3)
-        menu.tick(now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT * 0.3 + 0.01)
-        assert menu.state == MenuState.DIRECT_DIAL
-        # Dial a third digit
-        menu.on_digit(5, now=t + 1.0)
-        dtmf_calls = [c for c in mock_audio.calls if c[0] == 'play_dtmf']
-        # At least 3 DTMF tones played (one per digit)
-        assert len(dtmf_calls) >= 3
+        menu.on_digit(0, now=0.5)  # operator menu
+        assert menu.state == MenuState.IDLE_MENU
+        mock_tts.calls.clear()
+        menu.on_digit(1, now=1.0)  # navigate to playlists — fires immediately
+        assert menu.state == MenuState.BROWSE_PLAYLISTS
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +245,10 @@ def idle_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_er
 
 class TestIdleMenu:
 
-    def _advance_to_idle_menu(self, menu, now=10.0):
-        """Lift handset and advance past dial tone timeout."""
+    def _advance_to_idle_menu(self, menu):
+        """Lift handset and dial 0 to enter the operator menu."""
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=now)
+        menu.on_digit(0, now=0.5)
 
     def test_idle_menu_announces_options(self, idle_menu, mock_tts, mock_media_client):
         """After dial tone timeout → TTS plays SCRIPT_OPERATOR_OPENER then SCRIPT_GREETING."""
@@ -236,7 +264,7 @@ class TestIdleMenu:
         mock_tts.calls.clear()
         # Trigger another menu prompt (e.g., back to top via digit 9)
         idle_menu.on_digit(9, now=15.0)
-        idle_menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=15.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert not any(SCRIPT_OPERATOR_OPENER in t for t in texts), \
             f"Opener was replayed: {texts}"
@@ -258,7 +286,7 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_tts.calls.clear()
         idle_menu.on_digit(1, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any("playlist" in t.lower() for t in texts), f"playlist prompt not found: {texts}"
 
@@ -267,7 +295,7 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_tts.calls.clear()
         idle_menu.on_digit(2, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any("artist" in t.lower() for t in texts), f"artist prompt not found: {texts}"
 
@@ -276,7 +304,7 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_tts.calls.clear()
         idle_menu.on_digit(3, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any("genre" in t.lower() for t in texts), f"genre prompt not found: {texts}"
 
@@ -285,7 +313,7 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_media_client.calls.clear()
         idle_menu.on_digit(4, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         assert any(c[0] == 'shuffle_all' for c in mock_media_client.calls)
 
     def test_idle_menu_shuffle_speaks_connecting_announcement(self, idle_menu, mock_tts, mock_media_client):
@@ -293,7 +321,7 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_tts.calls.clear()
         idle_menu.on_digit(4, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert len(texts) > 0, f"Expected a TTS announcement after shuffle, got none"
         full_text = " ".join(texts).lower()
@@ -307,7 +335,7 @@ class TestIdleMenu:
         """Digit 4 (shuffle) → state transitions to PLAYING_MENU."""
         self._advance_to_idle_menu(idle_menu)
         idle_menu.on_digit(4, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         assert idle_menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU after shuffle, got {idle_menu.state}"
 
@@ -315,7 +343,7 @@ class TestIdleMenu:
         """After shuffle, hanging up must not call plex_client.stop()."""
         self._advance_to_idle_menu(idle_menu)
         idle_menu.on_digit(4, now=11.0)
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         mock_media_client.calls.clear()
         idle_menu.on_handset_on_cradle()
         media_stop_calls = [c for c in mock_media_client.calls if c[0] == 'stop']
@@ -331,7 +359,7 @@ class TestIdleMenu:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         full_text = " ".join(texts).lower()
         assert "playlist" not in full_text or "artist" in full_text
@@ -360,36 +388,29 @@ class TestIdleMenu:
         self._advance_to_idle_menu(idle_menu)
         mock_tts.calls.clear()
         idle_menu.on_digit(8, now=11.0)  # 8 is not offered in idle menu
-        idle_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.tick(now=11.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), f"not-in-service not found: {texts}"
 
-    def test_now_playing_called_once_during_dial_tone(
+    def test_now_playing_not_called_during_dial_tone_ticks(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """now_playing() called exactly once at handset lift, not once per tick.
+        """now_playing() must NOT be called during IDLE_DIAL_TONE tick() polling.
 
-        Regression test: previously _check_dial_tone_timeout() called now_playing()
-        on every tick (200 Hz), flooding MPD with connect/disconnect cycles.
+        Regression guard: tick() must not query the media server (200 Hz × TCP = flood).
+        now_playing() is only called when the user dials 0 to request the operator menu.
         """
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        # Count now_playing calls after lift but before the timeout fires
-        calls_before = [c for c in mock_media_client.calls if c[0] == 'now_playing']
         mock_media_client.calls.clear()
 
-        # Simulate ~10 ticks within the dial tone window (not yet past the timeout)
         for i in range(10):
             menu.tick(now=_T0 + 0.05 * i)
 
         during_tone = [c for c in mock_media_client.calls if c[0] == 'now_playing']
         assert len(during_tone) == 0, (
-            f"now_playing() called {len(during_tone)} times during dial tone ticks "
-            f"(should be 0 — state was captured at lift)"
-        )
-        # The one call at lift is accounted for separately
-        assert len(calls_before) == 1, (
-            f"Expected exactly 1 now_playing() call at handset lift, got {len(calls_before)}"
+            f"now_playing() called {len(during_tone)} times during IDLE_DIAL_TONE ticks "
+            f"(should be 0 — called only when user dials 0)"
         )
 
     def test_idle_menu_plex_failure_at_load(self, mock_audio, mock_tts, mock_media_client,
@@ -409,7 +430,7 @@ class TestIdleMenu:
 
         menu = make_menu(mock_audio, mock_tts, mock_media_client, FailingStore(), mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_MEDIA_FAILURE in t for t in texts), f"plex failure not found: {texts}"
         assert any(SCRIPT_RETRY_PROMPT in t for t in texts), f"retry prompt not found: {texts}"
@@ -433,7 +454,7 @@ class TestIdleMenu:
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_media_client, failing, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # triggers _deliver_idle_menu → fails → failure_mode = "media"
+        menu.on_digit(0, now=0.5)  # dial 0 → operator path → triggers _deliver_idle_menu → fails
         assert menu._failure_mode == "media"
 
         # Now swap in a mock store that returns partial success on refresh
@@ -445,7 +466,7 @@ class TestIdleMenu:
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=11.0 + 0.1)
 
         assert menu._failure_mode is None, f"failure_mode should be None, got {menu._failure_mode}"
         # Menu should have been delivered — TTS should speak menu options
@@ -474,7 +495,7 @@ class TestIdleMenu:
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_media_client, failing, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         assert menu._failure_mode == "media"
 
         # swap in a store whose refresh returns all errors
@@ -483,7 +504,7 @@ class TestIdleMenu:
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=11.0 + 0.1)
 
         assert menu._failure_mode == "media", \
             f"failure_mode should remain 'media', got {menu._failure_mode}"
@@ -511,7 +532,7 @@ class TestIdleMenu:
         failing = FailingStore()
         menu = make_menu(mock_audio, mock_tts, mock_media_client, failing, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         assert menu._failure_mode == "media"
 
         # swap in a store that succeeds on refresh
@@ -523,7 +544,7 @@ class TestIdleMenu:
 
         mock_tts.calls.clear()
         menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=11.0 + 0.1)
 
         assert menu._failure_mode is None, \
             f"failure_mode should be None after complete success, got {menu._failure_mode}"
@@ -540,7 +561,7 @@ class TestIdleMenu:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NO_CONTENT in t for t in texts), f"no_content not found: {texts}"
         off_hook = [c for c in mock_audio.calls if c[0] == 'play_off_hook_tone']
@@ -555,31 +576,27 @@ class TestIdleMenu:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         mock_audio.calls.clear()
         menu.on_handset_on_cradle()
         stop_calls = [c for c in mock_audio.calls if c[0] == 'stop']
         assert len(stop_calls) >= 1
 
     def test_inactivity_timeout_triggers_off_hook_tone(self, idle_menu, mock_audio):
-        """No digit for INACTIVITY_TIMEOUT → off-hook warning tone plays."""
+        """No digit for INACTIVITY_TIMEOUT in operator menu → off-hook warning tone."""
         idle_menu.on_handset_lifted(now=_T0)
-        # Advance past dial tone to deliver menu (t=10)
-        idle_menu.tick(now=10.0)
-        # Now advance past inactivity timeout from menu delivery (t = 10 + INACTIVITY_TIMEOUT + margin)
-        idle_menu.tick(now=10.0 + INACTIVITY_TIMEOUT + 5.0)
+        idle_menu.on_digit(0, now=0.5)  # enter operator menu (last_activity_time = 0.5)
+        idle_menu.tick(now=0.5 + INACTIVITY_TIMEOUT + 5.0)
         off_hook = [c for c in mock_audio.calls if c[0] == 'play_off_hook_tone']
         assert len(off_hook) >= 1
 
     def test_inactivity_timeout_reset_on_digit(self, idle_menu, mock_audio):
         """Digit before inactivity timeout → timer resets, off-hook not triggered."""
         idle_menu.on_handset_lifted(now=_T0)
-        idle_menu.tick(now=10.0)  # advance to idle menu state
-        # Digit resets timer
-        idle_menu.on_digit(9, now=10.1)
-        idle_menu.tick(now=10.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        idle_menu.on_digit(0, now=0.5)  # enter operator menu (last_activity_time = 0.5)
+        idle_menu.on_digit(9, now=10.0)  # digit resets timer (last_activity_time = 10.0)
         # Not yet past inactivity timeout since last digit
-        idle_menu.tick(now=10.1 + INACTIVITY_TIMEOUT * 0.5)
+        idle_menu.tick(now=10.0 + INACTIVITY_TIMEOUT * 0.5)
         off_hook = [c for c in mock_audio.calls if c[0] == 'play_off_hook_tone']
         assert len(off_hook) == 0
 
@@ -604,9 +621,9 @@ def playing_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock
 
 class TestPlayingMenu:
 
-    def _advance_to_playing_menu(self, menu, now=10.0):
+    def _advance_to_playing_menu(self, menu):
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=now)
+        menu.on_digit(0, now=0.5)
 
     def test_playing_menu_announces_options(self, playing_menu, mock_tts, playing_item):
         """Handset lifted while playing → TTS plays SCRIPT_OPERATOR_OPENER + SCRIPT_PLAYING_GREETING."""
@@ -620,7 +637,7 @@ class TestPlayingMenu:
         self._advance_to_playing_menu(playing_menu)
         mock_media_client.calls.clear()
         playing_menu.on_digit(1, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         assert any(c[0] == 'pause' for c in mock_media_client.calls)
 
     def test_playing_menu_option_1_unpause(self, playing_menu, mock_media_client, playing_item):
@@ -629,7 +646,7 @@ class TestPlayingMenu:
         self._advance_to_playing_menu(playing_menu)
         mock_media_client.calls.clear()
         playing_menu.on_digit(1, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         assert any(c[0] == 'unpause' for c in mock_media_client.calls)
 
     def test_playing_menu_pause_label_when_playing(self, playing_menu, mock_tts):
@@ -650,7 +667,7 @@ class TestPlayingMenu:
         self._advance_to_playing_menu(playing_menu)
         mock_media_client.calls.clear()
         playing_menu.on_digit(2, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         assert any(c[0] == 'skip' for c in mock_media_client.calls)
 
     def test_playing_menu_skip_not_offered_on_last_track(self, playing_menu, mock_tts, mock_media_client, playing_item):
@@ -668,7 +685,7 @@ class TestPlayingMenu:
         self._advance_to_playing_menu(playing_menu)
         mock_media_client.calls.clear()
         playing_menu.on_digit(3, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         assert any(c[0] == 'stop' for c in mock_media_client.calls)
         assert playing_menu.state == MenuState.IDLE_MENU
 
@@ -676,7 +693,7 @@ class TestPlayingMenu:
         """Digit 0 from PLAYING_MENU (no nav history) → re-delivers PLAYING_MENU (top-level back)."""
         self._advance_to_playing_menu(playing_menu)
         playing_menu.on_digit(0, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         assert playing_menu.state == MenuState.PLAYING_MENU
 
     def test_playing_menu_now_playing_idle_at_speak_time(
@@ -687,7 +704,7 @@ class TestPlayingMenu:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         # Should get idle prompt, not playing prompt
         assert any(SCRIPT_GREETING in t for t in texts), f"idle greeting not found: {texts}"
@@ -710,7 +727,7 @@ class TestPlayingMenu:
         mock_audio.calls.clear()
         # Stop music (digit 3)
         playing_menu.on_digit(3, now=11.0)
-        playing_menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        playing_menu.tick(now=11.0 + 0.1)
         # SCRIPT_OPERATOR_OPENER should NOT be replayed
         texts = tts_calls(mock_tts)
         assert not any(SCRIPT_OPERATOR_OPENER in t for t in texts), \
@@ -748,11 +765,9 @@ def _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
     mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
     menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
     menu.on_handset_lifted(now=_T0)
-    menu.tick(now=10.0)  # deliver idle menu
+    menu.on_digit(0, now=0.5)  # enter operator menu
     mock_tts.calls.clear()
-    # Navigate to browse
-    menu.on_digit(digit, now=11.0)
-    menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+    menu.on_digit(digit, now=1.0)  # navigate to browse category
     mock_tts.calls.clear()
     return menu
 
@@ -770,7 +785,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         full = " ".join(texts)
         assert "Ambient Jazz" in full or "Blues Classic" in full
@@ -799,7 +814,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(3, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         full = " ".join(texts)
         assert "30 Seconds to Mars" in full
@@ -814,7 +829,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(9, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "!Mix" in " ".join(texts)
 
@@ -825,7 +840,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items, category="artist")
         menu.on_digit(1, now=12.0)  # B → 1
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "The Beatles" in " ".join(texts)
 
@@ -836,7 +851,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items, category="artist")
         menu.on_digit(7, now=12.0)  # T → 7
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "A Tribe Called Quest" in " ".join(texts)
 
@@ -847,7 +862,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items, category="artist")
         menu.on_digit(1, now=12.0)  # A → 1
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "An Artist" in " ".join(texts)
 
@@ -858,7 +873,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items, category="artist")
         menu.on_digit(6, now=12.0)  # R → 6
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "The Rolling Stones" in " ".join(texts)
 
@@ -869,7 +884,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)  # B → 1
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "beatles mix" in " ".join(texts)
 
@@ -880,7 +895,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)  # All start with 'A' → digit 1
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_BROWSE_LIST_INTRO in t for t in texts)
         # Should not ask for next letter
@@ -896,7 +911,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         full = " ".join(texts)
         assert SCRIPT_BROWSE_LIST_INTRO in full
@@ -910,7 +925,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)  # All start with 'A' → digit 1
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_BROWSE_PROMPT_NEXT_LETTER in t for t in texts)
 
@@ -928,15 +943,15 @@ class TestT9Browsing:
                                  mock_error_queue, tmp_path, items)
         # First digit: A → digit 1 (all 10 → next letter prompt)
         menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         mock_tts.calls.clear()
         # Second digit: M → digit 5 (all 10 still match → next letter prompt)
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         mock_tts.calls.clear()
         # Third digit: B → digit 1 (ABC), matches 'Ambi*' (5 items ≤ 8 → list)
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         texts = tts_calls(mock_tts)
         # Should show list, not ask for next letter
         assert any(SCRIPT_BROWSE_LIST_INTRO in t for t in texts)
@@ -948,7 +963,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_BROWSE_AUTO_SELECT in t for t in texts)
 
@@ -959,7 +974,7 @@ class TestT9Browsing:
         menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                  mock_error_queue, tmp_path, items)
         menu.on_digit(1, now=12.0)  # digit 1 = ABC, no match for 'Jazz'
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts)
 
@@ -995,15 +1010,15 @@ class TestArtistSubmenu:
 
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # dial 0 → operator menu
         # Digit 2 → artist browse
-        menu.on_digit(2, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(2, now=1.0)
+        menu.tick(now=11.0 + 0.1)
         mock_tts.calls.clear()
         # T → digit 7 → "The Beatles" found (after stripping "The " → "Beatles" → B → digit 1)
         # Actually "The Beatles" strips to "Beatles" → B → digit 1
         menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         mock_tts.calls.clear()
         return menu
 
@@ -1014,7 +1029,7 @@ class TestArtistSubmenu:
                                         mock_error_queue, tmp_path, artist)
         mock_media_client.calls.clear()
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         # Should have called play or shuffle for the artist
         assert any(c[0] in ('play', 'shuffle_all') for c in mock_media_client.calls)
 
@@ -1024,7 +1039,7 @@ class TestArtistSubmenu:
         menu = self._navigate_to_artist(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                         mock_error_queue, tmp_path, artist, albums=albums)
         menu.on_digit(2, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any("album" in t.lower() for t in texts)
         assert menu.state == MenuState.BROWSE_ALBUMS
@@ -1035,7 +1050,7 @@ class TestArtistSubmenu:
         menu = self._navigate_to_artist(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                         mock_error_queue, tmp_path, artist, albums=[])
         menu.on_digit(2, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts)
 
@@ -1055,11 +1070,11 @@ class TestArtistSubmenu:
         menu = self._navigate_to_artist(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                         mock_error_queue, tmp_path, artist, albums=albums)
         menu.on_digit(2, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         mock_tts.calls.clear()
         # Digit 1 → A (Abbey Road starts with A)
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert "Abbey Road" in " ".join(texts)
 
@@ -1069,12 +1084,12 @@ class TestArtistSubmenu:
         menu = self._navigate_to_artist(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                         mock_error_queue, tmp_path, artist, albums=albums)
         menu.on_digit(2, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         mock_tts.calls.clear()
         mock_media_client.calls.clear()
         # Digit 1 → Abbey Road (A)
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         # Auto-selected (only 1 match) — play should be called
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert len(play_calls) >= 1
@@ -1087,12 +1102,11 @@ class TestArtistSubmenu:
 def _dial_number(menu, number_str, start_time=1.0):
     """Helper: dial a full phone number into direct-dial mode."""
     digits = [int(c) for c in number_str]
-    # First two digits trigger DIRECT_DIAL mode
+    # First digit triggers DIRECT_DIAL mode from IDLE_DIAL_TONE
     menu.on_digit(digits[0], now=start_time)
-    menu.on_digit(digits[1], now=start_time + 0.05)
     # Remaining digits
-    t = start_time + 0.1
-    for d in digits[2:]:
+    t = start_time + 0.05
+    for d in digits[1:]:
         menu.on_digit(d, now=t)
         t += 0.05
     return t
@@ -1110,7 +1124,6 @@ class TestDiagnosticAssistant:
         mock_media_store.set_artists([MediaItem("/ar/1", "Beatles", "artist")])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)  # past dial tone timeout → idle menu
         mock_tts.calls.clear()
         mock_media_client.calls.clear()
         return menu
@@ -1203,7 +1216,7 @@ class TestDiagnosticAssistant:
         mock_tts.calls.clear()
         # Dial 1 to hear errors
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         # Should mention message count
         assert "1" in texts or "one" in texts.lower()
@@ -1223,7 +1236,7 @@ class TestDiagnosticAssistant:
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         # Should ask to continue
         assert "continue" in texts.lower() or "go on" in texts.lower() or "dial one" in texts.lower()
@@ -1241,7 +1254,7 @@ class TestDiagnosticAssistant:
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_END_OF_MESSAGES in texts or "last" in texts.lower()
 
@@ -1259,11 +1272,11 @@ class TestDiagnosticAssistant:
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         # Select errors (dial 1)
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         mock_tts.calls.clear()
         # Continue (dial 1)
         menu.on_digit(1, now=21.0)
-        menu.tick(now=21.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=21.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         # Should have read more messages
         assert len(texts) > 0
@@ -1280,7 +1293,7 @@ class TestDiagnosticAssistant:
         ]
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_NAVIGATION in texts or "dial" in texts.lower()
 
@@ -1334,7 +1347,7 @@ class TestDiagnosticAssistant:
         ]
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         menu.on_handset_on_cradle()
         assert len(mock_error_queue.entries) == initial_count
 
@@ -1362,7 +1375,7 @@ class TestDiagnosticAssistant:
         # With no errors, options are: [refresh=1, return=0] or similar
         # We just try digit 1 and check if refresh was called
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         refresh_calls = [c for c in mock_media_store.calls if c[0] == 'refresh']
         assert len(refresh_calls) >= 1
 
@@ -1376,7 +1389,7 @@ class TestDiagnosticAssistant:
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_REFRESH_SUCCESS in texts or "updated" in texts.lower()
 
@@ -1394,7 +1407,7 @@ class TestDiagnosticAssistant:
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         mock_tts.calls.clear()
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_REFRESH_FAILURE in texts or "trouble" in texts.lower()
 
@@ -1407,7 +1420,7 @@ class TestDiagnosticAssistant:
         mock_error_queue.entries.clear()
         _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         texts = " ".join(tts_calls(mock_tts))
         assert SCRIPT_ASSISTANT_NAVIGATION in texts or "menu" in texts.lower() or "switchboard" in texts.lower()
 
@@ -1426,7 +1439,7 @@ class TestDiagnosticAssistant:
         # Select errors (digit 1)
         mock_tts.calls.clear()
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
         # Capture page 1 announcement
         page1_calls = list(tts_calls(mock_tts))
         assert any("first" in t for t in page1_calls), \
@@ -1436,7 +1449,7 @@ class TestDiagnosticAssistant:
         mock_tts.calls.clear()
         # Continue to page 2 (digit 1)
         menu.on_digit(1, now=21.0)
-        menu.tick(now=21.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=21.0 + 0.1)
         # Capture page 2 announcement
         page2_calls = list(tts_calls(mock_tts))
         assert any("next" in t for t in page2_calls), \
@@ -1452,14 +1465,13 @@ class TestFinalSelection:
 
     def _menu_at_idle(self, mock_audio, mock_tts, mock_media_client, mock_media_store,
                       mock_error_queue, tmp_path):
-        """Create a menu at IDLE_MENU state."""
+        """Create a menu at IDLE_DIAL_TONE state (handset lifted, ready to dial)."""
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         mock_media_store.set_playlists([MediaItem("/pl/1", "Jazz", "playlist")])
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
         return menu
 
     def test_final_selection_speaks_connecting(
@@ -1477,9 +1489,8 @@ class TestFinalSelection:
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
         mock_tts.calls.clear()
-        _dial_number(menu, number, start_time=11.0)
+        _dial_number(menu, number, start_time=1.0)
         texts = " ".join(tts_calls(mock_tts))
         assert "Jazz" in texts or "connecting" in texts.lower()
 
@@ -1496,9 +1507,8 @@ class TestFinalSelection:
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
         mock_tts.calls.clear()
-        _dial_number(menu, number, start_time=11.0)
+        _dial_number(menu, number, start_time=1.0)
         texts = " ".join(tts_calls(mock_tts))
         # Each digit should appear as a word or numeral in TTS output
         digit_words = {'0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
@@ -1520,9 +1530,8 @@ class TestFinalSelection:
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
         mock_media_client.calls.clear()
-        _dial_number(menu, number, start_time=11.0)
+        _dial_number(menu, number, start_time=1.0)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert len(play_calls) >= 1
         assert play_calls[0][1] == "/pl/1"
@@ -1541,10 +1550,10 @@ def _make_genre_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, 
     mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
     menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
     menu.on_handset_lifted(now=0.0)
-    menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+    menu.on_digit(0, now=0.5)  # dial 0 → operator menu
     # Digit 1 = genres (only category available)
-    menu.on_digit(1, now=11.0)
-    menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+    menu.on_digit(1, now=1.0)
+    menu.tick(now=1.0 + 0.1)
     assert menu.state == MenuState.BROWSE_GENRES, f"Expected BROWSE_GENRES, got {menu.state}"
     return menu
 
@@ -1564,7 +1573,7 @@ class TestGenrePlayback:
         # Only one genre → auto-selected after dialling its first letter (J → digit 4)
         mock_media_client.calls.clear()
         menu.on_digit(4, now=12.0)  # J is in group 4 (JKL)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         get_tracks_calls = [c for c in mock_media_client.calls if c[0] == 'get_tracks_for_genre']
         assert get_tracks_calls, f"get_tracks_for_genre not called; calls: {mock_media_client.calls}"
 
@@ -1579,7 +1588,7 @@ class TestGenrePlayback:
         )
         mock_media_client.calls.clear()
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         play_tracks_calls = [c for c in mock_media_client.calls if c[0] == 'play_tracks']
         assert play_tracks_calls, f"play_tracks not called; calls: {mock_media_client.calls}"
         assert play_tracks_calls[0][1] == ["101", "102"], \
@@ -1596,7 +1605,7 @@ class TestGenrePlayback:
             mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path, genres
         )
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, f"Expected PLAYING_MENU, got {menu.state}"
 
     def test_selecting_genre_does_not_call_play(
@@ -1610,7 +1619,7 @@ class TestGenrePlayback:
         )
         mock_media_client.calls.clear()
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert not play_calls, f"play() should not be called for genre; calls: {mock_media_client.calls}"
 
@@ -1625,7 +1634,7 @@ class TestGenrePlayback:
         )
         mock_tts.calls.clear()
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
             f"SCRIPT_NOT_IN_SERVICE not spoken; texts: {texts}"
@@ -1641,7 +1650,7 @@ class TestGenrePlayback:
         )
         mock_media_client.calls.clear()
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         play_tracks_calls = [c for c in mock_media_client.calls if c[0] == 'play_tracks']
         assert not play_tracks_calls, f"play_tracks should not be called; calls: {mock_media_client.calls}"
 
@@ -1655,7 +1664,7 @@ class TestGenrePlayback:
             mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path, genres
         )
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         assert menu.state != MenuState.PLAYING_MENU, \
             f"State should not be PLAYING_MENU after empty genre; got {menu.state}"
 
@@ -1668,15 +1677,15 @@ class TestGenrePlayback:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Navigate to playlist browse
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_PLAYLISTS
         mock_media_client.calls.clear()
         # Dial J (digit 4) → selects "Jazz Mix"
-        menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(4, now=2.0)
+        menu.tick(now=12.0 + 0.1)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert play_calls, f"play() should be called for playlist; calls: {mock_media_client.calls}"
         assert play_calls[0][1] == "/pl/1"
@@ -1703,10 +1712,10 @@ class TestBrowseConnectingAnnouncement:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)  # past dial tone timeout → IDLE_MENU
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Digit 1 → playlist browse (only category available)
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_PLAYLISTS, \
             f"Expected BROWSE_PLAYLISTS, got {menu.state}"
         mock_tts.calls.clear()
@@ -1726,20 +1735,20 @@ class TestBrowseConnectingAnnouncement:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Digit 1 → artist browse (only category available)
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_ARTISTS, \
             f"Expected BROWSE_ARTISTS, got {menu.state}"
         # Digit 1 → B (Beatles starts with B)
-        menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=2.0)
+        menu.tick(now=2.0 + 0.1)
         assert menu.state == MenuState.ARTIST_SUBMENU, \
             f"Expected ARTIST_SUBMENU, got {menu.state}"
         # Digit 2 → browse albums
-        menu.on_digit(2, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(2, now=3.0)
+        menu.tick(now=3.0 + 0.1)
         assert menu.state == MenuState.BROWSE_ALBUMS, \
             f"Expected BROWSE_ALBUMS, got {menu.state}"
         mock_tts.calls.clear()
@@ -1760,10 +1769,10 @@ class TestBrowseConnectingAnnouncement:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Digit 1 → genre browse (only category available)
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_GENRES, \
             f"Expected BROWSE_GENRES, got {menu.state}"
         mock_tts.calls.clear()
@@ -1782,15 +1791,15 @@ class TestBrowseConnectingAnnouncement:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Digit 1 → artist browse
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_ARTISTS, \
             f"Expected BROWSE_ARTISTS, got {menu.state}"
         # Digit 1 → B (Beatles)
-        menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=2.0)
+        menu.tick(now=2.0 + 0.1)
         assert menu.state == MenuState.ARTIST_SUBMENU, \
             f"Expected ARTIST_SUBMENU, got {menu.state}"
         mock_tts.calls.clear()
@@ -1809,7 +1818,7 @@ class TestBrowseConnectingAnnouncement:
                                          mock_error_queue, tmp_path)
         # Dial J (digit 4) → selects "Jazz Mix"
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
         assert any("Please hold" in t for t in texts), \
@@ -1821,7 +1830,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         # Find the connecting template call specifically
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -1838,7 +1847,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         # Find the connecting template call specifically
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -1855,7 +1864,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert play_calls, f"Expected play() call, got: {mock_media_client.calls}"
         assert play_calls[0][1] == "/pl/1"
@@ -1866,7 +1875,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU, got {menu.state}"
 
@@ -1894,7 +1903,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_playlist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                          mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
 
         # "Please hold" is unique to SCRIPT_CONNECTING_TEMPLATE
         speak_indices = [i for i, c in enumerate(call_order) if c[0] == 'speak'
@@ -1916,7 +1925,7 @@ class TestBrowseConnectingAnnouncement:
                                       mock_error_queue, tmp_path)
         # Digit 1 → A (Abbey Road starts with A) → auto-selects
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         texts = tts_calls(mock_tts)
         # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
         assert any("Please hold" in t for t in texts), \
@@ -1928,7 +1937,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_album_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                       mock_error_queue, tmp_path)
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         # Find the connecting template call specifically
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -1942,7 +1951,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_album_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                       mock_error_queue, tmp_path)
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU, got {menu.state}"
 
@@ -1957,7 +1966,7 @@ class TestBrowseConnectingAnnouncement:
                                           mock_error_queue, tmp_path)
         # Dial J (digit 4) → selects "Jazz"
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         texts = tts_calls(mock_tts)
         # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
         assert any("Please hold" in t for t in texts), \
@@ -1969,7 +1978,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                           mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         # Find the connecting template call specifically
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -1983,7 +1992,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_genre_menu_f09(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                           mock_error_queue, tmp_path)
         menu.on_digit(4, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=12.0 + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU, got {menu.state}"
 
@@ -1997,7 +2006,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         # "Please hold." is unique to SCRIPT_CONNECTING_TEMPLATE
         assert any("Please hold" in t for t in texts), \
@@ -2009,7 +2018,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         # Find the connecting template call specifically
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -2023,7 +2032,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert play_calls, f"Expected play() call, got: {mock_media_client.calls}"
         assert play_calls[0][1] == "/a/1"
@@ -2034,7 +2043,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU, got {menu.state}"
 
@@ -2048,7 +2057,7 @@ class TestBrowseConnectingAnnouncement:
         menu = self._make_artist_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                                        mock_error_queue, tmp_path)
         menu.on_digit(1, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         # The SCRIPT_CONNECTING_TEMPLATE call must contain digit words (phone number)
         connecting_texts = [t for t in tts_calls(mock_tts) if "Please hold" in t]
         assert connecting_texts, \
@@ -2080,15 +2089,15 @@ class TestArtistSubmenuReDelivery:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         # Digit 1 -> artist browse
-        menu.on_digit(1, now=11.0)
-        menu.tick(now=11.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.0 + 0.1)
         assert menu.state == MenuState.BROWSE_ARTISTS, \
             f"Expected BROWSE_ARTISTS, got {menu.state}"
         # Digit 1 -> B (Beatles)
-        menu.on_digit(1, now=12.0)
-        menu.tick(now=12.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=2.0)
+        menu.tick(now=2.0 + 0.1)
         assert menu.state == MenuState.ARTIST_SUBMENU, \
             f"Expected ARTIST_SUBMENU, got {menu.state}"
         mock_tts.calls.clear()
@@ -2102,7 +2111,7 @@ class TestArtistSubmenuReDelivery:
                                                       mock_media_store, mock_error_queue, tmp_path)
         # Digit 5 is not a valid option in ARTIST_SUBMENU
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
             f"SCRIPT_NOT_IN_SERVICE not spoken after invalid digit; texts: {texts}"
@@ -2113,7 +2122,7 @@ class TestArtistSubmenuReDelivery:
         menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_media_client,
                                                       mock_media_store, mock_error_queue, tmp_path)
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         # The re-delivered submenu text must contain the artist name
         assert any("Beatles" in t for t in texts), \
@@ -2125,7 +2134,7 @@ class TestArtistSubmenuReDelivery:
         menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_media_client,
                                                       mock_media_store, mock_error_queue, tmp_path)
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         texts = tts_calls(mock_tts)
         # SCRIPT_ARTIST_SUBMENU_ALBUMS_SUFFIX contains "album"
         assert any("album" in t.lower() for t in texts), \
@@ -2137,7 +2146,7 @@ class TestArtistSubmenuReDelivery:
         menu = self._make_artist_submenu_with_albums(mock_audio, mock_tts, mock_media_client,
                                                       mock_media_store, mock_error_queue, tmp_path)
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         # State must still be ARTIST_SUBMENU (current artist preserved)
         assert menu.state == MenuState.ARTIST_SUBMENU, \
             f"Expected ARTIST_SUBMENU after invalid digit, got {menu.state}"
@@ -2149,103 +2158,79 @@ class TestArtistSubmenuReDelivery:
                                                       mock_media_store, mock_error_queue, tmp_path)
         # First, dial invalid digit
         menu.on_digit(5, now=13.0)
-        menu.tick(now=13.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=13.0 + 0.1)
         mock_tts.calls.clear()
         mock_media_client.calls.clear()
         # Now dial 1 -- should still play the artist
         menu.on_digit(1, now=14.0)
-        menu.tick(now=14.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=14.0 + 0.1)
         play_calls = [c for c in mock_media_client.calls if c[0] == 'play']
         assert play_calls, f"Expected play() after re-delivery, got: {mock_media_client.calls}"
 
 
 # ---------------------------------------------------------------------------
-# F-11 · Digit received before dial-tone menu is delivered
+# F-11 · IDLE_DIAL_TONE routing: 0 → operator menu, non-zero → direct dial
 # ---------------------------------------------------------------------------
 
-class TestDigitBeforeMenu:
-    """Digits dialed during IDLE_DIAL_TONE (before timeout fires the menu)
-    must not cause invalid state routing.  The menu should be delivered first,
-    the dial tone stopped, and the queued digit dropped."""
+class TestIdleDialToneRouting:
+    """IDLE_DIAL_TONE is the entry point for all dialing.
+    Digit 0 → operator menu immediately.
+    Digit 1-9 → DIRECT_DIAL immediately (no disambiguation wait).
+    The dial tone is stopped as soon as any digit is received.
+    """
 
-    def _make_menu_with_content(self, mock_audio, mock_tts, mock_media_client,
-                                 mock_media_store, mock_error_queue, tmp_path):
-        """Helper: build a Menu with one playlist available (idle state)."""
+    def test_nonzero_digit_enters_direct_dial_not_operator_menu(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """Non-zero digit from IDLE_DIAL_TONE → DIRECT_DIAL, not IDLE_MENU."""
         mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
-        return make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
-                         mock_error_queue, tmp_path)
-
-    def test_digit_during_idle_dial_tone_delivers_idle_menu(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
-            mock_error_queue, tmp_path):
-        """Digit dialed during IDLE_DIAL_TONE transitions to IDLE_MENU."""
-        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_media_client,
-                                             mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=0.0)
-        assert menu.state == MenuState.IDLE_DIAL_TONE
-        # Digit arrives well before the DIAL_TONE_TIMEOUT_IDLE (5s)
-        menu.on_digit(1, now=0.1)
-        # Advance past disambiguation timeout (1.5s) but still within dial-tone window
-        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        assert menu.state == MenuState.IDLE_MENU, \
-            f"Expected IDLE_MENU after digit-before-menu guard, got {menu.state}"
-
-    def test_digit_during_idle_dial_tone_no_not_in_service(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
-            mock_error_queue, tmp_path):
-        """SCRIPT_NOT_IN_SERVICE must NOT be spoken when digit is dialed during IDLE_DIAL_TONE."""
-        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_media_client,
-                                             mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=0.0)
-        menu.on_digit(1, now=0.1)
-        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        assert not tts_spoke(mock_tts, "not in service"), \
-            f"SCRIPT_NOT_IN_SERVICE should not be spoken; tts calls: {tts_calls(mock_tts)}"
-
-    def test_digit_during_idle_dial_tone_stops_dial_tone(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
-            mock_error_queue, tmp_path):
-        """The dial tone must be stopped before the menu prompt is delivered."""
-        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_media_client,
-                                             mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=0.0)
-        mock_audio.calls.clear()  # Clear the play_tone from handset lift
-        menu.on_digit(1, now=0.1)
-        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        # stop() must appear in audio calls before any speak_and_play
-        audio_stops = [i for i, c in enumerate(mock_audio.calls) if c[0] == 'stop']
-        assert audio_stops, \
-            f"Expected audio.stop() to be called; audio calls: {mock_audio.calls}"
-
-    def test_digit_during_idle_dial_tone_digit_dropped(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
-            mock_error_queue, tmp_path):
-        """The queued digit is dropped — no navigation action is taken on it."""
-        menu = self._make_menu_with_content(mock_audio, mock_tts, mock_media_client,
-                                             mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=0.0)
-        menu.on_digit(1, now=0.1)
-        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
-        # Digit 1 in IDLE_MENU would navigate to playlists (BROWSE_PLAYLISTS)
-        # but since it was dropped we should still be at IDLE_MENU
-        assert menu.state == MenuState.IDLE_MENU, \
-            f"Digit should be dropped; expected IDLE_MENU, got {menu.state}"
-
-    def test_digit_during_idle_dial_tone_while_playing_delivers_playing_menu(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
-            mock_error_queue, tmp_path):
-        """When music is playing and digit arrives during IDLE_DIAL_TONE,
-        the PLAYING_MENU is delivered (not the idle menu)."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
-        now_playing_item = MediaItem("/tracks/1", "Some Song", "track")
-        mock_media_client.set_now_playing(PlaybackState(item=now_playing_item, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=0.0)
-        assert menu.state == MenuState.IDLE_DIAL_TONE
-        menu.on_digit(1, now=0.1)
-        menu.tick(now=0.1 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=0.5)
+        assert menu.state == MenuState.DIRECT_DIAL, \
+            f"Expected DIRECT_DIAL for non-zero digit, got {menu.state}"
+
+    def test_nonzero_digit_does_not_speak_not_in_service(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """Non-zero digit enters DIRECT_DIAL — no 'not in service' spoken yet."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(1, now=0.5)
+        assert not tts_spoke(mock_tts, "not in service"), \
+            f"SCRIPT_NOT_IN_SERVICE must not be spoken on first digit; calls: {tts_calls(mock_tts)}"
+
+    def test_any_digit_stops_dial_tone(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """Any digit received in IDLE_DIAL_TONE → dial tone stopped immediately."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        mock_audio.calls.clear()
+        menu.on_digit(1, now=0.5)
+        audio_stops = [c for c in mock_audio.calls if c[0] == 'stop']
+        assert audio_stops, f"Expected audio.stop() on digit; calls: {mock_audio.calls}"
+
+    def test_digit_0_delivers_playing_menu_when_music_active(
+            self, mock_audio, mock_tts, mock_media_client, mock_media_store,
+            mock_error_queue, tmp_path):
+        """Digit 0 while music playing → PLAYING_MENU (not idle menu)."""
+        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz Mix", "playlist")])
+        now_playing_item = MediaItem("/tracks/1", "Some Song", "track")
+        mock_media_client.set_now_playing(PlaybackState(item=now_playing_item, is_paused=False))
+        mock_media_client.set_queue_position(1, 5)
+        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
+                         mock_error_queue, tmp_path)
+        menu.on_handset_lifted(now=0.0)
+        menu.on_digit(0, now=0.5)
         assert menu.state == MenuState.PLAYING_MENU, \
             f"Expected PLAYING_MENU when music playing, got {menu.state}"
 
@@ -2257,8 +2242,6 @@ class TestDigitBeforeMenu:
 SCRIPT_RADIO_CONNECTING_FRAGMENT = "Tuning in to"
 SCRIPT_RADIO_PLAYING_MENU_FRAGMENT = "To disconnect your call, dial three"
 SCRIPT_RADIO_PLAYING_GREETING_FRAGMENT = "currently tuned to"
-
-from src.constants import DIAL_TONE_TIMEOUT_PLAYING
 
 
 def _seed_radio_entry(phone_book, media_key="radio:90300000.0", name="NPR", media_type="radio"):
@@ -2289,7 +2272,6 @@ class TestRadioMenu:
             radio=radio,
         )
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # past dial tone → idle menu
         mock_tts.calls.clear()
         mock_media_client.calls.clear()
         return menu, phone_book
@@ -2352,7 +2334,7 @@ class TestRadioMenu:
 
     def test_radio_playing_menu_on_handset_lift(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Lifting handset while radio is playing (Plex idle) → RADIO_PLAYING_MENU after timeout."""
+        """Lifting handset while radio is playing (Plex idle) → dialing 0 delivers RADIO_PLAYING_MENU."""
         from src.radio import MockRadio
         radio = MockRadio()
         radio.set_playing(True)
@@ -2361,8 +2343,7 @@ class TestRadioMenu:
                          tmp_path, radio=radio)
         menu.on_handset_lifted(now=_T0)
         mock_tts.calls.clear()
-        # Tick past DIAL_TONE_TIMEOUT_PLAYING
-        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
+        menu.on_digit(0, now=0.5)
 
         assert menu.state == MenuState.RADIO_PLAYING_MENU, \
             f"Expected RADIO_PLAYING_MENU, got {menu.state}"
@@ -2384,7 +2365,7 @@ class TestRadioMenu:
         radio.calls.clear()
         mock_tts.calls.clear()
         menu.on_digit(3, now=15.0)
-        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=15.0 + 0.1)
 
         assert menu.state == MenuState.IDLE_MENU, \
             f"Expected IDLE_MENU after digit 3; got {menu.state}"
@@ -2405,7 +2386,7 @@ class TestRadioMenu:
         radio.calls.clear()
         mock_tts.calls.clear()
         menu.on_digit(0, now=15.0)
-        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=15.0 + 0.1)
 
         assert menu.state == MenuState.IDLE_MENU, \
             f"Expected IDLE_MENU after digit 0; got {menu.state}"
@@ -2426,7 +2407,7 @@ class TestRadioMenu:
         radio.calls.clear()
         mock_tts.calls.clear()
         menu.on_digit(1, now=15.0)
-        menu.tick(now=15.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=15.0 + 0.1)
 
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
@@ -2451,29 +2432,6 @@ class TestRadioMenu:
         radio_stops = [c for c in radio.calls if c[0] == 'stop']
         assert len(radio_stops) == 0, \
             f"Hang-up must not stop radio; calls: {radio.calls}"
-
-    def test_radio_uses_playing_timeout_when_active(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """When radio is active, DIAL_TONE_TIMEOUT_PLAYING applies (shorter timeout)."""
-        from src.radio import MockRadio
-        from src.constants import DIAL_TONE_TIMEOUT_IDLE
-        radio = MockRadio()
-        radio.set_playing(True)
-        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue,
-                         tmp_path, radio=radio)
-        menu.on_handset_lifted(now=_T0)
-        mock_tts.calls.clear()
-
-        # Just before DIAL_TONE_TIMEOUT_PLAYING — should still be in IDLE_DIAL_TONE
-        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING - 0.05)
-        assert menu.state == MenuState.IDLE_DIAL_TONE, \
-            f"Expected still IDLE_DIAL_TONE before timeout; got {menu.state}"
-
-        # Just past DIAL_TONE_TIMEOUT_PLAYING — should now be in RADIO_PLAYING_MENU
-        menu.tick(now=_T0 + DIAL_TONE_TIMEOUT_PLAYING + 0.1)
-        assert menu.state == MenuState.RADIO_PLAYING_MENU, \
-            f"Expected RADIO_PLAYING_MENU after timeout; got {menu.state}"
 
 
 # ---------------------------------------------------------------------------
@@ -2509,7 +2467,7 @@ class TestNarrowExceptionHandlers:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, SqliteFailingStore(),
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_MEDIA_FAILURE in t for t in texts), \
             f"Expected SCRIPT_MEDIA_FAILURE for sqlite3.Error; got: {texts}"
@@ -2537,7 +2495,7 @@ class TestNarrowExceptionHandlers:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, OsErrorFailingStore(),
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
+        menu.on_digit(0, now=0.5)
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_MEDIA_FAILURE in t for t in texts), \
             f"Expected SCRIPT_MEDIA_FAILURE for OSError; got: {texts}"
@@ -2564,7 +2522,6 @@ class TestNarrowExceptionHandlers:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
 
         # Patch the phone_book to raise sqlite3.Error on lookup
         def raise_sqlite(*args, **kwargs):
@@ -2573,10 +2530,9 @@ class TestNarrowExceptionHandlers:
         menu._phone_book.lookup_by_phone_number = raise_sqlite
 
         mock_tts.calls.clear()
-        # Dial a 7-digit number (not ASSISTANT_NUMBER)
-        for digit in [1, 2, 3, 4, 5, 6, 7]:
-            menu.on_digit(digit, now=15.0 + digit * 0.1)
-        menu.tick(now=20.0)
+        # Dial a 7-digit number from IDLE_DIAL_TONE (first non-zero digit enters DIRECT_DIAL)
+        for i, digit in enumerate([1, 2, 3, 4, 5, 6, 7]):
+            menu.on_digit(digit, now=1.0 + i * 0.1)
 
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
@@ -2594,7 +2550,6 @@ class TestNarrowExceptionHandlers:
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
                          mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
 
         # Patch the phone_book to raise sqlite3.Error on lookup
         def raise_sqlite(*args, **kwargs):
@@ -2603,10 +2558,9 @@ class TestNarrowExceptionHandlers:
         menu._phone_book.lookup_by_phone_number = raise_sqlite
 
         mock_error_queue.logged_calls.clear()
-        # Dial a 7-digit number (not ASSISTANT_NUMBER)
-        for digit in [1, 2, 3, 4, 5, 6, 7]:
-            menu.on_digit(digit, now=15.0 + digit * 0.1)
-        menu.tick(now=20.0)
+        # Dial a 7-digit number from IDLE_DIAL_TONE (first non-zero digit enters DIRECT_DIAL)
+        for i, digit in enumerate([1, 2, 3, 4, 5, 6, 7]):
+            menu.on_digit(digit, now=1.0 + i * 0.1)
 
         assert len(mock_error_queue.logged_calls) >= 1, \
             "Expected error_queue.log to be called when phone_book.lookup_by_phone_number raises"
@@ -2626,8 +2580,7 @@ class TestNarrowExceptionHandlers:
         mock_media_store.set_artists([])
         mock_media_store.set_genres([])
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
-        _dial_number(menu, ASSISTANT_NUMBER, start_time=11.0)
+        _dial_number(menu, ASSISTANT_NUMBER, start_time=1.0)
         assert menu.state == MenuState.ASSISTANT
         mock_tts.calls.clear()
 
@@ -2646,7 +2599,7 @@ class TestNarrowExceptionHandlers:
 
         menu._media_store.refresh = raise_sqlite
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
 
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
@@ -2666,7 +2619,7 @@ class TestNarrowExceptionHandlers:
 
         menu._media_store.refresh = raise_oserror
         menu.on_digit(1, now=20.0)
-        menu.tick(now=20.0 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.tick(now=20.0 + 0.1)
 
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_ASSISTANT_REFRESH_FAILURE in t for t in texts), \
@@ -2689,70 +2642,6 @@ class TestDirectDialFailureReturn:
         for i, d in enumerate(digits[2:], start=2):
             menu.on_digit(d, now=start_time + i * 0.1)
 
-    def test_failed_direct_dial_from_idle_menu_speaks_not_in_service(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Failed direct dial from IDLE_MENU → speaks SCRIPT_NOT_IN_SERVICE."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
-        mock_media_store.set_artists([])
-        mock_media_store.set_genres([])
-        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
-        assert menu.state == MenuState.IDLE_MENU
-        mock_tts.calls.clear()
-
-        self._dial_unknown_number(menu, start_time=15.0)
-
-        texts = tts_calls(mock_tts)
-        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
-            f"Expected SCRIPT_NOT_IN_SERVICE after failed dial; got: {texts}"
-
-    def test_failed_direct_dial_from_idle_menu_re_delivers_idle_menu(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Failed direct dial from IDLE_MENU → re-delivers idle menu (state = IDLE_MENU)."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
-        mock_media_store.set_artists([])
-        mock_media_store.set_genres([])
-        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
-        assert menu.state == MenuState.IDLE_MENU
-        mock_tts.calls.clear()
-
-        self._dial_unknown_number(menu, start_time=15.0)
-
-        assert menu.state == MenuState.IDLE_MENU, \
-            f"Expected IDLE_MENU after failed dial from IDLE_MENU; got {menu.state}"
-        # Idle menu prompt should be re-delivered
-        texts = tts_calls(mock_tts)
-        assert any(SCRIPT_IDLE_MENU in t for t in texts), \
-            f"Expected idle menu re-delivered after failed dial; texts: {texts}"
-
-    def test_failed_direct_dial_from_browse_artists_re_delivers_browse_prompt(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Failed direct dial from BROWSE_ARTISTS → speaks not-in-service then re-delivers browse prompt."""
-        from src.menu import SCRIPT_BROWSE_PROMPT_ARTIST
-        items = [MediaItem("/a/1", "Beatles", "artist")]
-        menu = _make_browse_menu(mock_audio, mock_tts, mock_media_client, mock_media_store,
-                                 mock_error_queue, tmp_path, items, category="artist")
-        assert menu.state == MenuState.BROWSE_ARTISTS, \
-            f"Expected BROWSE_ARTISTS before dialing; got {menu.state}"
-        mock_tts.calls.clear()
-
-        self._dial_unknown_number(menu, start_time=20.0)
-
-        texts = tts_calls(mock_tts)
-        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
-            f"Expected SCRIPT_NOT_IN_SERVICE; got: {texts}"
-        # State should be restored to BROWSE_ARTISTS
-        assert menu.state == MenuState.BROWSE_ARTISTS, \
-            f"Expected BROWSE_ARTISTS after failed dial; got {menu.state}"
-        # Browse prompt should be re-delivered
-        assert any(SCRIPT_BROWSE_PROMPT_ARTIST in t for t in texts), \
-            f"Expected artist browse prompt re-delivered; texts: {texts}"
-
     def test_failed_direct_dial_before_any_menu_delivers_idle_menu(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
         """Failed direct dial from IDLE_DIAL_TONE (before any menu) → delivers correct top-level menu."""
@@ -2762,15 +2651,12 @@ class TestDirectDialFailureReturn:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
         assert menu.state == MenuState.IDLE_DIAL_TONE
 
-        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        # First non-zero digit enters DIRECT_DIAL immediately
         menu.on_digit(1, now=_T0 + 0.1)
-        menu.on_digit(2, now=_T0 + 0.15)
         assert menu.state == MenuState.DIRECT_DIAL
-        # Dial remaining 5 digits
-        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+        for i, d in enumerate([2, 3, 4, 5, 6, 7], start=1):
             menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
 
         texts = tts_calls(mock_tts)
@@ -2793,15 +2679,12 @@ class TestDirectDialFailureReturn:
         mock_media_client.set_now_playing(PlaybackState(item=playing_item, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        # Do NOT tick past the dial tone timeout — state stays IDLE_DIAL_TONE
         assert menu.state == MenuState.IDLE_DIAL_TONE
 
-        # Dial two digits quickly to enter DIRECT_DIAL while still in IDLE_DIAL_TONE
+        # First non-zero digit enters DIRECT_DIAL immediately
         menu.on_digit(1, now=_T0 + 0.1)
-        menu.on_digit(2, now=_T0 + 0.15)
         assert menu.state == MenuState.DIRECT_DIAL
-        # Dial remaining 5 digits
-        for i, d in enumerate([3, 4, 5, 6, 7], start=2):
+        for i, d in enumerate([2, 3, 4, 5, 6, 7], start=1):
             menu.on_digit(d, now=_T0 + 0.1 + i * 0.1)
 
         texts = tts_calls(mock_tts)
@@ -2830,16 +2713,14 @@ class TestDirectDialFailureReturn:
         menu._phone_book = phone_book
 
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # IDLE_MENU
         mock_tts.calls.clear()
         mock_media_client.calls.clear()
 
-        # Dial the number
+        # Dial the number from IDLE_DIAL_TONE (first non-zero digit enters DIRECT_DIAL)
         digits = [int(c) for c in number]
-        menu.on_digit(digits[0], now=15.0)
-        menu.on_digit(digits[1], now=15.05)
-        for i, d in enumerate(digits[2:], start=2):
-            menu.on_digit(d, now=15.0 + i * 0.1)
+        menu.on_digit(digits[0], now=1.0)
+        for i, d in enumerate(digits[1:], start=1):
+            menu.on_digit(d, now=1.0 + i * 0.05)
 
         # Should have transitioned to PLAYING_MENU
         assert menu.state == MenuState.PLAYING_MENU, \
@@ -2848,54 +2729,6 @@ class TestDirectDialFailureReturn:
         texts = tts_calls(mock_tts)
         assert not any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
             f"SCRIPT_NOT_IN_SERVICE should not be spoken on success; got: {texts}"
-
-    def test_pre_dial_state_cleared_on_cradle(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """on_handset_on_cradle() clears _pre_dial_state."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
-        mock_media_store.set_artists([])
-        mock_media_store.set_genres([])
-        mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)
-
-        # Enter direct dial to set _pre_dial_state
-        menu.on_digit(1, now=15.0)
-        menu.on_digit(2, now=15.05)
-        assert menu.state == MenuState.DIRECT_DIAL
-        assert menu._pre_dial_state is not None
-
-        # Hang up — _pre_dial_state should be cleared
-        menu.on_handset_on_cradle()
-        assert menu._pre_dial_state is None, \
-            f"Expected _pre_dial_state=None after cradle; got {menu._pre_dial_state}"
-
-    def test_failed_direct_dial_from_playing_menu_re_delivers_playing_menu(
-            self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
-        """Failed direct dial from PLAYING_MENU → speaks not-in-service then re-delivers playing menu."""
-        mock_media_store.set_playlists([MediaItem("/p/1", "Jazz", "playlist")])
-        mock_media_store.set_artists([])
-        mock_media_store.set_genres([])
-        playing_item = MediaItem("/t/1", "Some Song", "track")
-        mock_media_client.set_now_playing(PlaybackState(item=playing_item, is_paused=False))
-        mock_media_client.set_queue_position(1, 5)
-        menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
-        menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # deliver playing menu; state = PLAYING_MENU
-        assert menu.state == MenuState.PLAYING_MENU
-        mock_tts.calls.clear()
-
-        self._dial_unknown_number(menu, start_time=15.0)
-
-        texts = tts_calls(mock_tts)
-        assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
-            f"Expected SCRIPT_NOT_IN_SERVICE after failed dial; got: {texts}"
-        assert menu.state == MenuState.PLAYING_MENU, \
-            f"Expected PLAYING_MENU after failed dial from PLAYING_MENU; got {menu.state}"
-        # Playing menu must be re-announced so user knows their options
-        assert any(playing_item.name in t for t in texts), \
-            f"Expected playing menu re-delivered (song name in TTS); got: {texts}"
 
     def test_db_error_during_lookup_speaks_not_in_service_and_re_delivers_menu(
             self, mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path):
@@ -2908,13 +2741,12 @@ class TestDirectDialFailureReturn:
         mock_media_client.set_now_playing(PlaybackState(item=None, is_paused=False))
         menu = make_menu(mock_audio, mock_tts, mock_media_client, mock_media_store, mock_error_queue, tmp_path)
         menu.on_handset_lifted(now=_T0)
-        menu.tick(now=10.0)  # deliver idle menu; state = IDLE_MENU
-        assert menu.state == MenuState.IDLE_MENU
+        assert menu.state == MenuState.IDLE_DIAL_TONE
         mock_tts.calls.clear()
 
         with patch.object(menu._phone_book, 'lookup_by_phone_number',
                           side_effect=sqlite3.Error("simulated DB failure")):
-            self._dial_unknown_number(menu, start_time=15.0)
+            self._dial_unknown_number(menu, start_time=1.0)
 
         texts = tts_calls(mock_tts)
         assert any(SCRIPT_NOT_IN_SERVICE in t for t in texts), \
@@ -3006,20 +2838,17 @@ class TestArtistSubMenuStateBug:
                          mock_error_queue, tmp_path)
 
         menu.on_handset_lifted(now=0.0)
-        # Advance past dial-tone timeout → idle menu
-        menu.tick(now=DIAL_TONE_TIMEOUT_IDLE + 0.1)
+        menu.on_digit(0, now=0.5)  # enter operator menu
         assert menu.state == MenuState.IDLE_MENU
 
         # Digit 1 → browse artists (only option)
-        t = DIAL_TONE_TIMEOUT_IDLE + 0.2
-        menu.on_digit(1, now=t)
-        menu.tick(now=t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(1, now=1.0)
+        menu.tick(now=1.1)
         assert menu.state == MenuState.BROWSE_ARTISTS
 
         # Digit 4 (T9 for 'L') → single match → auto-selects Led Zeppelin → ARTIST_SUBMENU
-        t2 = t + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.5
-        menu.on_digit(4, now=t2)
-        menu.tick(now=t2 + DIRECT_DIAL_DISAMBIGUATION_TIMEOUT + 0.1)
+        menu.on_digit(4, now=2.0)
+        menu.tick(now=2.1)
         assert menu.state == MenuState.ARTIST_SUBMENU
         assert menu._current_artist is not None, "precondition: artist must be set"
 
